@@ -78,9 +78,15 @@ def get_tags(rel_path: str) -> List[str]:
     return tags
 
 
-def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = False):
+def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = False):
     """
-    Scan a directory for PDFs and queue them for processing.
+    Ingest PDF files or directories and queue them for processing.
+    
+    Args:
+        paths: List of file paths or directories to ingest.
+               Files must be PDFs. Directories are scanned recursively.
+        priority: Queue priority for new jobs.
+        dry_run: If True, don't make any changes to S3.
     
     This function is state-aware and checks all queue states before adding a job:
     - Skips if already done (output exists)
@@ -93,7 +99,33 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
     """
     s3 = S3Client(dry_run=dry_run)
     
-    print(f"Scanning {repo_path}...")
+    # Expand paths into list of (full_path, base_path) tuples
+    # base_path is used to compute relative paths for tags
+    files_to_process = []
+    
+    for path in paths:
+        path = os.path.abspath(path)
+        if os.path.isfile(path):
+            if path.lower().endswith('.pdf'):
+                # For single files, base_path is the parent directory
+                files_to_process.append((path, os.path.dirname(path)))
+            else:
+                print(f"Skipping {path}: Not a PDF file")
+        elif os.path.isdir(path):
+            # Walk directory recursively
+            for root, _, files in os.walk(path):
+                for file in files:
+                    if file.lower().endswith('.pdf'):
+                        full_path = os.path.join(root, file)
+                        files_to_process.append((full_path, path))
+        else:
+            print(f"Warning: {path} does not exist, skipping")
+    
+    if not files_to_process:
+        print("No PDF files found.")
+        return
+    
+    print(f"Found {len(files_to_process)} PDF(s) to process...")
     stats = {"found": 0, "skipped_done": 0, "skipped_queued": 0, "skipped_processing": 0,
              "skipped_failed": 0, "skipped_dead": 0, "uploaded": 0, "queued": 0}
     
@@ -101,86 +133,69 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
     manifest_batch = []
     MANIFEST_BATCH_SIZE = 50
     
-    for root, _, files in os.walk(repo_path):
-        for file in files:
-            if not file.lower().endswith(".pdf"):
-                continue
-            
-            full_path = os.path.join(root, file)
-            rel_path = os.path.relpath(full_path, repo_path)
-            stats["found"] += 1
-            
-            # Metadata Prep
-            tags = get_tags(rel_path)
-            
-            # 1. Identify Hash
-            file_hash = get_lfs_hash(full_path)
-            is_pointer = True
-            
-            if not file_hash:
-                is_pointer = False
-                try:
-                    with open(full_path, 'rb') as f:
-                        header = f.read(4)
-                        if header != b'%PDF':
-                            print(f"Skipping {rel_path}: Not a valid PDF")
-                            continue
-                except Exception:
-                    continue
-                print(f"Found non-LFS PDF: {rel_path}. Computing hash...")
-                file_hash = compute_sha256(full_path)
-            
-            print(f"Found: {rel_path} -> {file_hash[:8]}...")
-            
-            # 2. Check ALL queue states before proceeding
-            states = s3.job_exists_anywhere(file_hash, PRIORITIES)
-            
-            if states['done']:
-                print(f"  [SKIP] Already converted")
-                stats["skipped_done"] += 1
-                continue
-            
-            if states['processing']:
-                print(f"  [SKIP] Currently being processed")
-                stats["skipped_processing"] += 1
-                continue
-            
-            if states['dead']:
-                print(f"  [SKIP] In dead-letter queue (exceeded max retries)")
-                stats["skipped_dead"] += 1
-                continue
-            
-            if states['failed']:
-                print(f"  [SKIP] In failed queue (will be retried by janitor)")
-                stats["skipped_failed"] += 1
-                continue
-            
-            if states['todo']:
-                print(f"  [SKIP] Already in queue")
-                stats["skipped_queued"] += 1
-                continue
-            
-            # 3. Check/Upload Raw + Metadata
-            raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
-            if not s3.exists(raw_key):
-                print(f"  [UPLOAD] Raw PDF not in S3.")
-                
-                if is_pointer:
-                    try:
-                        pull_lfs_file(repo_path, rel_path)
-                        size = os.path.getsize(full_path)
-                        metadata = {
-                            "original-name": file,
-                            "tags": json.dumps(tags),
-                            "size": str(size)
-                        }
-                        s3.upload_file(full_path, raw_key, metadata=metadata)
-                        cleanup_lfs_file(repo_path, rel_path)
-                        stats["uploaded"] += 1
-                    except subprocess.CalledProcessError as e:
-                        print(f"  [ERROR] Git LFS pull failed: {e}")
+    for full_path, base_path in files_to_process:
+        file = os.path.basename(full_path)
+        rel_path = os.path.relpath(full_path, base_path)
+        stats["found"] += 1
+        
+        # Metadata Prep
+        tags = get_tags(rel_path)
+        
+        # 1. Identify Hash
+        file_hash = get_lfs_hash(full_path)
+        is_pointer = True
+        
+        if not file_hash:
+            is_pointer = False
+            try:
+                with open(full_path, 'rb') as f:
+                    header = f.read(4)
+                    if header != b'%PDF':
+                        print(f"Skipping {rel_path}: Not a valid PDF")
                         continue
-                else:
+            except Exception:
+                continue
+            print(f"Found non-LFS PDF: {rel_path}. Computing hash...")
+            file_hash = compute_sha256(full_path)
+        
+        print(f"Found: {rel_path} -> {file_hash[:8]}...")
+        
+        # 2. Check ALL queue states before proceeding
+        states = s3.job_exists_anywhere(file_hash, PRIORITIES)
+        
+        if states['done']:
+            print(f"  [SKIP] Already converted")
+            stats["skipped_done"] += 1
+            continue
+        
+        if states['processing']:
+            print(f"  [SKIP] Currently being processed")
+            stats["skipped_processing"] += 1
+            continue
+        
+        if states['dead']:
+            print(f"  [SKIP] In dead-letter queue (exceeded max retries)")
+            stats["skipped_dead"] += 1
+            continue
+        
+        if states['failed']:
+            print(f"  [SKIP] In failed queue (will be retried by janitor)")
+            stats["skipped_failed"] += 1
+            continue
+        
+        if states['todo']:
+            print(f"  [SKIP] Already in queue")
+            stats["skipped_queued"] += 1
+            continue
+        
+        # 3. Check/Upload Raw + Metadata
+        raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
+        if not s3.exists(raw_key):
+            print(f"  [UPLOAD] Raw PDF not in S3.")
+            
+            if is_pointer:
+                try:
+                    pull_lfs_file(base_path, rel_path)
                     size = os.path.getsize(full_path)
                     metadata = {
                         "original-name": file,
@@ -188,34 +203,47 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
                         "size": str(size)
                     }
                     s3.upload_file(full_path, raw_key, metadata=metadata)
+                    cleanup_lfs_file(base_path, rel_path)
                     stats["uploaded"] += 1
+                except subprocess.CalledProcessError as e:
+                    print(f"  [ERROR] Git LFS pull failed: {e}")
+                    continue
             else:
-                print(f"  [OK] Raw PDF exists.")
-            
-            # 4. Queue the job
-            s3.create_todo_marker(priority, file_hash)
-            print(f"  [QUEUED] Added with priority {priority}")
-            stats["queued"] += 1
-            
-            # 5. Collect manifest entry
-            try:
                 size = os.path.getsize(full_path)
-            except Exception:
-                size = 0
-            
-            manifest_batch.append({
-                'hash': file_hash,
-                'path': rel_path,
-                'size': size,
-                'tags': tags,
-                'source': os.path.basename(repo_path)
-            })
-            
-            # Batch update manifest
-            if len(manifest_batch) >= MANIFEST_BATCH_SIZE:
-                print(f"  [MANIFEST] Updating with {len(manifest_batch)} entries...")
-                s3.update_manifest(manifest_batch)
-                manifest_batch = []
+                metadata = {
+                    "original-name": file,
+                    "tags": json.dumps(tags),
+                    "size": str(size)
+                }
+                s3.upload_file(full_path, raw_key, metadata=metadata)
+                stats["uploaded"] += 1
+        else:
+            print(f"  [OK] Raw PDF exists.")
+        
+        # 4. Queue the job
+        s3.create_todo_marker(priority, file_hash)
+        print(f"  [QUEUED] Added with priority {priority}")
+        stats["queued"] += 1
+        
+        # 5. Collect manifest entry
+        try:
+            size = os.path.getsize(full_path)
+        except Exception:
+            size = 0
+        
+        manifest_batch.append({
+            'hash': file_hash,
+            'path': rel_path,
+            'size': size,
+            'tags': tags,
+            'source': os.path.basename(base_path)
+        })
+        
+        # Batch update manifest
+        if len(manifest_batch) >= MANIFEST_BATCH_SIZE:
+            print(f"  [MANIFEST] Updating with {len(manifest_batch)} entries...")
+            s3.update_manifest(manifest_batch)
+            manifest_batch = []
     
     # Final manifest update for remaining entries
     if manifest_batch:
@@ -236,14 +264,10 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BlobForge Ingestor")
-    parser.add_argument("path", help="Path to directory containing PDFs")
+    parser.add_argument("paths", nargs='+', help="PDF files or directories to ingest")
     parser.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
                         help="Queue priority for new jobs")
     parser.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
     args = parser.parse_args()
     
-    if not os.path.isdir(args.path):
-        print(f"Error: {args.path} is not a directory")
-        sys.exit(1)
-    
-    ingest(args.path, priority=args.priority, dry_run=args.dry_run)
+    ingest(args.paths, priority=args.priority, dry_run=args.dry_run)

@@ -101,33 +101,46 @@ BlobForge provides a unified `blobforge` command for all operations.
 
 ### 1. Ingest Data
 
-Recursively scans a directory for **PDF files only** (`.pdf` extension) and queues them for processing.
+Ingests **PDF files only** (`.pdf` extension) and queues them for processing. Accepts files, directories, or shell globs.
 
 **How it works:**
-1. Walks the directory tree looking for files ending in `.pdf` (case-insensitive)
-2. For each PDF, determines the file hash:
+1. For directories: walks the tree recursively looking for `.pdf` files (case-insensitive)
+2. For files: checks if they're PDFs (by extension)
+3. For each PDF, determines the file hash:
    - **Git LFS pointer files**: Extracts the SHA256 from the pointer (no download needed)
    - **Regular PDF files**: Validates the `%PDF` header, then computes SHA256
-3. Checks if the file is already processed, queued, or failed (prevents duplicates)
-4. Uploads the raw PDF to S3 (if not already present)
-5. Creates a job in the todo queue
+4. Checks if the file is already processed, queued, or failed (prevents duplicates)
+5. Uploads the raw PDF to S3 (if not already present)
+6. Creates a job in the todo queue
 
 **Git LFS Support:**
-- If the directory is a Git repo with LFS, pointer files are detected automatically
+- If the path is inside a Git repo with LFS, pointer files are detected automatically
 - The ingestor will `git lfs pull` individual files as needed, then revert them to pointers after upload
 - This saves local disk space when processing large libraries
 - Works with **smudge filter disabled** (`git lfs install --skip-smudge`)
 
-**Non-Git directories work too:**
-- Any directory with PDFs can be ingested (doesn't need to be a Git repo)
-- Just point it at a folder containing PDFs
+**Input flexibility:**
+- Single file: `blobforge ingest document.pdf`
+- Single directory: `blobforge ingest ./library/`
+- Multiple paths: `blobforge ingest file1.pdf file2.pdf ./more-pdfs/`
+- Shell globbing: `blobforge ingest *.pdf ./books/*.pdf`
+- Mix files and directories: `blobforge ingest urgent.pdf ./batch-folder/`
 
 ```bash
-# Ingest a library with normal priority
+# Ingest a single PDF
+blobforge ingest ./document.pdf
+
+# Ingest a directory recursively
 blobforge ingest ./library/rpg-books
 
-# Ingest urgent files
-blobforge ingest ./library/hot-fixes --priority 1_critical
+# Ingest multiple paths (files and/or directories)
+blobforge ingest file1.pdf file2.pdf ./more-pdfs/
+
+# Use shell globbing
+blobforge ingest *.pdf ./books/**/*.pdf
+
+# Ingest with high priority
+blobforge ingest ./urgent/*.pdf --priority 1_critical
 
 # Preview what would be ingested (no changes made)
 blobforge ingest ./library --dry-run

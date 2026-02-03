@@ -27,9 +27,12 @@ from . import status as status_module
 
 
 def cmd_ingest(args):
-    """Ingest PDFs from a directory."""
-    print(f"Ingesting {args.path} with priority {args.priority}...")
-    ingestor.ingest(args.path, priority=args.priority, dry_run=args.dry_run)
+    """Ingest PDFs from files or directories."""
+    if len(args.paths) == 1:
+        print(f"Ingesting {args.paths[0]} with priority {args.priority}...")
+    else:
+        print(f"Ingesting {len(args.paths)} paths with priority {args.priority}...")
+    ingestor.ingest(args.paths, priority=args.priority, dry_run=args.dry_run)
 
 
 def cmd_reprioritize(args):
@@ -542,8 +545,8 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     
     # Ingest
-    p_ingest = subparsers.add_parser("ingest", help="Ingest PDF files from a directory")
-    p_ingest.add_argument("path", help="Path to directory containing PDFs")
+    p_ingest = subparsers.add_parser("ingest", help="Ingest PDF files or directories")
+    p_ingest.add_argument("paths", nargs='+', help="PDF files or directories to ingest (supports shell globbing)")
     p_ingest.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
                           help="Queue priority for new jobs")
     p_ingest.add_argument("--dry-run", action="store_true", help="Don't make changes")
