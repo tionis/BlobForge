@@ -19,14 +19,16 @@ WORKDIR /app
 # 2. boto3 (for our scripts)
 RUN pip install --no-cache-dir marker-pdf boto3
 
-# Copy Scripts
-COPY worker.py .
-COPY janitor.py .
-COPY ingestor.py .
+# Copy Package
+COPY pyproject.toml .
+COPY blobforge/ ./blobforge/
+
+# Install the package
+RUN pip install --no-cache-dir .
 
 # Environment Variables (Override these at runtime)
 ENV S3_BUCKET=my-pdf-bucket
 ENV PYTHONUNBUFFERED=1
 
 # Default Command: Run Worker
-CMD ["python", "worker.py"]
+CMD ["blobforge", "worker"]

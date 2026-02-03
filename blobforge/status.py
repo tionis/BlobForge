@@ -5,11 +5,11 @@ import os
 import argparse
 from datetime import datetime, timedelta
 
-from config import (
+from .config import (
     S3_BUCKET, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, STALE_TIMEOUT_MINUTES
 )
-from s3_client import S3Client
+from .s3_client import S3Client
 
 
 def show_status(verbose: bool = False):

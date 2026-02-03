@@ -53,7 +53,7 @@ s3://my-bucket/
 
 ## 📦 Installation
 
-### Option A: Docker (Recommended)
+### Option A: Docker (Recommended for Workers)
 
 The Docker image includes all dependencies for PDF processing (`marker-pdf`, `ocr`, `torch`).
 
@@ -66,20 +66,38 @@ docker run -d \
   -e S3_BUCKET=my-forge-bucket \
   -e AWS_ACCESS_KEY_ID=... \
   -e AWS_SECRET_ACCESS_KEY=... \
-  blobforge
+  blobforge worker
 ```
 
-### Option B: Local Python
+### Option B: uv (Recommended for CLI)
 
-Requires Python 3.9+ and system dependencies (`tesseract-ocr`, `ghostscript`).
+Install the CLI tool using [uv](https://docs.astral.sh/uv/):
 
 ```bash
-pip install boto3 marker-pdf
+# Install globally as a tool
+uv tool install .
+
+# Or install with PDF conversion support
+uv tool install ".[convert]"
+
+# Verify installation
+blobforge --help
+```
+
+### Option C: pip
+
+Requires Python 3.9+ and system dependencies for PDF conversion (`tesseract-ocr`, `ghostscript`).
+
+```bash
+pip install .
+
+# With PDF conversion support
+pip install ".[convert]"
 ```
 
 ## 💻 Usage (CLI)
 
-BlobForge comes with a unified CLI for managing the pipeline.
+BlobForge provides a unified `blobforge` command for all operations.
 
 ### 1. Ingest Data
 
@@ -88,13 +106,13 @@ The ingestor is **state-aware** - it checks all queues before adding jobs to pre
 
 ```bash
 # Ingest a library with normal priority
-python3 cli.py ingest ./library/rpg-books
+blobforge ingest ./library/rpg-books
 
 # Ingest urgent files
-python3 cli.py ingest ./library/hot-fixes --priority 1_critical
+blobforge ingest ./library/hot-fixes --priority 1_critical
 
 # Preview what would be ingested
-python3 cli.py ingest ./library --dry-run
+blobforge ingest ./library --dry-run
 ```
 
 ### 2. Start a Worker
@@ -104,16 +122,16 @@ Worker IDs are persistent (based on machine fingerprint) so cleanup works across
 
 ```bash
 # Start a worker (runs continuously)
-python3 worker.py
+blobforge worker
 
 # Process one job and exit
-python3 worker.py --run-once
+blobforge worker --run-once
 
 # Preview without making changes
-python3 worker.py --dry-run
+blobforge worker --dry-run
 ```
 
-*Run multiple instances of this script on any number of machines to scale.*
+*Run multiple instances on any number of machines to scale horizontally.*
 
 ### 3. Monitor Status
 
@@ -121,16 +139,16 @@ View queue counts, active processing jobs, and failed jobs.
 
 ```bash
 # Quick dashboard
-python3 cli.py dashboard
+blobforge dashboard
 
 # Detailed dashboard
-python3 cli.py dashboard -v
+blobforge dashboard -v
 
 # Queue statistics
-python3 cli.py list -v
+blobforge list -v
 
 # Check specific file status
-python3 cli.py status <SHA256_HASH>
+blobforge status <SHA256_HASH>
 ```
 
 ### 4. Maintenance (Janitor)
@@ -140,13 +158,13 @@ Jobs exceeding MAX_RETRIES are moved to the dead-letter queue.
 
 ```bash
 # Run janitor
-python3 cli.py janitor
+blobforge janitor
 
 # Preview what janitor would do
-python3 cli.py janitor --dry-run
+blobforge janitor --dry-run
 
 # Verbose output
-python3 cli.py janitor -v
+blobforge janitor -v
 ```
 
 ### 5. Retry Failed Jobs
@@ -155,13 +173,13 @@ Manually retry jobs from the failed or dead-letter queue:
 
 ```bash
 # Retry a failed job
-python3 cli.py retry <SHA256_HASH>
+blobforge retry <SHA256_HASH>
 
 # Retry with higher priority
-python3 cli.py retry <SHA256_HASH> --priority 1_critical
+blobforge retry <SHA256_HASH> --priority 1_critical
 
 # Reset retry counter (for dead-letter jobs)
-python3 cli.py retry <SHA256_HASH> --reset-retries
+blobforge retry <SHA256_HASH> --reset-retries
 ```
 
 ### 6. Search & Lookup (Manifest)
@@ -170,16 +188,16 @@ The manifest tracks all ingested files with metadata for fast lookups:
 
 ```bash
 # Search by filename or tag
-python3 cli.py search "Call of Cthulhu"
+blobforge search "Call of Cthulhu"
 
 # Look up by hash
-python3 cli.py lookup --hash <SHA256_HASH>
+blobforge lookup --hash <SHA256_HASH>
 
 # Look up by path
-python3 cli.py lookup --path "DnD/Players Handbook.pdf"
+blobforge lookup --path "DnD/Players Handbook.pdf"
 
 # Show manifest statistics
-python3 cli.py manifest -v
+blobforge manifest -v
 ```
 
 ### 7. Reprioritize Jobs
@@ -187,7 +205,7 @@ python3 cli.py manifest -v
 Change the priority of queued jobs:
 
 ```bash
-python3 cli.py reprioritize <SHA256_HASH> 1_critical
+blobforge reprioritize <SHA256_HASH> 1_critical
 ```
 
 ## ⚙️ Configuration
@@ -221,15 +239,18 @@ BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Teste
 ## 🏗 Project Structure
 
 ```
-├── cli.py           # Unified management interface
-├── ingestor.py      # Scans filesystem, uploads RAW blobs, queues jobs
-├── worker.py        # Polls S3, locks jobs, runs marker-pdf, sends heartbeats
-├── janitor.py       # Recovers stale jobs, manages retries
-├── status.py        # Reporting dashboard
-├── s3_client.py     # Consolidated S3 operations (single source of truth)
-├── config.py        # Shared configuration and constants
+├── pyproject.toml   # Package configuration and dependencies
+├── blobforge/       # Main package
+│   ├── cli.py       # Unified command-line interface
+│   ├── ingestor.py  # Scans filesystem, uploads RAW blobs, queues jobs
+│   ├── worker.py    # Polls S3, locks jobs, runs marker-pdf, sends heartbeats
+│   ├── janitor.py   # Recovers stale jobs, manages retries
+│   ├── status.py    # Reporting dashboard
+│   ├── s3_client.py # Consolidated S3 operations (single source of truth)
+│   └── config.py    # Shared configuration and constants
+├── tests/           # Unit tests
 ├── DESIGN.md        # Detailed architectural decisions
-└── tests/           # Unit tests
+└── Dockerfile       # Container build for workers
 ```
 
 ## 🧪 Testing
@@ -237,11 +258,14 @@ BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Teste
 Run the test suite:
 
 ```bash
-# With unittest
-python3 -m unittest tests.test_blobforge -v
+# With uv
+uv run pytest tests/ -v
 
-# With pytest (if installed)
-python3 -m pytest tests/ -v
+# Or with unittest
+uv run python -m unittest tests.test_blobforge -v
+
+# Without uv
+python -m pytest tests/ -v
 ```
 
 ## 🔮 Future Roadmap

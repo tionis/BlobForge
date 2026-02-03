@@ -16,9 +16,9 @@ from datetime import datetime, timedelta
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
-from config import S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
-from s3_client import S3Client
+from blobforge.config import PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
+from blobforge.config import S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
+from blobforge.s3_client import S3Client
 
 
 class TestS3ClientMock(unittest.TestCase):
@@ -335,7 +335,7 @@ class TestWorkerIdGeneration(unittest.TestCase):
     
     def test_worker_id_is_consistent(self):
         """Worker ID should be consistent across imports."""
-        from config import WORKER_ID, _generate_worker_id
+        from blobforge.config import WORKER_ID, _generate_worker_id
         
         # Generate multiple times
         id1 = _generate_worker_id()
@@ -349,7 +349,7 @@ class TestWorkerIdGeneration(unittest.TestCase):
     
     def test_worker_id_is_hex(self):
         """Worker ID should be valid hex string."""
-        from config import _generate_worker_id
+        from blobforge.config import _generate_worker_id
         
         worker_id = _generate_worker_id()
         # Should not raise
@@ -361,21 +361,21 @@ class TestIngestorTagGeneration(unittest.TestCase):
     
     def test_get_tags_simple_path(self):
         """Should extract tags from simple path."""
-        from ingestor import get_tags
+        from blobforge.ingestor import get_tags
         
         tags = get_tags("books/fantasy/dragon.pdf")
         self.assertEqual(tags, ["books", "fantasy", "dragon"])
     
     def test_get_tags_nested_path(self):
         """Should handle deeply nested paths."""
-        from ingestor import get_tags
+        from blobforge.ingestor import get_tags
         
         tags = get_tags("a/b/c/d/file.pdf")
         self.assertEqual(tags, ["a", "b", "c", "d", "file"])
     
     def test_get_tags_removes_extension(self):
         """Should remove .pdf extension from filename."""
-        from ingestor import get_tags
+        from blobforge.ingestor import get_tags
         
         tags = get_tags("test.pdf")
         self.assertEqual(tags, ["test"])
@@ -386,7 +386,7 @@ class TestLfsPointerParsing(unittest.TestCase):
     
     def test_parse_lfs_pointer(self):
         """Should extract SHA256 from LFS pointer."""
-        from ingestor import get_lfs_hash
+        from blobforge.ingestor import get_lfs_hash
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.pdf', delete=False) as f:
             f.write("version https://git-lfs.github.com/spec/v1\n")
@@ -401,7 +401,7 @@ class TestLfsPointerParsing(unittest.TestCase):
     
     def test_parse_non_lfs_file(self):
         """Should return None for non-LFS files."""
-        from ingestor import get_lfs_hash
+        from blobforge.ingestor import get_lfs_hash
         
         with tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False) as f:
             f.write(b"%PDF-1.4 regular pdf content")
@@ -418,7 +418,7 @@ class TestSha256Computation(unittest.TestCase):
     
     def test_compute_sha256(self):
         """Should compute correct SHA256 hash."""
-        from ingestor import compute_sha256
+        from blobforge.ingestor import compute_sha256
         
         with tempfile.NamedTemporaryFile(mode='wb', delete=False) as f:
             f.write(b"test content")

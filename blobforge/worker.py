@@ -23,12 +23,12 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from config import (
+from .config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY, WORKER_ID,
     MAX_RETRIES, HEARTBEAT_INTERVAL_SECONDS, CONVERSION_TIMEOUT_SECONDS
 )
-from s3_client import S3Client
+from .s3_client import S3Client
 
 logger = logging.getLogger(__name__)
 

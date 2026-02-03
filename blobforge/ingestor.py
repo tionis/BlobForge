@@ -15,11 +15,11 @@ import hashlib
 import json
 from typing import Optional, List
 
-from config import (
+from .config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_DONE, S3_PREFIX_FAILED,
     S3_PREFIX_PROCESSING, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
 )
-from s3_client import S3Client
+from .s3_client import S3Client
 
 # Regex for Git LFS pointer file
 LFS_POINTER_REGEX = re.compile(r"oid sha256:([a-f0-9]{64})")

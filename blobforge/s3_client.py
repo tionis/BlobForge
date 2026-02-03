@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from config import S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY
+from .config import S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY
 
 
 class S3Client:

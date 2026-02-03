@@ -14,14 +14,14 @@ import sys
 import json
 import argparse
 
-from config import (
+from .config import (
     S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
     S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
 )
-from s3_client import S3Client
-import ingestor
-import janitor as janitor_module
-import status as status_module
+from .s3_client import S3Client
+from . import ingestor
+from . import janitor as janitor_module
+from . import status as status_module
 
 
 def cmd_ingest(args):
@@ -293,6 +293,37 @@ def cmd_janitor(args):
     janitor_module.run_janitor(dry_run=args.dry_run, verbose=args.verbose)
 
 
+def cmd_worker(args):
+    """Start a worker to process jobs."""
+    from . import worker as worker_module
+    import time
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    
+    client = S3Client(dry_run=args.dry_run)
+    w = worker_module.Worker(client)
+    
+    logger.info(f"Worker {w.id} started. Polling for jobs...")
+    
+    try:
+        while True:
+            job = w.acquire_job()
+            if job:
+                w.process(job)
+                if args.run_once:
+                    break
+            else:
+                if args.run_once:
+                    logger.info("No jobs found.")
+                    break
+                time.sleep(10)
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user.")
+    finally:
+        w.shutdown()
+
+
 def cmd_dashboard(args):
     """Show system status dashboard."""
     status_module.show_status(verbose=args.verbose)
@@ -439,6 +470,12 @@ def main():
     p_janitor.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_janitor.add_argument("--verbose", "-v", action="store_true", help="Show all jobs")
     p_janitor.set_defaults(func=cmd_janitor)
+    
+    # Worker
+    p_worker = subparsers.add_parser("worker", help="Start a worker to process jobs")
+    p_worker.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
+    p_worker.add_argument("--run-once", action="store_true", help="Process one job and exit")
+    p_worker.set_defaults(func=cmd_worker)
     
     # Dashboard
     p_dash = subparsers.add_parser("dashboard", help="Show system status dashboard")
