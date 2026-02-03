@@ -1,3 +1,11 @@
+"""
+BlobForge Ingestor - Scans directories for PDFs and queues them for processing.
+
+Supports:
+- Git LFS pointer files (extracts SHA256 without downloading)
+- Regular PDF files (computes SHA256 hash)
+- State-aware queueing (checks all queue states before adding)
+"""
 import os
 import re
 import sys
@@ -5,57 +13,20 @@ import argparse
 import subprocess
 import hashlib
 import json
-from typing import Optional, List, Set
-from config import *
+from typing import Optional, List
+
+from config import (
+    S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_DONE, S3_PREFIX_FAILED,
+    S3_PREFIX_PROCESSING, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
+)
+from s3_client import S3Client
 
 # Regex for Git LFS pointer file
 LFS_POINTER_REGEX = re.compile(r"oid sha256:([a-f0-9]{64})")
 
-class S3Client:
-    """
-    Abstracts S3 operations. 
-    """
-    def __init__(self, dry_run=False):
-        self.dry_run = dry_run
-        try:
-            import boto3
-            self.s3 = boto3.client('s3')
-            self.mock = False
-        except ImportError:
-            print("Warning: boto3 not found. Running in MOCK mode.")
-            self.mock = True
-
-    def exists(self, key: str) -> bool:
-        if self.mock:
-            return False 
-        try:
-            self.s3.head_object(Bucket=S3_BUCKET, Key=key)
-            return True
-        except:
-            return False
-
-    def upload_file(self, local_path: str, key: str, metadata: dict = None):
-        if self.dry_run or self.mock:
-            meta_str = json.dumps(metadata) if metadata else "{}"
-            print(f"[DRY-RUN/MOCK] Uploading {local_path} -> s3://{S3_BUCKET}/{key} (Meta: {meta_str})")
-            return
-        
-        extra_args = {}
-        if metadata:
-            extra_args['Metadata'] = metadata
-            
-        print(f"Uploading {local_path} -> s3://{S3_BUCKET}/{key}")
-        self.s3.upload_file(local_path, S3_BUCKET, key, ExtraArgs=extra_args)
-
-    def create_marker(self, key: str, content: str = ""):
-        if self.dry_run or self.mock:
-            print(f"[DRY-RUN/MOCK] Creating marker s3://{S3_BUCKET}/{key}")
-            return
-        
-        self.s3.put_object(Bucket=S3_BUCKET, Key=key, Body=content)
-
 
 def get_lfs_hash(filepath: str) -> Optional[str]:
+    """Extract SHA256 hash from a Git LFS pointer file."""
     try:
         with open(filepath, 'r', errors='ignore') as f:
             header = f.read(200)
@@ -66,44 +37,63 @@ def get_lfs_hash(filepath: str) -> Optional[str]:
         print(f"Error reading {filepath}: {e}")
     return None
 
+
 def compute_sha256(filepath: str) -> str:
+    """Compute SHA256 hash of a file."""
     sha256_hash = hashlib.sha256()
     with open(filepath, "rb") as f:
         for byte_block in iter(lambda: f.read(4096), b""):
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
+
 def pull_lfs_file(repo_path: str, filepath: str):
+    """Materialize a Git LFS file by pulling it."""
     print(f"Materializing LFS file: {filepath}")
     subprocess.run(["git", "lfs", "pull", "--include", filepath], check=True, cwd=repo_path)
 
+
 def cleanup_lfs_file(repo_path: str, filepath: str):
+    """Revert an LFS file back to pointer state."""
     print(f"Cleaning up (reverting to pointer): {filepath}")
     subprocess.run(["git", "checkout", filepath], check=True, cwd=repo_path)
 
+
 def get_tags(rel_path: str) -> List[str]:
-    # ./books/comics/obelix.pdf -> ['books', 'comics', 'obelix']
-    # Normalize path separators
+    """
+    Derive tags from file path.
+    Example: ./books/comics/obelix.pdf -> ['books', 'comics', 'obelix']
+    """
     parts = os.path.normpath(rel_path).split(os.sep)
-    # Remove filename extension for the last part? Or just keep directory structure?
-    # User said: "derived from the path (so `./books/comics/obelix` becomes ['books', 'comics', 'obelix'])"
-    # Assuming the user meant folders + filename-without-ext
     
     tags = []
     for p in parts[:-1]:
         if p and p != ".":
             tags.append(p)
-            
+    
     filename = parts[-1]
     name_no_ext = os.path.splitext(filename)[0]
     tags.append(name_no_ext)
     
     return tags
 
+
 def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = False):
+    """
+    Scan a directory for PDFs and queue them for processing.
+    
+    This function is state-aware and checks all queue states before adding a job:
+    - Skips if already done (output exists)
+    - Skips if currently processing
+    - Skips if already queued (any priority)
+    - Skips if in failed queue (will be retried by janitor)
+    - Skips if in dead-letter queue (permanently failed)
+    """
     s3 = S3Client(dry_run=dry_run)
     
     print(f"Scanning {repo_path}...")
+    stats = {"found": 0, "skipped_done": 0, "skipped_queued": 0, "skipped_processing": 0,
+             "skipped_failed": 0, "skipped_dead": 0, "uploaded": 0, "queued": 0}
     
     for root, _, files in os.walk(repo_path):
         for file in files:
@@ -112,6 +102,7 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
             
             full_path = os.path.join(root, file)
             rel_path = os.path.relpath(full_path, repo_path)
+            stats["found"] += 1
             
             # Metadata Prep
             tags = get_tags(rel_path)
@@ -128,32 +119,49 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
                         if header != b'%PDF':
                             print(f"Skipping {rel_path}: Not a valid PDF")
                             continue
-                except: continue
+                except Exception:
+                    continue
                 print(f"Found non-LFS PDF: {rel_path}. Computing hash...")
                 file_hash = compute_sha256(full_path)
             
             print(f"Found: {rel_path} -> {file_hash[:8]}...")
-
-            # 2. Check Done
-            zip_key = f"{S3_PREFIX_DONE}/{file_hash}.zip"
-            if s3.exists(zip_key):
-                print(f"  [SKIP] Already converted: {zip_key}")
+            
+            # 2. Check ALL queue states before proceeding
+            states = s3.job_exists_anywhere(file_hash, PRIORITIES)
+            
+            if states['done']:
+                print(f"  [SKIP] Already converted")
+                stats["skipped_done"] += 1
                 continue
-
+            
+            if states['processing']:
+                print(f"  [SKIP] Currently being processed")
+                stats["skipped_processing"] += 1
+                continue
+            
+            if states['dead']:
+                print(f"  [SKIP] In dead-letter queue (exceeded max retries)")
+                stats["skipped_dead"] += 1
+                continue
+            
+            if states['failed']:
+                print(f"  [SKIP] In failed queue (will be retried by janitor)")
+                stats["skipped_failed"] += 1
+                continue
+            
+            if states['todo']:
+                print(f"  [SKIP] Already in queue")
+                stats["skipped_queued"] += 1
+                continue
+            
             # 3. Check/Upload Raw + Metadata
             raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
             if not s3.exists(raw_key):
-                print(f"  [MISSING] Raw PDF not in S3.")
-                
-                # We need actual file size for metadata. 
-                # If pointer, we need to pull it first to get size? 
-                # Or LFS pointer has size! "size 12345"
-                # Let's pull it to be safe and accurate for upload.
+                print(f"  [UPLOAD] Raw PDF not in S3.")
                 
                 if is_pointer:
                     try:
                         pull_lfs_file(repo_path, rel_path)
-                        # Now file is materialized
                         size = os.path.getsize(full_path)
                         metadata = {
                             "original-name": file,
@@ -162,6 +170,7 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
                         }
                         s3.upload_file(full_path, raw_key, metadata=metadata)
                         cleanup_lfs_file(repo_path, rel_path)
+                        stats["uploaded"] += 1
                     except subprocess.CalledProcessError as e:
                         print(f"  [ERROR] Git LFS pull failed: {e}")
                         continue
@@ -173,28 +182,37 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
                         "size": str(size)
                     }
                     s3.upload_file(full_path, raw_key, metadata=metadata)
+                    stats["uploaded"] += 1
             else:
                 print(f"  [OK] Raw PDF exists.")
+            
+            # 4. Queue the job
+            s3.create_todo_marker(priority, file_hash)
+            print(f"  [QUEUED] Added with priority {priority}")
+            stats["queued"] += 1
+    
+    # Print summary
+    print("\n--- Ingest Summary ---")
+    print(f"  Found:              {stats['found']} PDFs")
+    print(f"  Uploaded:           {stats['uploaded']}")
+    print(f"  Queued:             {stats['queued']}")
+    print(f"  Skipped (done):     {stats['skipped_done']}")
+    print(f"  Skipped (queued):   {stats['skipped_queued']}")
+    print(f"  Skipped (processing): {stats['skipped_processing']}")
+    print(f"  Skipped (failed):   {stats['skipped_failed']}")
+    print(f"  Skipped (dead):     {stats['skipped_dead']}")
 
-            # 4. Queue
-            todo_key = f"{S3_PREFIX_TODO}/{priority}/{file_hash}"
-            if not s3.exists(todo_key):
-                # Check other priorities? Ideally yes, but naive check is okay for now.
-                # The CLI "status" command can check widely.
-                s3.create_marker(todo_key)
-                print(f"  [QUEUED] Added to {todo_key}")
-            else:
-                print(f"  [QUEUED] Already in queue.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("path")
-    parser.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES)
-    parser.add_argument("--dry-run", action="store_true")
+    parser = argparse.ArgumentParser(description="BlobForge Ingestor")
+    parser.add_argument("path", help="Path to directory containing PDFs")
+    parser.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
+                        help="Queue priority for new jobs")
+    parser.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
     args = parser.parse_args()
     
     if not os.path.isdir(args.path):
         print(f"Error: {args.path} is not a directory")
         sys.exit(1)
-        
+    
     ingest(args.path, priority=args.priority, dry_run=args.dry_run)

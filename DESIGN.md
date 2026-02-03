@@ -1,7 +1,16 @@
 # PDF Conversion Service - Design Document
 
 ## 1. Overview
+
 A distributed, infrastructure-agnostic system to convert RPG rulebooks (PDF) into Markdown/Assets. The system prioritizes decoupling ingestion from processing and uses an S3-compatible object store as the single source of truth for both data and coordination (state), allowing for distributed workers without a dedicated database server.
+
+### 1.1. S3 Provider Compatibility
+
+The system requires S3-compatible storage with support for conditional writes (`If-None-Match: *`). Tested providers:
+- **AWS S3:** ✅ Full support
+- **Cloudflare R2:** ✅ Full support
+- **Ceph Object Gateway:** ✅ Full support
+- **MinIO:** ✅ Full support
 
 ## 2. Core Concepts
 
@@ -11,9 +20,19 @@ A distributed, infrastructure-agnostic system to convert RPG rulebooks (PDF) int
 - **Output Storage:** `store/out/$HASH.zip`
 
 ### 2.2. Architecture Components
-1.  **Ingestor:** Scans sources (Git LFS, local folders), uploads unique PDFs to Raw Storage, and queues them for processing.
-2.  **Worker:** Stateless distributed agents that consume the queue, process PDFs, and upload results.
-3.  **The "Bucket DB":** The S3 bucket itself acts as the database and queue using key prefixes.
+1. **Ingestor:** Scans sources (Git LFS, local folders), uploads unique PDFs to Raw Storage, and queues them for processing. State-aware to avoid duplicate queueing.
+2. **Worker:** Stateless distributed agents that consume the queue, process PDFs, and upload results. Features heartbeat mechanism and retry tracking.
+3. **Janitor:** Recovers stale jobs and manages the retry lifecycle.
+4. **CLI:** Command-line interface for management operations.
+5. **The "Bucket DB":** The S3 bucket itself acts as the database and queue using key prefixes.
+
+### 2.3. Consolidated S3 Client
+All components use a single `S3Client` class (`s3_client.py`) for consistency and maintainability. This module provides:
+- Basic CRUD operations
+- Atomic locking with `If-None-Match`
+- Heartbeat updates
+- Retry tracking
+- State queries
 
 ## 3. The "Bucket DB" Structure (S3 Layout)
 
@@ -23,7 +42,7 @@ We use the S3 bucket to manage state.
 s3://my-bucket/
 ├── store/
 │   ├── raw/
-│   │   └── <HASH>.pdf        # Immutable source files
+│   │   └── <HASH>.pdf        # Immutable source files (with metadata)
 │   └── out/
 │       └── <HASH>.zip        # Converted results
 ├── queue/
@@ -31,118 +50,196 @@ s3://my-bucket/
 │   │   ├── 1_highest/        # Priority Tiers
 │   │   ├── 2_higher/
 │   │   └── 3_normal/
-│   │       └── <HASH>        # Empty marker file
+│   │       └── <HASH>        # Content: {"retries": N, "queued_at": ...}
 │   ├── processing/
-│   │   └── <HASH>            # Content: {"worker_id": "...", "started": "...", "priority": "..."}
-│   └── failed/
-│       └── <HASH>            # Content: Error logs
+│   │   └── <HASH>            # Content: {"worker": "...", "started": ..., "last_heartbeat": ..., "priority": "...", "retries": N}
+│   ├── failed/
+│   │   └── <HASH>            # Content: {"error": "...", "worker": "...", "retries": N, ...}
+│   └── dead/
+│       └── <HASH>            # Content: {"error": "...", "total_retries": N, "reason": "exceeded_max_retries"}
 └── registry/
     └── manifest.json         # (Optional) Global index of filename -> HASH mappings
 ```
 
+### 3.1. Queue State Transitions
+
+```
+                    ┌─────────────────────────────────────┐
+                    │                                     │
+                    ▼                                     │
+[Ingest] ──► todo ──► processing ──► done                │
+              ▲            │                             │
+              │            ▼                             │
+              │         failed ◄── (error during processing)
+              │            │                             │
+              │            ▼ (janitor: retry < MAX)      │
+              └────────────┘                             │
+                           │                             │
+                           ▼ (janitor: retry >= MAX)     │
+                         dead ──────────────────────────►┘
+                                    (manual retry)
+```
+
 ## 4. Workflows
 
-### 4.1. Ingestor (Git LFS Optimized)
-The ingestor is responsible for ensuring the PDF exists in `store/raw/` and is queued if not processed.
+### 4.1. Ingestor (State-Aware)
 
-1.  **Scan:** Clone/Pull repo with `GIT_LFS_SKIP_SMUDGE=1`.
-2.  **Identify:**
-    - Parse LFS pointer files to get the SHA256 hash without downloading.
-    - Determine `filesize`.
-3.  **Check State:**
-    - Check if `store/out/<HASH>.zip` exists. If yes -> **Skip**.
-    - Check if `store/raw/<HASH>.pdf` exists.
-4.  **Upload (if missing):**
-    - If raw PDF is missing in S3:
-        - `git lfs pull --include <filepath>` (Download single file locally).
-        - Upload to `store/raw/<HASH>.pdf`.
-        - **Metadata Attachment:** Attach `x-amz-meta-original-name`, `x-amz-meta-tags`, `x-amz-meta-size` to the S3 object.
-        - Delete local file.
-5.  **Queue:**
-    - Check if `queue/todo/.../<HASH>` or `queue/processing/<HASH>` exists.
-    - If neither exists, create `queue/todo/3_normal/<HASH>`.
+The ingestor is responsible for ensuring the PDF exists in `store/raw/` and is queued if not already in the pipeline.
 
-### 4.2. Worker (Distributed Loop)
+1. **Scan:** Walk directory tree (or clone repo with `GIT_LFS_SKIP_SMUDGE=1`).
+2. **Identify:**
+   - Parse LFS pointer files to get the SHA256 hash without downloading.
+   - For non-LFS files, compute SHA256 hash.
+3. **Check ALL States:** (prevents duplicate work and race conditions)
+   - Check if `store/out/<HASH>.zip` exists → **Skip** (done)
+   - Check if `queue/processing/<HASH>` exists → **Skip** (in progress)
+   - Check if `queue/dead/<HASH>` exists → **Skip** (permanently failed)
+   - Check if `queue/failed/<HASH>` exists → **Skip** (pending retry)
+   - Check if `queue/todo/.../<HASH>` exists → **Skip** (already queued)
+4. **Upload (if missing):**
+   - If raw PDF is missing in S3:
+     - Materialize file (git lfs pull or copy)
+     - Upload to `store/raw/<HASH>.pdf`
+     - **Metadata:** Attach `x-amz-meta-original-name`, `x-amz-meta-tags`, `x-amz-meta-size`
+5. **Queue:**
+   - Create `queue/todo/<priority>/<HASH>`
+
+### 4.2. Worker (Distributed Loop with Heartbeat)
+
 Workers run anywhere. They only need S3 credentials.
 
-1.  **Startup (Self-Cleanup):**
-    - Scan `queue/processing/` for locks belonging to current `WORKER_ID`.
-    - If found, assume crash from previous run. Move job back to `queue/todo/<priority>/<HASH>` and release lock.
+#### 4.2.1. Startup (Self-Cleanup)
+- Generate or use persistent `WORKER_ID` (based on machine fingerprint)
+- Scan `queue/processing/` for locks belonging to current `WORKER_ID`
+- If found, assume crash from previous run → restore to todo queue
 
-2.  **Acquire Job (Locking):**
-    - Iterate through priorities: `1_highest` -> `2_higher` -> `3_normal`.
-    - In each tier, list objects (sharded by random prefix).
-    - Pick one.
-    - **Atomic Lock:** Attempt to write `queue/processing/<HASH>` with `If-None-Match: *`.
-        - *Content:* `{"worker_id": "...", "started_at": "...", "priority": "Tier"}`
-    - If Write Fails (412):
-        - Skip and Retry.
-    - If Write Success:
-        - Delete `queue/todo/<Tier>/<HASH>`.
-        - **Lock Acquired.**
+#### 4.2.2. Acquire Job (Atomic Locking with Improved Sharding)
+- Iterate through priorities: `1_highest` → `2_higher` → `3_normal`
+- **Sharding:** Use 2-character hex prefix (256 shards) for better distribution
+  - Random prefix like `"ab"`, `"7f"`, etc.
+  - Reduces lock contention compared to single-character sharding
+- **Atomic Lock:** Write `queue/processing/<HASH>` with `If-None-Match: *`
+  - Content: `{"worker": "...", "started": ..., "last_heartbeat": ..., "priority": "...", "retries": N}`
+- If write fails (412 Precondition Failed) → skip, try next
+- **IMPORTANT:** Do NOT delete todo marker on lock acquisition (prevents race condition)
 
-3.  **Process:**
-    - Download `store/raw/<HASH>.pdf` to temp dir.
-    - **Fetch Metadata:** Read S3 Object Metadata (Original Name, Tags) from `store/raw/<HASH>.pdf`.
-    - Run conversion (Markdown + Asset extraction).
-    - Create `info.json` (including fetched metadata).
-    - Zip result to `<HASH>.zip`.
-    - Run conversion (Markdown + Asset extraction).
-    - Create `info.json`.
-    - Zip result to `<HASH>.zip`.
-3.  **Finalize:**
-    - Upload `<HASH>.zip` to `store/out/`.
-    - Delete `queue/processing/<HASH>`.
-    - (Optional) Delete `store/raw/<HASH>.pdf` if "cleanup mode" is enabled.
-4.  **Failure Handling:**
-    - If crash/error: Move `queue/processing/<HASH>` to `queue/failed/<HASH>` with error log.
+#### 4.2.3. Heartbeat
+- Background thread updates `last_heartbeat` every 60 seconds
+- Allows faster stale detection (15 minutes vs 2 hours)
+- Optionally includes progress information: `{"stage": "converting"}`
 
-## 5. Crash Recovery (Janitor)
-Since workers can crash holding a lock, a "Janitor" process (or mode) is required.
+#### 4.2.4. Process
+- Download `store/raw/<HASH>.pdf` to temp directory
+- Fetch S3 object metadata (original name, tags)
+- Run conversion (marker/pymupdf4llm)
+- Create `info.json` with enriched metadata
+- Zip results
 
-- **Monitor:** Scan `queue/processing/`.
-- **Rule:** Read the JSON content of the lock file.
-    - If `current_time - started_at > 2 hours`:
-        - **Recover:** Read `"priority"` from JSON (default to `2_normal` if missing).
-        - Re-create marker at `queue/todo/<priority>/<HASH>`.
-        - Delete `queue/processing/<HASH>`.
-        - Log warning: "Recovered stale job <HASH>".
-    - Run conversion (Markdown + Asset extraction).
-    - Create `info.json`.
-    - Zip result to `<HASH>.zip`.
-3.  **Finalize:**
-    - Upload `<HASH>.zip` to `store/out/`.
-    - Delete `queue/processing/<HASH>`.
-    - (Optional) Delete `store/raw/<HASH>.pdf` if "cleanup mode" is enabled (save storage costs).
-4.  **Failure Handling:**
-    - If crash/error: Move `queue/processing/<HASH>` to `queue/failed/<HASH>` with error log.
+#### 4.2.5. Finalize (Atomic Completion)
+- Upload `<HASH>.zip` to `store/out/`
+- **Delete todo marker** (only NOW, after successful completion)
+- Delete processing lock
+- Clean up any previous failed marker
 
-## 6. Implementation Plan
+#### 4.2.6. Failure Handling
+- If retries < MAX_RETRIES: Move to `queue/failed/<HASH>` with error details
+- If retries >= MAX_RETRIES: Move to `queue/dead/<HASH>`
+- Clear heartbeat and release lock
 
-1.  **Step 1: The Scanner (Ingestor)**
+### 4.3. Janitor (Crash Recovery + Retry Management)
 
-    - Python script using `git` CLI.
+The janitor handles two responsibilities:
 
-    - Parses LFS pointers.
+#### 4.3.1. Stale Job Recovery
+- Scan `queue/processing/`
+- Check `last_heartbeat` timestamp (not S3 LastModified)
+- If `now - last_heartbeat > STALE_TIMEOUT` (default: 15 minutes):
+  - Increment retry count
+  - If retry < MAX_RETRIES: Restore to todo queue
+  - If retry >= MAX_RETRIES: Move to dead-letter queue
 
-    - S3 upload logic.
+#### 4.3.2. Failed Job Retry
+- Scan `queue/failed/`
+- Increment retry count
+- If retry < MAX_RETRIES: Move back to todo queue
+- If retry >= MAX_RETRIES: Move to dead-letter queue
 
-2.  **Step 2: The Worker**
+### 4.4. Dead-Letter Queue
 
-    - S3 locking logic wrapper.
+Jobs that exceed `MAX_RETRIES` (default: 3) are moved to `queue/dead/`. These jobs:
+- Will not be automatically retried
+- Can be manually retried via CLI: `blobforge retry <hash> --reset-retries`
+- Preserve error history for debugging
 
-    - Stub conversion function.
+## 5. Configuration
 
-3.  **Step 3: Integration**
+Environment variables:
 
-    - Run Ingestor on repo.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `S3_BUCKET` | `my-pdf-bucket` | S3 bucket name |
+| `S3_PREFIX` | `""` | Optional prefix for namespacing |
+| `WORKER_ID` | (auto-generated) | Persistent worker identifier |
+| `MAX_RETRIES` | `3` | Max failures before dead-letter |
+| `HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats |
+| `STALE_TIMEOUT_MINUTES` | `15` | Minutes until job considered stale |
 
-    - Run multiple Workers.
+## 6. CLI Commands
 
+```bash
+# Ingest PDFs from a directory
+blobforge ingest /path/to/pdfs --priority 1_highest
 
+# Check status of a job
+blobforge status <hash>
 
-## 7. Technology Choice
+# List queue statistics
+blobforge list --verbose
 
-- **Language:** Python (excellent S3 libraries `boto3`, good PDF tools).
+# Change job priority
+blobforge reprioritize <hash> 1_highest
 
-- **PDF Tools:** `pymupdf4llm` (great for MD extraction) or `marker`.
+# Retry a failed/dead job
+blobforge retry <hash> --priority 2_higher --reset-retries
+
+# Run janitor
+blobforge janitor --dry-run
+
+# Show dashboard
+blobforge dashboard --verbose
+```
+
+## 7. Implementation
+
+### 7.1. Module Structure
+
+```
+├── config.py        # Configuration and constants
+├── s3_client.py     # Consolidated S3 operations
+├── ingestor.py      # PDF discovery and queueing
+├── worker.py        # Job processing with heartbeat
+├── janitor.py       # Stale recovery and retry management
+├── status.py        # Status display
+└── cli.py           # Command-line interface
+```
+
+### 7.2. Technology Stack
+
+- **Language:** Python 3.8+
+- **S3 Library:** boto3
+- **PDF Conversion:** marker (or pymupdf4llm)
+- **Worker Identity:** Machine fingerprint (hostname + /etc/machine-id)
+
+## 8. Scaling Considerations
+
+The system is designed for moderate scale (~50,000 files, ~20 workers):
+
+- **Sharding:** 256 shards (2-char hex prefix) prevents hot spots
+- **Heartbeat:** 15-minute timeout balances responsiveness vs overhead
+- **Listing Cost:** With 50K files and 20 workers polling every 10s, expect ~120 LIST requests/minute
+- **Single Ingestor:** Design assumes single writer for ingestion (no manifest conflicts)
+
+For larger scale, consider:
+- Adding SQS/SNS as optional acceleration layer
+- Using SQLite + Litestream for manifest storage
+- Implementing worker coordination for shard assignment

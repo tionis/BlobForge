@@ -1,69 +1,57 @@
+"""
+BlobForge CLI - Command-line interface for managing PDF conversion jobs.
+
+Commands:
+- ingest: Scan directory and queue PDFs for processing
+- status: Check status of a specific job by hash
+- list: List queue statistics
+- reprioritize: Change priority of a queued job
+- retry: Retry a failed or dead-letter job
+- janitor: Run janitor to recover stale jobs
+"""
 import os
-import argparse
 import sys
 import json
-from config import *
+import argparse
+
+from config import (
+    S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
+    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
+)
+from s3_client import S3Client
 import ingestor
+import janitor as janitor_module
+import status as status_module
 
-# Re-use S3 Client logic (simplified)
-class S3Client:
-    def __init__(self):
-        try:
-            import boto3
-            self.s3 = boto3.client('s3')
-        except ImportError:
-            print("Error: boto3 is required for CLI.")
-            sys.exit(1)
-
-    def list_keys(self, prefix):
-        paginator = self.s3.get_paginator('list_objects_v2')
-        keys = []
-        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
-            if 'Contents' in page:
-                for obj in page['Contents']:
-                    keys.append(obj['Key'])
-        return keys
-
-    def exists(self, key):
-        try:
-            self.s3.head_object(Bucket=S3_BUCKET, Key=key)
-            return True
-        except: return False
-
-    def copy(self, src, dest):
-        self.s3.copy_object(Bucket=S3_BUCKET, CopySource={'Bucket': S3_BUCKET, 'Key': src}, Key=dest)
-
-    def delete(self, key):
-        self.s3.delete_object(Bucket=S3_BUCKET, Key=key)
-
-    def read_json(self, key):
-        try:
-            resp = self.s3.get_object(Bucket=S3_BUCKET, Key=key)
-            return json.loads(resp['Body'].read().decode('utf-8'))
-        except: return None
 
 def cmd_ingest(args):
+    """Ingest PDFs from a directory."""
     print(f"Ingesting {args.path} with priority {args.priority}...")
-    ingestor.ingest(args.path, priority=args.priority)
+    ingestor.ingest(args.path, priority=args.priority, dry_run=args.dry_run)
+
 
 def cmd_reprioritize(args):
+    """Change the priority of a queued job."""
     s3 = S3Client()
     job_hash = args.hash
     new_prio = args.priority
     
     # 1. Check if Processing
-    proc_key = f"{S3_PREFIX_PROCESSING}/{job_hash}"
-    if s3.exists(proc_key):
+    if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
         print(f"Error: Job {job_hash} is currently being processed. Cannot reprioritize.")
-        return
-
+        return 1
+    
     # 2. Check if Done
-    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
-    if s3.exists(done_key):
+    if s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
         print(f"Error: Job {job_hash} is already finished.")
-        return
-
-    # 3. Find current priority
+        return 1
+    
+    # 3. Check if Dead
+    if s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
+        print(f"Error: Job {job_hash} is in dead-letter queue. Use 'retry' command first.")
+        return 1
+    
+    # 4. Find current priority
     current_prio = None
     current_key = None
     
@@ -75,97 +63,300 @@ def cmd_reprioritize(args):
             break
     
     if not current_prio:
+        # Check if in failed queue
+        if s3.exists(f"{S3_PREFIX_FAILED}/{job_hash}"):
+            print(f"Error: Job {job_hash} is in failed queue. It will be retried by janitor.")
+            return 1
         print(f"Error: Job {job_hash} not found in any queue.")
-        return
-
+        return 1
+    
     if current_prio == new_prio:
         print(f"Job is already in {new_prio}.")
-        return
-
-    # 4. Move
+        return 0
+    
+    # 5. Move to new priority (preserve retry count if present)
     print(f"Moving {job_hash} from {current_prio} to {new_prio}...")
+    
+    # Read existing marker content
+    existing_content = s3.get_object(current_key)
+    
     new_key = f"{S3_PREFIX_TODO}/{new_prio}/{job_hash}"
-    s3.copy(current_key, new_key)
-    s3.delete(current_key)
+    s3.copy_object(current_key, new_key)
+    s3.delete_object(current_key)
+    
     print("Done.")
+    return 0
+
 
 def cmd_status(args):
+    """Check the status of a specific job."""
     s3 = S3Client()
     h = args.hash
     
+    # Check done
     if s3.exists(f"{S3_PREFIX_DONE}/{h}.zip"):
-        print(f"Status: DONE (s3://{S3_BUCKET}/{S3_PREFIX_DONE}/{h}.zip)")
-        return
-        
+        print(f"Status: DONE")
+        print(f"Output: s3://{S3_BUCKET}/{S3_PREFIX_DONE}/{h}.zip")
+        return 0
+    
+    # Check dead-letter
+    if s3.exists(f"{S3_PREFIX_DEAD}/{h}"):
+        print(f"Status: DEAD (exceeded max retries)")
+        data = s3.get_object_json(f"{S3_PREFIX_DEAD}/{h}")
+        if data:
+            print(f"Error: {data.get('error', 'Unknown')}")
+            print(f"Total retries: {data.get('total_retries', '?')}")
+        print(f"\nUse 'retry {h}' to retry this job.")
+        return 0
+    
+    # Check failed
     if s3.exists(f"{S3_PREFIX_FAILED}/{h}"):
-        print(f"Status: FAILED")
-        err = s3.read_json(f"{S3_PREFIX_FAILED}/{h}")
-        print(f"Reason: {err}")
-        return
-
+        print(f"Status: FAILED (pending retry)")
+        data = s3.get_object_json(f"{S3_PREFIX_FAILED}/{h}")
+        if data:
+            print(f"Error: {data.get('error', 'Unknown')}")
+            print(f"Retries so far: {data.get('retries', 0)}")
+            print(f"Worker: {data.get('worker', '?')}")
+        print(f"\nJanitor will retry this job automatically.")
+        return 0
+    
+    # Check processing
     if s3.exists(f"{S3_PREFIX_PROCESSING}/{h}"):
         print(f"Status: PROCESSING")
-        meta = s3.read_json(f"{S3_PREFIX_PROCESSING}/{h}")
-        print(f"Worker: {meta.get('worker')}")
-        print(f"Started: {meta.get('started')}")
-        return
-
+        data = s3.get_object_json(f"{S3_PREFIX_PROCESSING}/{h}")
+        if data:
+            print(f"Worker: {data.get('worker', '?')}")
+            started = data.get('started')
+            if started:
+                from datetime import datetime
+                started_dt = datetime.fromtimestamp(started / 1000.0)
+                print(f"Started: {started_dt.isoformat()}")
+            progress = data.get('progress')
+            if progress:
+                print(f"Progress: {progress}")
+        return 0
+    
+    # Check todo queues
     for p in PRIORITIES:
-        if s3.exists(f"{S3_PREFIX_TODO}/{p}/{h}"):
-            print(f"Status: QUEUED (Priority: {p})")
-            return
-            
-    print("Status: UNKNOWN (Not found)")
+        key = f"{S3_PREFIX_TODO}/{p}/{h}"
+        if s3.exists(key):
+            print(f"Status: QUEUED")
+            print(f"Priority: {p}")
+            data = s3.get_object_json(key)
+            if data:
+                retries = data.get('retries', 0)
+                if retries > 0:
+                    print(f"Previous retries: {retries}")
+            return 0
+    
+    # Check if raw exists
+    if s3.exists(f"{S3_PREFIX_RAW}/{h}.pdf"):
+        print(f"Status: RAW ONLY (not queued)")
+        print(f"The PDF exists but is not queued for processing.")
+        print(f"Use ingest to add it to the queue.")
+        return 0
+    
+    print("Status: UNKNOWN (not found)")
+    return 1
+
 
 def cmd_list(args):
+    """List queue statistics."""
     s3 = S3Client()
     
-    print("--- Queue Stats ---")
+    print("--- Queue Statistics ---")
+    
+    # Todo queues
+    print("\n[TODO]")
+    total = 0
     for p in PRIORITIES:
         keys = s3.list_keys(f"{S3_PREFIX_TODO}/{p}/")
-        print(f"{p:<12}: {len(keys)} jobs")
-        if args.verbose:
-            for k in keys[:5]: print(f"  - {k.split('/')[-1]}")
-            
+        count = len(keys)
+        total += count
+        print(f"  {p:<12}: {count}")
+        if args.verbose and keys:
+            for k in keys[:5]:
+                print(f"    - {k.split('/')[-1][:16]}...")
+            if len(keys) > 5:
+                print(f"    ... and {len(keys) - 5} more")
+    print(f"  {'TOTAL':<12}: {total}")
+    
+    # Processing
+    print("\n[PROCESSING]")
     proc_keys = s3.list_keys(f"{S3_PREFIX_PROCESSING}/")
-    print(f"Processing  : {len(proc_keys)} jobs")
-    if args.verbose:
-        for k in proc_keys[:5]: 
+    proc_keys = [k for k in proc_keys if not k.endswith("/")]
+    print(f"  Active: {len(proc_keys)}")
+    if args.verbose and proc_keys:
+        for k in proc_keys[:5]:
             h = k.split('/')[-1]
-            print(f"  - {h}")
+            data = s3.get_object_json(k)
+            worker = data.get('worker', '?') if data else '?'
+            print(f"    - {h[:16]}... (worker: {worker})")
+    
+    # Failed
+    print("\n[FAILED]")
+    failed_keys = s3.list_keys(f"{S3_PREFIX_FAILED}/")
+    failed_keys = [k for k in failed_keys if not k.endswith("/")]
+    print(f"  Pending retry: {len(failed_keys)}")
+    
+    # Dead
+    print("\n[DEAD-LETTER]")
+    dead_keys = s3.list_keys(f"{S3_PREFIX_DEAD}/")
+    dead_keys = [k for k in dead_keys if not k.endswith("/")]
+    print(f"  Permanently failed: {len(dead_keys)}")
+    if args.verbose and dead_keys:
+        for k in dead_keys[:5]:
+            h = k.split('/')[-1]
+            print(f"    - {h[:16]}...")
+    
+    # Done
+    print("\n[DONE]")
+    done_count = s3.count_prefix(f"{S3_PREFIX_DONE}/")
+    print(f"  Completed: {done_count}")
+
+
+def cmd_retry(args):
+    """Retry a failed or dead-letter job."""
+    s3 = S3Client()
+    job_hash = args.hash
+    priority = args.priority
+    
+    # Check if already done
+    if s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
+        print(f"Error: Job {job_hash} is already completed.")
+        return 1
+    
+    # Check if already queued
+    for p in PRIORITIES:
+        if s3.exists(f"{S3_PREFIX_TODO}/{p}/{job_hash}"):
+            print(f"Error: Job {job_hash} is already queued (priority: {p}).")
+            return 1
+    
+    # Check if processing
+    if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
+        print(f"Error: Job {job_hash} is currently being processed.")
+        return 1
+    
+    # Check dead-letter queue
+    dead_key = f"{S3_PREFIX_DEAD}/{job_hash}"
+    failed_key = f"{S3_PREFIX_FAILED}/{job_hash}"
+    
+    source = None
+    if s3.exists(dead_key):
+        source = "dead-letter"
+        data = s3.get_object_json(dead_key)
+    elif s3.exists(failed_key):
+        source = "failed"
+        data = s3.get_object_json(failed_key)
+    else:
+        # Check if raw exists
+        if s3.exists(f"{S3_PREFIX_RAW}/{job_hash}.pdf"):
+            print(f"Job {job_hash} is not in failed or dead-letter queue.")
+            print(f"Creating new todo marker...")
+            source = "raw"
+            data = None
+        else:
+            print(f"Error: Job {job_hash} not found anywhere.")
+            return 1
+    
+    # Reset retry count if requested
+    retry_count = 0
+    if not args.reset_retries and data:
+        retry_count = data.get('retries', data.get('total_retries', 0))
+    
+    # Create new todo marker
+    marker_content = json.dumps({
+        "retries": retry_count,
+        "queued_at": int(__import__('time').time() * 1000),
+        "recovered_from": f"manual_retry_{source}",
+        "previous_error": data.get('error', 'Unknown') if data else None
+    })
+    
+    print(f"Retrying job {job_hash} from {source}...")
+    print(f"  Priority: {priority}")
+    print(f"  Retry count: {retry_count} {'(reset)' if args.reset_retries else ''}")
+    
+    s3.put_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}", marker_content)
+    
+    # Clean up source
+    if source == "dead-letter":
+        s3.delete_object(dead_key)
+    elif source == "failed":
+        s3.delete_object(failed_key)
+    
+    print("Done. Job queued for processing.")
+    return 0
+
+
+def cmd_janitor(args):
+    """Run the janitor to recover stale jobs."""
+    janitor_module.run_janitor(dry_run=args.dry_run, verbose=args.verbose)
+
+
+def cmd_dashboard(args):
+    """Show system status dashboard."""
+    status_module.show_status(verbose=args.verbose)
+
 
 def main():
-    parser = argparse.ArgumentParser(prog="pdf-cli")
+    parser = argparse.ArgumentParser(
+        prog="blobforge",
+        description="BlobForge - Distributed PDF Conversion System"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
-
+    
     # Ingest
-    p_ingest = subparsers.add_parser("ingest", help="Ingest PDF files")
-    p_ingest.add_argument("path", help="Path to files or repo")
-    p_ingest.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES)
+    p_ingest = subparsers.add_parser("ingest", help="Ingest PDF files from a directory")
+    p_ingest.add_argument("path", help="Path to directory containing PDFs")
+    p_ingest.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
+                          help="Queue priority for new jobs")
+    p_ingest.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_ingest.set_defaults(func=cmd_ingest)
-
-    # Reprioritize
-    p_prio = subparsers.add_parser("reprioritize", help="Change job priority")
-    p_prio.add_argument("hash", help="SHA256 Hash of the file")
-    p_prio.add_argument("priority", choices=PRIORITIES)
-    p_prio.set_defaults(func=cmd_reprioritize)
-
-    # Status
-    p_stat = subparsers.add_parser("status", help="Check status of a specific hash")
-    p_stat.add_argument("hash", help="SHA256 Hash")
-    p_stat.set_defaults(func=cmd_status)
-
+    
+    # Status (single job)
+    p_status = subparsers.add_parser("status", help="Check status of a specific job")
+    p_status.add_argument("hash", help="SHA256 hash of the PDF")
+    p_status.set_defaults(func=cmd_status)
+    
     # List
-    p_list = subparsers.add_parser("list", help="List queues")
-    p_list.add_argument("--verbose", "-v", action="store_true")
+    p_list = subparsers.add_parser("list", help="List queue statistics")
+    p_list.add_argument("--verbose", "-v", action="store_true", help="Show job details")
     p_list.set_defaults(func=cmd_list)
-
+    
+    # Reprioritize
+    p_prio = subparsers.add_parser("reprioritize", help="Change priority of a queued job")
+    p_prio.add_argument("hash", help="SHA256 hash of the PDF")
+    p_prio.add_argument("priority", choices=PRIORITIES, help="New priority")
+    p_prio.set_defaults(func=cmd_reprioritize)
+    
+    # Retry
+    p_retry = subparsers.add_parser("retry", help="Retry a failed or dead-letter job")
+    p_retry.add_argument("hash", help="SHA256 hash of the PDF")
+    p_retry.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
+                         help="Queue priority for retried job")
+    p_retry.add_argument("--reset-retries", action="store_true",
+                         help="Reset retry counter to 0")
+    p_retry.set_defaults(func=cmd_retry)
+    
+    # Janitor
+    p_janitor = subparsers.add_parser("janitor", help="Run janitor to recover stale jobs")
+    p_janitor.add_argument("--dry-run", action="store_true", help="Don't make changes")
+    p_janitor.add_argument("--verbose", "-v", action="store_true", help="Show all jobs")
+    p_janitor.set_defaults(func=cmd_janitor)
+    
+    # Dashboard
+    p_dash = subparsers.add_parser("dashboard", help="Show system status dashboard")
+    p_dash.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
+    p_dash.set_defaults(func=cmd_dashboard)
+    
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(1)
-
+    
     args = parser.parse_args()
-    args.func(args)
+    result = args.func(args)
+    sys.exit(result if result else 0)
+
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,16 @@
+"""
+BlobForge Worker - Distributed PDF processing agent.
+
+Features:
+- Atomic job locking with If-None-Match
+- Periodic heartbeat updates
+- Retry tracking and dead-letter queue support
+- Improved sharding (2-char prefix = 256 shards)
+- Race-condition-free job acquisition (todo marker kept until completion)
+"""
 import os
 import sys
 import time
-import uuid
 import json
 import shutil
 import random
@@ -9,160 +18,195 @@ import argparse
 import subprocess
 import zipfile
 import tempfile
+import threading
 from datetime import datetime
-from config import *
+from typing import Optional
 
-class S3Client:
-    def __init__(self, dry_run=False):
-        self.dry_run = dry_run
-        try:
-            import boto3
-            import botocore
-            self.s3 = boto3.client('s3')
-            self.ClientError = botocore.exceptions.ClientError
-            self.mock = False
-        except ImportError:
-            print("Warning: boto3 not found. Running in MOCK mode.")
-            self.mock = True
-            self.ClientError = Exception
+from config import (
+    S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
+    S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY, WORKER_ID,
+    MAX_RETRIES, HEARTBEAT_INTERVAL_SECONDS
+)
+from s3_client import S3Client
 
-    def list_todo(self, priority, prefix_char=""):
-        full_prefix = f"{S3_PREFIX_TODO}/{priority}/{prefix_char}"
-        if self.mock:
-            mock_hash = f"{prefix_char}mock_hash_123" if prefix_char else "mock_hash_123"
-            return [mock_hash]
-        try:
-            response = self.s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=full_prefix, MaxKeys=10)
-            if 'Contents' not in response: return []
-            return [obj['Key'].split('/')[-1] for obj in response['Contents']]
-        except Exception as e:
-            print(f"Error listing todo: {e}")
-            return []
 
-    def download_file(self, key, local_path):
-        if self.mock:
-            with open(local_path, "wb") as f: f.write(b"%PDF-1.4 mock content")
-            return
-        self.s3.download_file(S3_BUCKET, key, local_path)
-
-    def upload_file(self, local_path, key):
-        if self.mock or self.dry_run:
-            print(f"[MOCK/DRY] Uploading {local_path} -> {key}")
-            return
-        self.s3.upload_file(local_path, S3_BUCKET, key)
-
-    def delete_file(self, key):
-        if self.mock or self.dry_run:
-            print(f"[MOCK/DRY] Deleting {key}")
-            return
-        self.s3.delete_object(Bucket=S3_BUCKET, Key=key)
-
-    def put_object(self, key, body, **kwargs):
-        if self.mock or self.dry_run:
-            print(f"[MOCK/DRY] Putting {key}")
-            if kwargs.get('IfNoneMatch') == '*' and random.random() < 0.1:
-                raise Exception("Mock Precondition Failed")
-            return
-        self.s3.put_object(Bucket=S3_BUCKET, Key=key, Body=body, **kwargs)
-
-    def get_object_metadata(self, key):
-        if self.mock:
-            return {"original-name": "mock.pdf", "tags": '["mock"]', "size": "100"}
-        try:
-            response = self.s3.head_object(Bucket=S3_BUCKET, Key=key)
-            return response.get('Metadata', {})
-        except Exception as e:
-            print(f"Error getting metadata for {key}: {e}")
-            return {}
-
-    def list_processing(self):
-        if self.mock: return []
-        # Basic listing for cleanup
-        paginator = self.s3.get_paginator('list_objects_v2')
-        jobs = []
-        try:
-            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=S3_PREFIX_PROCESSING):
-                if 'Contents' in page: jobs.extend(page['Contents'])
-        except: pass
-        return jobs
-
-    def read_object(self, key):
-        if self.mock: return None
-        try:
-            response = self.s3.get_object(Bucket=S3_BUCKET, Key=key)
-            return response['Body'].read().decode('utf-8')
-        except: return None
+class HeartbeatThread(threading.Thread):
+    """Background thread that periodically updates the heartbeat for active jobs."""
+    
+    def __init__(self, s3_client: S3Client, worker_id: str):
+        super().__init__(daemon=True)
+        self.s3 = s3_client
+        self.worker_id = worker_id
+        self.current_job: Optional[str] = None
+        self.progress: Optional[dict] = None
+        self.running = True
+        self._lock = threading.Lock()
+    
+    def set_job(self, job_hash: Optional[str], progress: Optional[dict] = None):
+        """Set the current job being processed."""
+        with self._lock:
+            self.current_job = job_hash
+            self.progress = progress
+    
+    def update_progress(self, progress: dict):
+        """Update progress information for current job."""
+        with self._lock:
+            self.progress = progress
+    
+    def stop(self):
+        """Stop the heartbeat thread."""
+        self.running = False
+    
+    def run(self):
+        """Main heartbeat loop."""
+        while self.running:
+            time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            
+            with self._lock:
+                job = self.current_job
+                progress = self.progress
+            
+            if job:
+                success = self.s3.update_heartbeat(job, self.worker_id, progress)
+                if not success:
+                    print(f"Warning: Failed to update heartbeat for {job}")
 
 
 class Worker:
-    def __init__(self, s3_client):
+    """
+    Distributed worker that processes PDF conversion jobs.
+    
+    Key improvements over basic design:
+    1. Keeps todo marker until job completes (fixes race condition)
+    2. Uses 2-character prefix sharding (256 shards vs 16)
+    3. Implements heartbeat mechanism for faster stale detection
+    4. Tracks retries and respects MAX_RETRIES limit
+    """
+    
+    def __init__(self, s3_client: S3Client):
         self.s3 = s3_client
-        self.id = WORKER_ID if WORKER_ID else str(uuid.uuid4())[:8]
-        if not WORKER_ID:
-            print(f"Warning: WORKER_ID not set. Using random ID {self.id}. Cleanup across restarts won't work.")
+        self.id = WORKER_ID
+        self.current_job: Optional[str] = None
+        self.current_priority: Optional[str] = None
         
+        # Start heartbeat thread
+        self.heartbeat = HeartbeatThread(s3_client, self.id)
+        self.heartbeat.start()
+        
+        print(f"Worker {self.id} initialized.")
         self.cleanup_previous_session()
-
+    
     def cleanup_previous_session(self):
+        """
+        Check for stale locks from previous runs of this worker.
+        This handles the case where this worker crashed while holding a lock.
+        """
         print(f"Worker {self.id}: Checking for stale locks from previous session...")
         jobs = self.s3.list_processing()
         count = 0
+        
         for job in jobs:
             key = job['Key']
-            if key.endswith("/"): continue
+            if key.endswith("/"):
+                continue
             
-            content = self.s3.read_object(key)
-            if not content: continue
+            data = self.s3.get_object_json(key)
+            if not data:
+                continue
             
-            try:
-                data = json.loads(content)
-                if data.get('worker') == self.id:
-                    # Found one!
-                    job_hash = key.split("/")[-1]
-                    prio = data.get('priority', DEFAULT_PRIORITY)
-                    print(f"Recovering crashed job {job_hash} (Priority: {prio})")
-                    
-                    # Restore to Todo
-                    todo_key = f"{S3_PREFIX_TODO}/{prio}/{job_hash}"
-                    self.s3.put_object(todo_key, "", Body="") # Create marker
-                    self.s3.delete_file(key) # Release lock
-                    count += 1
-            except: continue
+            if data.get('worker') == self.id:
+                job_hash = key.split("/")[-1]
+                priority = data.get('priority', DEFAULT_PRIORITY)
+                print(f"Recovering crashed job {job_hash} (Priority: {priority})")
+                
+                # Restore to todo queue (the todo marker might still exist due to our fix)
+                self.s3.move_to_todo(job_hash, priority, increment_retry=False)
+                self.s3.release_lock(job_hash)
+                count += 1
         
         if count > 0:
             print(f"Recovered {count} jobs.")
         else:
             print("No stale locks found.")
-
-    def acquire_job(self):
-        shard_char = random.choice("0123456789abcdef")
+    
+    def acquire_job(self) -> Optional[str]:
+        """
+        Attempt to acquire a job from the queue.
+        
+        Uses 2-character prefix sharding (256 shards) for better distribution
+        and reduced contention compared to single-character sharding.
+        
+        Returns the job hash if acquired, None otherwise.
+        """
+        # Generate random 2-char hex prefix for sharding
+        hex_chars = "0123456789abcdef"
+        shard_prefix = random.choice(hex_chars) + random.choice(hex_chars)
         
         for priority in PRIORITIES:
-            todos = self.s3.list_todo(priority, prefix_char=shard_char)
-            if not todos: continue
-
+            todos = self.s3.list_todo(priority, prefix_filter=shard_prefix)
+            if not todos:
+                continue
+            
             for job_hash in todos:
-                print(f"Attempting to lock {job_hash} ({priority})...")
-                lock_key = f"{S3_PREFIX_PROCESSING}/{job_hash}"
-                timestamp = int(time.time() * 1000)
-                payload = json.dumps({"worker": self.id, "started": timestamp, "priority": priority})
+                # Check if job exceeds retry limit (in dead-letter queue)
+                if self.s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
+                    print(f"Skipping {job_hash}: In dead-letter queue")
+                    continue
                 
-                try:
-                    self.s3.put_object(lock_key, payload, IfNoneMatch='*')
+                print(f"Attempting to lock {job_hash} ({priority})...")
+                
+                # Try to acquire lock atomically
+                if self.s3.acquire_lock(job_hash, self.id, priority):
                     print(f"Lock acquired for {job_hash}")
-                    self.s3.delete_file(f"{S3_PREFIX_TODO}/{priority}/{job_hash}")
+                    
+                    # Get retry count from todo marker if available
+                    todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
+                    todo_data = self.s3.get_object_json(todo_key)
+                    retry_count = 0
+                    if todo_data:
+                        retry_count = todo_data.get('retries', 0)
+                    
+                    # Update lock with retry count
+                    lock_data = self.s3.get_lock_info(job_hash)
+                    if lock_data:
+                        lock_data['retries'] = retry_count
+                        self.s3.put_object(
+                            f"{S3_PREFIX_PROCESSING}/{job_hash}",
+                            json.dumps(lock_data)
+                        )
+                    
+                    # NOTE: We do NOT delete the todo marker here!
+                    # It will be deleted only after successful completion.
+                    # This prevents the race condition where a crash after lock
+                    # acquisition but before todo deletion loses the job.
+                    
+                    self.current_job = job_hash
+                    self.current_priority = priority
+                    self.heartbeat.set_job(job_hash)
+                    
                     return job_hash
-                except self.s3.ClientError as e:
-                    if e.response['Error']['Code'] in ['PreconditionFailed', '412']:
-                        continue
-                    print(f"S3 Error: {e}")
-                except Exception as e:
-                     if "Precondition Failed" in str(e): continue
-                     raise e
+                else:
+                    # Lock already held by another worker
+                    continue
+        
         return None
-
-    def process(self, job_hash):
+    
+    def process(self, job_hash: str):
+        """
+        Process a PDF conversion job.
+        
+        Steps:
+        1. Download PDF and metadata from S3
+        2. Run marker conversion
+        3. Create info.json with enriched metadata
+        4. Zip results and upload
+        5. Clean up (delete todo marker and lock)
+        """
         print(f"Processing Job: {job_hash}")
+        
+        # Get current retry count
+        lock_info = self.s3.get_lock_info(job_hash)
+        retry_count = lock_info.get('retries', 0) if lock_info else 0
         
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = os.path.join(tmp_dir, "source.pdf")
@@ -176,34 +220,44 @@ class Worker:
                 s3_meta = self.s3.get_object_metadata(raw_key)
             except Exception as e:
                 print(f"Download/Meta failed: {e}")
-                self.fail_job(job_hash, "Download failed")
+                self._handle_failure(job_hash, f"Download failed: {e}", retry_count)
                 return
-
+            
             # 2. Convert
             print("Running marker conversion...")
+            self.heartbeat.update_progress({"stage": "converting"})
+            
             try:
                 cmd = ["marker_single", pdf_path, out_dir, "--batch_multiplier", "2", "--max_pages", "10"]
                 if self.s3.mock:
                     print(f"[MOCK] Executing: {' '.join(cmd)}")
-                    with open(os.path.join(out_dir, "index.md"), "w") as f: f.write("# Mock")
+                    with open(os.path.join(out_dir, "index.md"), "w") as f:
+                        f.write("# Mock Conversion\n\nThis is mock content.")
                 else:
-                    subprocess.run(cmd, check=True, capture_output=True)
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+            except subprocess.TimeoutExpired as e:
+                print(f"Marker timed out: {e}")
+                self._handle_failure(job_hash, "Conversion timeout (1 hour)", retry_count)
+                return
             except Exception as e:
                 print(f"Marker failed: {e}")
-                self.fail_job(job_hash, str(e))
+                self._handle_failure(job_hash, str(e), retry_count)
                 return
-
+            
+            self.heartbeat.update_progress({"stage": "packaging"})
+            
             # 3. Create info.json with enriched metadata
             info = {
                 "hash": job_hash,
                 "converted_at": datetime.utcnow().isoformat(),
+                "worker_id": self.id,
                 "original_filename": s3_meta.get("original-name", "unknown.pdf"),
                 "tags": json.loads(s3_meta.get("tags", "[]")),
                 "size_bytes": s3_meta.get("size", "0")
             }
             with open(os.path.join(out_dir, "info.json"), "w") as f:
                 json.dump(info, f, indent=2)
-
+            
             # 4. Zip & Upload
             zip_path = os.path.join(tmp_dir, f"{job_hash}.zip")
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
@@ -211,31 +265,94 @@ class Worker:
                     for file in files:
                         p = os.path.join(root, file)
                         zf.write(p, os.path.relpath(p, out_dir))
-
+            
+            self.heartbeat.update_progress({"stage": "uploading"})
             self.s3.upload_file(zip_path, f"{S3_PREFIX_DONE}/{job_hash}.zip")
-            self.s3.delete_file(f"{S3_PREFIX_PROCESSING}/{job_hash}")
+            
+            # 5. Finalize - NOW we delete the todo marker (atomic completion)
+            self._complete_job(job_hash)
             print(f"Job {job_hash} Complete.")
+    
+    def _complete_job(self, job_hash: str):
+        """
+        Mark job as complete:
+        - Delete todo marker (NOW it's safe to do so)
+        - Delete processing lock
+        - Clean up any failed marker
+        """
+        # Delete todo marker from all priorities (it should only be in one)
+        for priority in PRIORITIES:
+            self.s3.delete_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}")
+        
+        # Release processing lock
+        self.s3.release_lock(job_hash)
+        
+        # Clean up any previous failed marker
+        self.s3.delete_object(f"{S3_PREFIX_FAILED}/{job_hash}")
+        
+        # Clear heartbeat
+        self.heartbeat.set_job(None)
+        self.current_job = None
+        self.current_priority = None
+    
+    def _handle_failure(self, job_hash: str, reason: str, retry_count: int):
+        """
+        Handle a job failure:
+        - If retries < MAX_RETRIES: Mark as failed (janitor will retry)
+        - If retries >= MAX_RETRIES: Move to dead-letter queue
+        """
+        print(f"Job {job_hash} FAILED (retry {retry_count}/{MAX_RETRIES}): {reason}")
+        
+        if retry_count >= MAX_RETRIES:
+            print(f"Job {job_hash} exceeded max retries. Moving to dead-letter queue.")
+            self.s3.mark_dead(job_hash, reason, retry_count)
+            
+            # Also delete the todo marker since job is permanently failed
+            for priority in PRIORITIES:
+                self.s3.delete_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}")
+        else:
+            # Mark as failed - janitor will move back to todo with incremented retry
+            self.s3.mark_failed(job_hash, reason, self.id, retry_count)
+        
+        # Clear heartbeat
+        self.heartbeat.set_job(None)
+        self.current_job = None
+        self.current_priority = None
+    
+    def shutdown(self):
+        """Clean shutdown of worker."""
+        self.heartbeat.stop()
+        print(f"Worker {self.id} shutting down.")
 
-    def fail_job(self, job_hash, reason):
-        print(f"Job {job_hash} FAILED: {reason}")
-        self.s3.put_object(f"{S3_PREFIX_FAILED}/{job_hash}", json.dumps({"error": str(reason)}), Body=json.dumps({"error": str(reason)}))
-        self.s3.delete_file(f"{S3_PREFIX_PROCESSING}/{job_hash}")
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--run-once", action="store_true")
+def main():
+    parser = argparse.ArgumentParser(description="BlobForge PDF Worker")
+    parser.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
+    parser.add_argument("--run-once", action="store_true", help="Process one job and exit")
     args = parser.parse_args()
-
+    
     client = S3Client(dry_run=args.dry_run)
     worker = Worker(client)
     
-    print(f"Worker {worker.id} started.")
-    while True:
-        job = worker.acquire_job()
-        if job:
-            worker.process(job)
-            if args.run_once: break
-        else:
-            if args.run_once: break
-            time.sleep(10)
+    print(f"Worker {worker.id} started. Polling for jobs...")
+    
+    try:
+        while True:
+            job = worker.acquire_job()
+            if job:
+                worker.process(job)
+                if args.run_once:
+                    break
+            else:
+                if args.run_once:
+                    print("No jobs found.")
+                    break
+                time.sleep(10)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+    finally:
+        worker.shutdown()
+
+
+if __name__ == "__main__":
+    main()
