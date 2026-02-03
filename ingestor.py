@@ -88,12 +88,18 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
     - Skips if already queued (any priority)
     - Skips if in failed queue (will be retried by janitor)
     - Skips if in dead-letter queue (permanently failed)
+    
+    Also updates the manifest with file metadata for lookup.
     """
     s3 = S3Client(dry_run=dry_run)
     
     print(f"Scanning {repo_path}...")
     stats = {"found": 0, "skipped_done": 0, "skipped_queued": 0, "skipped_processing": 0,
              "skipped_failed": 0, "skipped_dead": 0, "uploaded": 0, "queued": 0}
+    
+    # Batch manifest entries for efficient updates
+    manifest_batch = []
+    MANIFEST_BATCH_SIZE = 50
     
     for root, _, files in os.walk(repo_path):
         for file in files:
@@ -190,6 +196,31 @@ def ingest(repo_path: str, priority: str = DEFAULT_PRIORITY, dry_run: bool = Fal
             s3.create_todo_marker(priority, file_hash)
             print(f"  [QUEUED] Added with priority {priority}")
             stats["queued"] += 1
+            
+            # 5. Collect manifest entry
+            try:
+                size = os.path.getsize(full_path)
+            except Exception:
+                size = 0
+            
+            manifest_batch.append({
+                'hash': file_hash,
+                'path': rel_path,
+                'size': size,
+                'tags': tags,
+                'source': os.path.basename(repo_path)
+            })
+            
+            # Batch update manifest
+            if len(manifest_batch) >= MANIFEST_BATCH_SIZE:
+                print(f"  [MANIFEST] Updating with {len(manifest_batch)} entries...")
+                s3.update_manifest(manifest_batch)
+                manifest_batch = []
+    
+    # Final manifest update for remaining entries
+    if manifest_batch:
+        print(f"  [MANIFEST] Updating with {len(manifest_batch)} remaining entries...")
+        s3.update_manifest(manifest_batch)
     
     # Print summary
     print("\n--- Ingest Summary ---")

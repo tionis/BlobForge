@@ -47,9 +47,11 @@ s3://my-bucket/
 │       └── <HASH>.zip        # Converted results
 ├── queue/
 │   ├── todo/
-│   │   ├── 1_highest/        # Priority Tiers
-│   │   ├── 2_higher/
-│   │   └── 3_normal/
+│   │   ├── 1_critical/       # Priority Tiers
+│   │   ├── 2_high/
+│   │   ├── 3_normal/
+│   │   ├── 4_low/
+│   │   └── 5_background/
 │   │       └── <HASH>        # Content: {"retries": N, "queued_at": ...}
 │   ├── processing/
 │   │   └── <HASH>            # Content: {"worker": "...", "started": ..., "last_heartbeat": ..., "priority": "...", "retries": N}
@@ -58,7 +60,7 @@ s3://my-bucket/
 │   └── dead/
 │       └── <HASH>            # Content: {"error": "...", "total_retries": N, "reason": "exceeded_max_retries"}
 └── registry/
-    └── manifest.json         # (Optional) Global index of filename -> HASH mappings
+    └── manifest.json         # File metadata index (see 3.2)
 ```
 
 ### 3.1. Queue State Transitions
@@ -79,6 +81,37 @@ s3://my-bucket/
                          dead ──────────────────────────►┘
                                     (manual retry)
 ```
+
+### 3.2. Manifest (File Metadata Index)
+
+The manifest (`registry/manifest.json`) tracks metadata for all ingested files:
+
+```json
+{
+  "version": 1,
+  "updated_at": "2026-02-03T10:30:00Z",
+  "entries": {
+    "a1b2c3d4...": {
+      "paths": ["DnD/Players Handbook.pdf", "backup/PHB.pdf"],
+      "size": 52428800,
+      "tags": ["DnD", "Players Handbook", "5e"],
+      "ingested_at": "2026-02-01T08:00:00Z",
+      "source": "rpg-library"
+    }
+  }
+}
+```
+
+**Key features:**
+- **Multiple paths per hash:** Tracks all locations of duplicate files
+- **Optimistic locking:** Uses `If-Match` (ETag) for safe concurrent updates
+- **Batched writes:** Ingestor batches updates (50 entries) to reduce write frequency
+- **Searchable:** CLI supports search by filename or tag
+
+**Concurrency model:**
+- Only the ingestor writes to the manifest
+- Workers read-only (for metadata enrichment)
+- On conflict (412 Precondition Failed), retry with exponential backoff
 
 ## 4. Workflows
 
@@ -114,7 +147,7 @@ Workers run anywhere. They only need S3 credentials.
 - If found, assume crash from previous run → restore to todo queue
 
 #### 4.2.2. Acquire Job (Atomic Locking with Improved Sharding)
-- Iterate through priorities: `1_highest` → `2_higher` → `3_normal`
+- Iterate through priorities: `1_critical` → `2_high` → `3_normal` → `4_low` → `5_background`
 - **Sharding:** Use 2-character hex prefix (256 shards) for better distribution
   - Random prefix like `"ab"`, `"7f"`, etc.
   - Reduces lock contention compared to single-character sharding
@@ -188,7 +221,7 @@ Environment variables:
 
 ```bash
 # Ingest PDFs from a directory
-blobforge ingest /path/to/pdfs --priority 1_highest
+blobforge ingest /path/to/pdfs --priority 1_critical
 
 # Check status of a job
 blobforge status <hash>
@@ -197,16 +230,26 @@ blobforge status <hash>
 blobforge list --verbose
 
 # Change job priority
-blobforge reprioritize <hash> 1_highest
+blobforge reprioritize <hash> 1_critical
 
 # Retry a failed/dead job
-blobforge retry <hash> --priority 2_higher --reset-retries
+blobforge retry <hash> --priority 2_high --reset-retries
 
 # Run janitor
 blobforge janitor --dry-run
 
 # Show dashboard
 blobforge dashboard --verbose
+
+# Search manifest by filename or tag
+blobforge search "Call of Cthulhu"
+
+# Look up file by hash or path
+blobforge lookup --hash <hash>
+blobforge lookup --path "DnD/PHB.pdf"
+
+# Show manifest statistics
+blobforge manifest --verbose
 ```
 
 ## 7. Implementation

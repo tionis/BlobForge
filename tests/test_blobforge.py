@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
+from config import S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
 from s3_client import S3Client
 
 
@@ -126,33 +127,33 @@ class TestJobStateChecks(unittest.TestCase):
     
     def test_job_exists_done(self):
         """Should detect job in done state."""
-        self.existing_keys.add("store/out/abc123.zip")
+        self.existing_keys.add(f"{S3_PREFIX_DONE}/abc123.zip")
         result = self.client.job_exists_anywhere("abc123", PRIORITIES)
         self.assertTrue(result['done'])
         self.assertFalse(result['processing'])
     
     def test_job_exists_processing(self):
         """Should detect job in processing state."""
-        self.existing_keys.add("queue/processing/abc123")
+        self.existing_keys.add(f"{S3_PREFIX_PROCESSING}/abc123")
         result = self.client.job_exists_anywhere("abc123", PRIORITIES)
         self.assertTrue(result['processing'])
         self.assertFalse(result['done'])
     
     def test_job_exists_failed(self):
         """Should detect job in failed state."""
-        self.existing_keys.add("queue/failed/abc123")
+        self.existing_keys.add(f"{S3_PREFIX_FAILED}/abc123")
         result = self.client.job_exists_anywhere("abc123", PRIORITIES)
         self.assertTrue(result['failed'])
     
     def test_job_exists_dead(self):
         """Should detect job in dead-letter state."""
-        self.existing_keys.add("queue/dead/abc123")
+        self.existing_keys.add(f"{S3_PREFIX_DEAD}/abc123")
         result = self.client.job_exists_anywhere("abc123", PRIORITIES)
         self.assertTrue(result['dead'])
     
     def test_job_exists_todo(self):
         """Should detect job in todo state."""
-        self.existing_keys.add("queue/todo/3_normal/abc123")
+        self.existing_keys.add(f"{S3_PREFIX_TODO}/3_normal/abc123")
         result = self.client.job_exists_anywhere("abc123", PRIORITIES)
         self.assertTrue(result['todo'])
     

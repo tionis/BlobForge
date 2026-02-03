@@ -9,7 +9,8 @@ It relies entirely on an **S3-compatible object store** for coordination, state 
 *   **S3-Only Architecture:** No PostgreSQL, Redis, or RabbitMQ required. The bucket *is* the database.
 *   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
 *   **Distributed Locking:** Uses S3 atomic operations (`If-None-Match`) to coordinate workers without race conditions.
-*   **Priority Queues:** Supports `highest`, `higher`, and `normal` priority tiers.
+*   **Priority Queues:** 5 levels: `critical`, `high`, `normal`, `low`, `background`.
+*   **Manifest with Optimistic Locking:** Tracks file metadata (paths, tags, size) with `If-Match` for safe concurrent updates.
 *   **Heartbeat Mechanism:** Workers send periodic heartbeats (60s), enabling fast stale detection (15 min vs 2 hours).
 *   **Retry & Dead-Letter:** Failed jobs are retried up to 3 times, then moved to dead-letter queue for manual review.
 *   **Resilient:** "Janitor" process recovers jobs from crashed workers automatically.
@@ -26,12 +27,16 @@ s3://my-bucket/
 │   └── out/           # Processed artifacts (Zips)
 ├── queue/
 │   ├── todo/          # Pending jobs (with retry count)
-│   │   ├── 1_highest/
-│   │   ├── 2_higher/
-│   │   └── 3_normal/
+│   │   ├── 1_critical/
+│   │   ├── 2_high/
+│   │   ├── 3_normal/
+│   │   ├── 4_low/
+│   │   └── 5_background/
 │   ├── processing/    # Active locks (JSON with heartbeat)
 │   ├── failed/        # Jobs pending retry
 │   └── dead/          # Jobs that exceeded MAX_RETRIES
+└── registry/
+    └── manifest.json  # File metadata index (path→hash, tags, size)
 ```
 
 ### State Transitions
@@ -86,7 +91,7 @@ The ingestor is **state-aware** - it checks all queues before adding jobs to pre
 python3 cli.py ingest ./library/rpg-books
 
 # Ingest urgent files
-python3 cli.py ingest ./library/hot-fixes --priority 1_highest
+python3 cli.py ingest ./library/hot-fixes --priority 1_critical
 
 # Preview what would be ingested
 python3 cli.py ingest ./library --dry-run
@@ -153,18 +158,36 @@ Manually retry jobs from the failed or dead-letter queue:
 python3 cli.py retry <SHA256_HASH>
 
 # Retry with higher priority
-python3 cli.py retry <SHA256_HASH> --priority 1_highest
+python3 cli.py retry <SHA256_HASH> --priority 1_critical
 
 # Reset retry counter (for dead-letter jobs)
 python3 cli.py retry <SHA256_HASH> --reset-retries
 ```
 
-### 6. Reprioritize Jobs
+### 6. Search & Lookup (Manifest)
+
+The manifest tracks all ingested files with metadata for fast lookups:
+
+```bash
+# Search by filename or tag
+python3 cli.py search "Call of Cthulhu"
+
+# Look up by hash
+python3 cli.py lookup --hash <SHA256_HASH>
+
+# Look up by path
+python3 cli.py lookup --path "DnD/Players Handbook.pdf"
+
+# Show manifest statistics
+python3 cli.py manifest -v
+```
+
+### 7. Reprioritize Jobs
 
 Change the priority of queued jobs:
 
 ```bash
-python3 cli.py reprioritize <SHA256_HASH> 1_highest
+python3 cli.py reprioritize <SHA256_HASH> 1_critical
 ```
 
 ## ⚙️ Configuration
@@ -186,7 +209,7 @@ Configuration is handled via Environment Variables or `config.py`.
 
 ### S3 Provider Compatibility
 
-BlobForge requires S3 conditional writes (`If-None-Match`). Tested providers:
+BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Tested providers:
 
 | Provider | Status |
 | :--- | :--- |

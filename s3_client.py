@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from config import S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD
+from config import S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY
 
 
 class S3Client:
@@ -479,3 +479,190 @@ class S3Client:
                 })
         
         return jobs
+
+    # -------------------------------------------------------------------------
+    # Manifest Operations
+    # -------------------------------------------------------------------------
+    
+    def get_manifest(self) -> Dict[str, Any]:
+        """
+        Load the manifest from S3.
+        
+        Returns:
+            Dict with structure:
+            {
+                "version": 1,
+                "updated_at": "...",
+                "entries": {
+                    "<hash>": {
+                        "paths": ["path/to/file.pdf", ...],
+                        "size": 12345,
+                        "tags": ["tag1", "tag2"],
+                        "ingested_at": "...",
+                        "source": "library/rpg-books"
+                    },
+                    ...
+                }
+            }
+        """
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        data = self.get_object_json(key)
+        if data:
+            return data
+        return {"version": 1, "updated_at": None, "entries": {}}
+    
+    def get_manifest_with_etag(self) -> tuple:
+        """
+        Load manifest with ETag for optimistic locking.
+        
+        Returns:
+            (manifest_dict, etag) tuple. etag is None if manifest doesn't exist.
+        """
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        
+        if self.mock:
+            return {"version": 1, "updated_at": None, "entries": {}}, None
+        
+        try:
+            response = self.s3.get_object(Bucket=S3_BUCKET, Key=key)
+            content = response['Body'].read().decode('utf-8')
+            etag = response['ETag']
+            return json.loads(content), etag
+        except self.ClientError as e:
+            if e.response.get('Error', {}).get('Code') == 'NoSuchKey':
+                return {"version": 1, "updated_at": None, "entries": {}}, None
+            raise
+        except Exception:
+            return {"version": 1, "updated_at": None, "entries": {}}, None
+    
+    def update_manifest(self, new_entries: List[Dict[str, Any]], max_retries: int = 5) -> bool:
+        """
+        Update manifest with optimistic locking (If-Match).
+        
+        Args:
+            new_entries: List of entry dicts, each with:
+                - hash: SHA256 hash
+                - path: Original file path (relative)
+                - size: File size in bytes
+                - tags: List of tags
+                - source: Source directory path
+            max_retries: Number of retries on conflict
+        
+        Returns:
+            True if successful, False on persistent conflict
+        """
+        if self.dry_run:
+            print(f"[DRY-RUN] Would update manifest with {len(new_entries)} entries")
+            return True
+        
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        
+        for attempt in range(max_retries):
+            # 1. Read current manifest + ETag
+            manifest, etag = self.get_manifest_with_etag()
+            
+            # 2. Merge new entries
+            now = datetime.now().isoformat() + "Z"
+            for entry in new_entries:
+                file_hash = entry['hash']
+                if file_hash in manifest['entries']:
+                    # Hash exists - add path if new
+                    existing = manifest['entries'][file_hash]
+                    if entry['path'] not in existing.get('paths', []):
+                        existing.setdefault('paths', []).append(entry['path'])
+                    # Update tags (merge)
+                    existing_tags = set(existing.get('tags', []))
+                    existing_tags.update(entry.get('tags', []))
+                    existing['tags'] = list(existing_tags)
+                else:
+                    # New hash
+                    manifest['entries'][file_hash] = {
+                        'paths': [entry['path']],
+                        'size': entry.get('size', 0),
+                        'tags': entry.get('tags', []),
+                        'ingested_at': now,
+                        'source': entry.get('source', '')
+                    }
+            
+            manifest['updated_at'] = now
+            
+            # 3. Write with conditional (If-Match or If-None-Match)
+            try:
+                if self.mock:
+                    return True
+                
+                kwargs = {
+                    'Bucket': S3_BUCKET,
+                    'Key': key,
+                    'Body': json.dumps(manifest, indent=2),
+                    'ContentType': 'application/json'
+                }
+                
+                if etag:
+                    kwargs['IfMatch'] = etag
+                else:
+                    kwargs['IfNoneMatch'] = '*'
+                
+                self.s3.put_object(**kwargs)
+                return True
+                
+            except self.ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                if error_code in ['PreconditionFailed', '412']:
+                    # Conflict - retry
+                    print(f"Manifest conflict (attempt {attempt + 1}/{max_retries}), retrying...")
+                    time.sleep(0.1 * (attempt + 1))  # Backoff
+                    continue
+                raise
+        
+        print(f"Failed to update manifest after {max_retries} attempts")
+        return False
+    
+    def lookup_by_path(self, path: str) -> Optional[str]:
+        """
+        Look up a file hash by its path.
+        
+        Returns:
+            SHA256 hash if found, None otherwise
+        """
+        manifest = self.get_manifest()
+        for file_hash, entry in manifest.get('entries', {}).items():
+            if path in entry.get('paths', []):
+                return file_hash
+        return None
+    
+    def lookup_by_hash(self, file_hash: str) -> Optional[Dict[str, Any]]:
+        """
+        Look up file info by hash.
+        
+        Returns:
+            Entry dict if found, None otherwise
+        """
+        manifest = self.get_manifest()
+        return manifest.get('entries', {}).get(file_hash)
+    
+    def search_manifest(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Search manifest by filename or tag (case-insensitive).
+        
+        Returns:
+            List of matching entries with hash included
+        """
+        manifest = self.get_manifest()
+        query_lower = query.lower()
+        results = []
+        
+        for file_hash, entry in manifest.get('entries', {}).items():
+            # Check paths
+            for path in entry.get('paths', []):
+                if query_lower in path.lower():
+                    results.append({**entry, 'hash': file_hash})
+                    break
+            else:
+                # Check tags
+                for tag in entry.get('tags', []):
+                    if query_lower in tag.lower():
+                        results.append({**entry, 'hash': file_hash})
+                        break
+        
+        return results

@@ -298,6 +298,102 @@ def cmd_dashboard(args):
     status_module.show_status(verbose=args.verbose)
 
 
+def cmd_lookup(args):
+    """Look up files in the manifest."""
+    s3 = S3Client()
+    
+    if args.hash:
+        # Look up by hash
+        entry = s3.lookup_by_hash(args.hash)
+        if entry:
+            print(f"Hash: {args.hash}")
+            print(f"Paths: {', '.join(entry.get('paths', ['?']))}")
+            print(f"Size: {entry.get('size', 0):,} bytes")
+            print(f"Tags: {', '.join(entry.get('tags', []))}")
+            print(f"Ingested: {entry.get('ingested_at', '?')}")
+            print(f"Source: {entry.get('source', '?')}")
+        else:
+            print(f"Hash {args.hash} not found in manifest.")
+            return 1
+    elif args.path:
+        # Look up by path
+        file_hash = s3.lookup_by_path(args.path)
+        if file_hash:
+            print(f"Path: {args.path}")
+            print(f"Hash: {file_hash}")
+            entry = s3.lookup_by_hash(file_hash)
+            if entry:
+                print(f"Size: {entry.get('size', 0):,} bytes")
+                print(f"Tags: {', '.join(entry.get('tags', []))}")
+        else:
+            print(f"Path '{args.path}' not found in manifest.")
+            return 1
+    return 0
+
+
+def cmd_search(args):
+    """Search the manifest by filename or tag."""
+    s3 = S3Client()
+    
+    results = s3.search_manifest(args.query)
+    
+    if not results:
+        print(f"No matches found for '{args.query}'")
+        return 1
+    
+    print(f"Found {len(results)} matches for '{args.query}':\n")
+    
+    for entry in results[:args.limit]:
+        print(f"  Hash: {entry['hash'][:16]}...")
+        paths = entry.get('paths', [])
+        if paths:
+            print(f"  Path: {paths[0]}")
+            if len(paths) > 1:
+                print(f"        (+{len(paths) - 1} more)")
+        print(f"  Tags: {', '.join(entry.get('tags', [])[:5])}")
+        print()
+    
+    if len(results) > args.limit:
+        print(f"... and {len(results) - args.limit} more results")
+    
+    return 0
+
+
+def cmd_manifest_stats(args):
+    """Show manifest statistics."""
+    s3 = S3Client()
+    
+    manifest = s3.get_manifest()
+    entries = manifest.get('entries', {})
+    
+    print("--- Manifest Statistics ---")
+    print(f"Version: {manifest.get('version', '?')}")
+    print(f"Last updated: {manifest.get('updated_at', 'Never')}")
+    print(f"Total entries: {len(entries)}")
+    
+    if entries:
+        total_size = sum(e.get('size', 0) for e in entries.values())
+        total_paths = sum(len(e.get('paths', [])) for e in entries.values())
+        all_tags = set()
+        for e in entries.values():
+            all_tags.update(e.get('tags', []))
+        
+        print(f"Total size: {total_size / (1024*1024*1024):.2f} GB")
+        print(f"Total paths: {total_paths}")
+        print(f"Unique tags: {len(all_tags)}")
+        
+        if args.verbose:
+            print("\nTop 10 tags:")
+            from collections import Counter
+            tag_counts = Counter()
+            for e in entries.values():
+                tag_counts.update(e.get('tags', []))
+            for tag, count in tag_counts.most_common(10):
+                print(f"  {tag}: {count}")
+    
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
@@ -348,6 +444,23 @@ def main():
     p_dash = subparsers.add_parser("dashboard", help="Show system status dashboard")
     p_dash.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
     p_dash.set_defaults(func=cmd_dashboard)
+    
+    # Lookup (manifest)
+    p_lookup = subparsers.add_parser("lookup", help="Look up a file in the manifest")
+    p_lookup.add_argument("--hash", help="Look up by SHA256 hash")
+    p_lookup.add_argument("--path", help="Look up by file path")
+    p_lookup.set_defaults(func=cmd_lookup)
+    
+    # Search (manifest)
+    p_search = subparsers.add_parser("search", help="Search manifest by filename or tag")
+    p_search.add_argument("query", help="Search query (filename or tag)")
+    p_search.add_argument("--limit", type=int, default=20, help="Max results to show")
+    p_search.set_defaults(func=cmd_search)
+    
+    # Manifest stats
+    p_manifest = subparsers.add_parser("manifest", help="Show manifest statistics")
+    p_manifest.add_argument("--verbose", "-v", action="store_true", help="Show tag breakdown")
+    p_manifest.set_defaults(func=cmd_manifest_stats)
     
     if len(sys.argv) == 1:
         parser.print_help()

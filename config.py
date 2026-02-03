@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 
 # S3 Configuration
-S3_BUCKET = os.getenv("S3_BUCKET", "my-pdf-bucket")
-S3_PREFIX = os.getenv("S3_PREFIX", "")
+S3_BUCKET = os.getenv("S3_BUCKET", "blobforge")
+S3_PREFIX = os.getenv("S3_PREFIX", "pdf/")
 
 # Ensure trailing slash if prefix exists
 if S3_PREFIX and not S3_PREFIX.endswith("/"):
@@ -26,9 +26,10 @@ S3_PREFIX_PROCESSING = f"{S3_PREFIX}queue/processing"
 S3_PREFIX_DONE = f"{S3_PREFIX}store/out"
 S3_PREFIX_FAILED = f"{S3_PREFIX}queue/failed"
 S3_PREFIX_DEAD = f"{S3_PREFIX}queue/dead"  # Dead-letter queue for jobs exceeding max retries
+S3_PREFIX_REGISTRY = f"{S3_PREFIX}registry"  # Manifest storage
 
 # Priorities (Order matters: Workers poll index 0 first)
-PRIORITIES = ["1_highest", "2_higher", "3_normal"]
+PRIORITIES = ["1_critical", "2_high", "3_normal", "4_low", "5_background"]
 DEFAULT_PRIORITY = "3_normal"
 
 # Retry Configuration
