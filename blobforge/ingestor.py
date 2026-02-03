@@ -133,9 +133,7 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     known_hashes = set(manifest.get('entries', {}).keys())
     print(f"Manifest contains {len(known_hashes)} known files.")
     
-    stats = {"found": 0, "skipped_known": 0, "skipped_done": 0, "skipped_queued": 0, 
-             "skipped_processing": 0, "skipped_failed": 0, "skipped_dead": 0, 
-             "uploaded": 0, "queued": 0}
+    stats = {"found": 0, "skipped": 0, "uploaded": 0, "queued": 0}
     
     # Batch manifest entries for efficient updates
     manifest_batch = []
@@ -168,43 +166,10 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         
         print(f"Found: {rel_path} -> {file_hash[:8]}...")
         
-        # 2. Fast path: check if already known from manifest
+        # 2. Check if already known (manifest is source of truth)
         if file_hash in known_hashes:
-            # Already ingested - check if done for accurate stats
-            if s3.exists(f"{S3_PREFIX_DONE}/{file_hash}.zip"):
-                print(f"  [SKIP] Already converted")
-                stats["skipped_done"] += 1
-            else:
-                print(f"  [SKIP] Already known (in queue/processing)")
-                stats["skipped_known"] += 1
-            continue
-        
-        # 3. Not in manifest - check ALL queue states (new file or manifest out of sync)
-        states = s3.job_exists_anywhere(file_hash, PRIORITIES)
-        
-        if states['done']:
-            print(f"  [SKIP] Already converted")
-            stats["skipped_done"] += 1
-            continue
-        
-        if states['processing']:
-            print(f"  [SKIP] Currently being processed")
-            stats["skipped_processing"] += 1
-            continue
-        
-        if states['dead']:
-            print(f"  [SKIP] In dead-letter queue (exceeded max retries)")
-            stats["skipped_dead"] += 1
-            continue
-        
-        if states['failed']:
-            print(f"  [SKIP] In failed queue (will be retried by janitor)")
-            stats["skipped_failed"] += 1
-            continue
-        
-        if states['todo']:
-            print(f"  [SKIP] Already in queue")
-            stats["skipped_queued"] += 1
+            print(f"  [SKIP] Already ingested")
+            stats["skipped"] += 1
             continue
         
         # 3. Check/Upload Raw + Metadata
@@ -296,15 +261,10 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     
     # Print summary
     print("\n--- Ingest Summary ---")
-    print(f"  Found:              {stats['found']} PDFs")
-    print(f"  Uploaded:           {stats['uploaded']}")
-    print(f"  Queued:             {stats['queued']}")
-    print(f"  Skipped (known):    {stats['skipped_known']}")
-    print(f"  Skipped (done):     {stats['skipped_done']}")
-    print(f"  Skipped (queued):   {stats['skipped_queued']}")
-    print(f"  Skipped (processing): {stats['skipped_processing']}")
-    print(f"  Skipped (failed):   {stats['skipped_failed']}")
-    print(f"  Skipped (dead):     {stats['skipped_dead']}")
+    print(f"  Found:    {stats['found']} PDFs")
+    print(f"  Uploaded: {stats['uploaded']}")
+    print(f"  Queued:   {stats['queued']}")
+    print(f"  Skipped:  {stats['skipped']} (already in manifest)")
 
 
 if __name__ == "__main__":
