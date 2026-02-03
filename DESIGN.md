@@ -1,290 +1,652 @@
-# PDF Conversion Service - Design Document
+# BlobForge - Design Document
 
 ## 1. Overview
 
-A distributed, infrastructure-agnostic system to convert RPG rulebooks (PDF) into Markdown/Assets. The system prioritizes decoupling ingestion from processing and uses an S3-compatible object store as the single source of truth for both data and coordination (state), allowing for distributed workers without a dedicated database server.
+BlobForge is a distributed job processing system designed initially for PDF-to-Markdown conversion, but architected to support multiple worker types (image processing, embedding generation, etc.).
 
-### 1.1. S3 Provider Compatibility
+### 1.1. Architecture Principles
 
-The system requires S3-compatible storage with support for conditional writes (`If-None-Match: *`). Tested providers:
-- **AWS S3:** ✅ Full support
-- **Cloudflare R2:** ✅ Full support
-- **Ceph Object Gateway:** ✅ Full support
-- **MinIO:** ✅ Full support
+- **Centralized Coordinator**: Single Go server manages all job state via SQLite
+- **Dumb Workers**: Workers are stateless HTTP clients that poll for jobs
+- **S3 for Files Only**: Object storage for source/output files, not coordination
+- **Resilient by Default**: SQLite + Litestream for automatic backup/restore
+- **Observable**: HTMX dashboard for real-time visibility
 
-## 2. Core Concepts
+### 1.2. Why This Architecture?
 
-### 2.1. Hash Addressing (CAS)
-- **ID:** SHA256 of the PDF content.
-- **Raw Storage:** `store/raw/$HASH.pdf`
-- **Output Storage:** `store/out/$HASH.zip`
+Previous S3-only coordination had issues:
+- Polling inefficiency (constant API calls)
+- Complex distributed locking
+- No ACID transactions
+- Hard to debug without centralized view
 
-### 2.2. Architecture Components
-1. **Ingestor:** Scans sources (Git LFS, local folders), uploads unique PDFs to Raw Storage, and queues them for processing. State-aware to avoid duplicate queueing.
-2. **Worker:** Stateless distributed agents that consume the queue, process PDFs, and upload results. Features heartbeat mechanism and retry tracking.
-3. **Janitor:** Recovers stale jobs and manages the retry lifecycle.
-4. **CLI:** Command-line interface for management operations.
-5. **The "Bucket DB":** The S3 bucket itself acts as the database and queue using key prefixes.
+The new architecture provides:
+- **Efficient job dispatch** via long-polling
+- **ACID transactions** for job state
+- **Real-time dashboard** for monitoring
+- **Automatic recovery** via Litestream
+- **Lower S3 costs** (files only, no coordination)
 
-### 2.3. Consolidated S3 Client
-All components use a single `S3Client` class (`s3_client.py`) for consistency and maintainability. This module provides:
-- Basic CRUD operations
-- Atomic locking with `If-None-Match`
-- Heartbeat updates
-- Retry tracking
-- State queries
-
-## 3. The "Bucket DB" Structure (S3 Layout)
-
-We use the S3 bucket to manage state.
-
-```text
-s3://my-bucket/
-├── store/
-│   ├── raw/
-│   │   └── <HASH>.pdf        # Immutable source files (with metadata)
-│   └── out/
-│       └── <HASH>.zip        # Converted results
-├── queue/
-│   ├── todo/
-│   │   ├── 1_critical/       # Priority Tiers
-│   │   ├── 2_high/
-│   │   ├── 3_normal/
-│   │   ├── 4_low/
-│   │   └── 5_background/
-│   │       └── <HASH>        # Content: {"retries": N, "queued_at": ...}
-│   ├── processing/
-│   │   └── <HASH>            # Content: {"worker": "...", "started": ..., "last_heartbeat": ..., "priority": "...", "retries": N}
-│   ├── failed/
-│   │   └── <HASH>            # Content: {"error": "...", "worker": "...", "retries": N, ...}
-│   └── dead/
-│       └── <HASH>            # Content: {"error": "...", "total_retries": N, "reason": "exceeded_max_retries"}
-└── registry/
-    └── manifest.json         # File metadata index (see 3.2)
-```
-
-### 3.1. Queue State Transitions
+## 2. System Components
 
 ```
-                    ┌─────────────────────────────────────┐
-                    │                                     │
-                    ▼                                     │
-[Ingest] ──► todo ──► processing ──► done                │
-              ▲            │                             │
-              │            ▼                             │
-              │         failed ◄── (error during processing)
-              │            │                             │
-              │            ▼ (janitor: retry < MAX)      │
-              └────────────┘                             │
-                           │                             │
-                           ▼ (janitor: retry >= MAX)     │
-                         dead ──────────────────────────►┘
-                                    (manual retry)
+┌─────────────────────────────────────────────────────────────────┐
+│                      BlobForge Server (Go)                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
+│  │  Dashboard   │  │  Worker API  │  │     Litestream        │  │
+│  │  (HTMX)      │  │  (REST)      │  │  (SQLite → S3)        │  │
+│  └──────────────┘  └──────────────┘  └───────────────────────┘  │
+│           │                │                    │               │
+│           └────────────────┼────────────────────┘               │
+│                            ▼                                    │
+│                    ┌──────────────┐                             │
+│                    │   SQLite     │                             │
+│                    │  (jobs, workers, files)                    │
+│                    └──────────────┘                             │
+└─────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+   ┌───────────┐        ┌───────────┐       ┌───────────┐
+   │  Worker   │        │  Worker   │       │  Worker   │
+   │  (PDF)    │        │  (PDF)    │       │ (future)  │
+   └───────────┘        └───────────┘       └───────────┘
+         │                    │
+         └──────────────┐     |
+                        ▼     ▼
+                    ┌─────────────────────────────────┐
+                    │         S3 Bucket               │
+                    │  (source files, output files)   │
+                    └─────────────────────────────────┘
 ```
 
-### 3.2. Manifest (File Metadata Index)
+### 2.1. Server (Go)
 
-The manifest (`registry/manifest.json`) tracks metadata for all ingested files:
+Single binary containing:
+- **HTTP Server**: Chi router for API and dashboard
+- **SQLite Database**: Job queue, worker registry, file metadata
+- **Litestream**: Embedded for continuous SQLite backup to S3
+- **S3 Client**: Presigned URL generation for file transfers
 
-```json
+### 2.2. Workers (Python, etc.)
+
+Stateless processes that:
+- Register with the server on startup
+- Long-poll for jobs matching their type
+- Download source files via presigned URLs
+- Process files (PDF → Markdown, etc.)
+- Upload results via presigned URLs
+- Report completion/failure
+
+### 2.3. S3 Bucket
+
+Simple file storage:
+```
+s3://blobforge/
+├── sources/
+│   └── {hash}.pdf          # Original uploaded files
+├── outputs/
+│   └── {hash}.zip          # Processed results
+└── db/
+    └── blobforge.db-*      # Litestream backups
+```
+
+## 3. Database Schema
+
+### 3.1. Workers Table
+
+```sql
+CREATE TABLE workers (
+    id TEXT PRIMARY KEY,           -- UUID or human-friendly name
+    type TEXT NOT NULL,            -- 'pdf', 'image', etc.
+    status TEXT NOT NULL,          -- 'online', 'offline', 'draining'
+    last_heartbeat DATETIME,
+    current_job_id INTEGER,        -- FK to jobs (nullable)
+    metadata JSON,                 -- capabilities, version, etc.
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 3.2. Jobs Table
+
+```sql
+CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,            -- 'pdf', 'image', etc.
+    status TEXT NOT NULL,          -- 'pending', 'running', 'completed', 'failed', 'dead'
+    priority INTEGER DEFAULT 3,    -- 1=critical, 5=background
+    
+    -- Source file info
+    source_hash TEXT NOT NULL,     -- SHA256 of source file
+    source_path TEXT,              -- Original filename/path
+    source_size INTEGER,
+    
+    -- Processing state
+    worker_id TEXT,                -- FK to workers (nullable)
+    started_at DATETIME,
+    completed_at DATETIME,
+    
+    -- Retry tracking
+    attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 3,
+    last_error TEXT,
+    
+    -- Metadata
+    tags JSON,                     -- searchable tags
+    metadata JSON,                 -- arbitrary job metadata
+    result JSON,                   -- output metadata after completion
+    
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    UNIQUE(type, source_hash)      -- prevent duplicate jobs
+);
+
+CREATE INDEX idx_jobs_status_priority ON jobs(status, priority);
+CREATE INDEX idx_jobs_source_hash ON jobs(source_hash);
+CREATE INDEX idx_jobs_worker ON jobs(worker_id);
+```
+
+### 3.3. Files Table
+
+```sql
+CREATE TABLE files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,       -- FK to jobs
+    type TEXT NOT NULL,            -- 'source', 'output'
+    s3_key TEXT NOT NULL,          -- path in S3 bucket
+    size INTEGER,
+    content_type TEXT,
+    checksum TEXT,                 -- SHA256
+    metadata JSON,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (job_id) REFERENCES jobs(id)
+);
+
+CREATE INDEX idx_files_job ON files(job_id);
+CREATE INDEX idx_files_s3_key ON files(s3_key);
+```
+
+## 4. API Design
+
+### 4.1. Worker API
+
+#### Register Worker
+```
+POST /api/workers
 {
-  "version": 1,
-  "updated_at": "2026-02-03T10:30:00Z",
-  "entries": {
-    "a1b2c3d4...": {
-      "paths": ["DnD/Players Handbook.pdf", "backup/PHB.pdf"],
-      "size": 52428800,
-      "tags": ["DnD", "Players Handbook", "5e"],
-      "ingested_at": "2026-02-01T08:00:00Z",
-      "source": "rpg-library"
-    }
-  }
+    "id": "worker-01",           // optional, server generates if omitted
+    "type": "pdf",
+    "metadata": {"version": "1.0", "capabilities": ["ocr"]}
 }
+→ 201 {"id": "worker-01", "heartbeat_interval": 60}
 ```
 
-**Key features:**
-- **Multiple paths per hash:** Tracks all locations of duplicate files
-- **Optimistic locking:** Uses `If-Match` (ETag) for safe concurrent updates
-- **Batched writes:** Ingestor batches updates (50 entries) to reduce write frequency
-- **Searchable:** CLI supports search by filename or tag
+#### Heartbeat
+```
+POST /api/workers/{id}/heartbeat
+{
+    "current_job_id": 123,       // optional
+    "progress": {"stage": "converting", "percent": 45}
+}
+→ 200 {"status": "ok"}
+```
 
-**Concurrency model:**
-- Only the ingestor writes to the manifest
-- Workers read-only (for metadata enrichment)
-- On conflict (412 Precondition Failed), retry with exponential backoff
+#### Claim Job (Long-Poll)
+```
+GET /api/jobs/claim?type=pdf&timeout=30
+→ 200 {
+    "job": {
+        "id": 123,
+        "source_hash": "abc123...",
+        "source_path": "DnD/PHB.pdf",
+        "metadata": {...}
+    },
+    "download_url": "https://s3.../sources/abc123.pdf?signature=...",
+    "upload_url": "https://s3.../outputs/abc123.zip?signature=..."
+}
+→ 204 (no jobs available after timeout)
+```
 
-## 4. Workflows
+#### Complete Job
+```
+POST /api/jobs/{id}/complete
+{
+    "worker_id": "worker-01",
+    "result": {
+        "pages": 320,
+        "images": 45,
+        "output_size": 15234567
+    }
+}
+→ 200 {"status": "completed"}
+```
 
-### 4.1. Ingestor (State-Aware)
+#### Fail Job
+```
+POST /api/jobs/{id}/fail
+{
+    "worker_id": "worker-01",
+    "error": "Marker conversion failed: out of memory"
+}
+→ 200 {"status": "failed", "attempts": 2, "will_retry": true}
+```
 
-The ingestor is responsible for ensuring the PDF exists in `store/raw/` and is queued if not already in the pipeline.
+### 4.2. Management API
 
-1. **Scan:** Walk directory tree (or clone repo with `GIT_LFS_SKIP_SMUDGE=1`).
-2. **Identify:**
-   - Parse LFS pointer files to get the SHA256 hash without downloading.
-   - For non-LFS files, compute SHA256 hash.
-3. **Check ALL States:** (prevents duplicate work and race conditions)
-   - Check if `store/out/<HASH>.zip` exists → **Skip** (done)
-   - Check if `queue/processing/<HASH>` exists → **Skip** (in progress)
-   - Check if `queue/dead/<HASH>` exists → **Skip** (permanently failed)
-   - Check if `queue/failed/<HASH>` exists → **Skip** (pending retry)
-   - Check if `queue/todo/.../<HASH>` exists → **Skip** (already queued)
-4. **Upload (if missing):**
-   - If raw PDF is missing in S3:
-     - Materialize file (git lfs pull or copy)
-     - Upload to `store/raw/<HASH>.pdf`
-     - **Metadata:** Attach `x-amz-meta-original-name`, `x-amz-meta-tags`, `x-amz-meta-size`
-5. **Queue:**
-   - Create `queue/todo/<priority>/<HASH>`
+#### List Jobs
+```
+GET /api/jobs?status=pending&type=pdf&limit=50
+→ 200 {"jobs": [...], "total": 1234}
+```
 
-### 4.2. Worker (Distributed Loop with Heartbeat)
+#### Create Job (Ingest)
+```
+POST /api/jobs
+{
+    "type": "pdf",
+    "source_hash": "abc123...",
+    "source_path": "DnD/PHB.pdf",
+    "source_size": 52428800,
+    "priority": 2,
+    "tags": ["dnd", "5e"]
+}
+→ 201 {"job_id": 123, "upload_url": "https://s3.../sources/abc123.pdf?..."}
+→ 409 {"error": "job already exists", "job_id": 45}
+```
 
-Workers run anywhere. They only need S3 credentials.
+#### Retry Job
+```
+POST /api/jobs/{id}/retry
+{
+    "reset_attempts": true,    // optional
+    "priority": 1              // optional
+}
+→ 200 {"status": "pending"}
+```
 
-#### 4.2.1. Startup (Self-Cleanup)
-- Generate or use persistent `WORKER_ID` (based on machine fingerprint)
-- Scan `queue/processing/` for locks belonging to current `WORKER_ID`
-- If found, assume crash from previous run → restore to todo queue
+#### Cancel Job
+```
+DELETE /api/jobs/{id}
+→ 200 {"status": "cancelled"}
+```
 
-#### 4.2.2. Acquire Job (Atomic Locking with Improved Sharding)
-- Iterate through priorities: `1_critical` → `2_high` → `3_normal` → `4_low` → `5_background`
-- **Sharding:** Use 2-character hex prefix (256 shards) for better distribution
-  - Random prefix like `"ab"`, `"7f"`, etc.
-  - Reduces lock contention compared to single-character sharding
-- **Atomic Lock:** Write `queue/processing/<HASH>` with `If-None-Match: *`
-  - Content: `{"worker": "...", "started": ..., "last_heartbeat": ..., "priority": "...", "retries": N}`
-- If write fails (412 Precondition Failed) → skip, try next
-- **IMPORTANT:** Do NOT delete todo marker on lock acquisition (prevents race condition)
+### 4.3. File API
 
-#### 4.2.3. Heartbeat
-- Background thread updates `last_heartbeat` every 60 seconds
-- Allows faster stale detection (15 minutes vs 2 hours)
-- Optionally includes progress information: `{"stage": "converting"}`
+#### Get Download URL
+```
+GET /api/files/{job_id}/source
+→ 200 {"url": "https://s3.../...", "expires_in": 3600}
+```
 
-#### 4.2.4. Process
-- Download `store/raw/<HASH>.pdf` to temp directory
-- Fetch S3 object metadata (original name, tags)
-- Run conversion (marker/pymupdf4llm)
-- Create `info.json` with enriched metadata
-- Zip results
+#### Get Output URL
+```
+GET /api/files/{job_id}/output
+→ 200 {"url": "https://s3.../...", "expires_in": 3600}
+```
 
-#### 4.2.5. Finalize (Atomic Completion)
-- Upload `<HASH>.zip` to `store/out/`
-- **Delete todo marker** (only NOW, after successful completion)
-- Delete processing lock
-- Clean up any previous failed marker
+## 5. Dashboard (HTMX)
 
-#### 4.2.6. Failure Handling
-- If retries < MAX_RETRIES: Move to `queue/failed/<HASH>` with error details
-- If retries >= MAX_RETRIES: Move to `queue/dead/<HASH>`
-- Clear heartbeat and release lock
+### 5.1. Pages
 
-### 4.3. Janitor (Crash Recovery + Retry Management)
+- **Dashboard** (`/`): Overview with job stats, active workers, recent activity
+- **Jobs** (`/jobs`): Filterable job list with actions (retry, cancel, view)
+- **Workers** (`/workers`): Worker list with status, current job, actions
+- **Files** (`/files`): Browse source/output files by job
+- **Job Detail** (`/jobs/{id}`): Full job info, logs, files, retry history
 
-The janitor handles two responsibilities:
+### 5.2. Real-time Updates
 
-#### 4.3.1. Stale Job Recovery
-- Scan `queue/processing/`
-- Check `last_heartbeat` timestamp (not S3 LastModified)
-- If `now - last_heartbeat > STALE_TIMEOUT` (default: 15 minutes):
-  - Increment retry count
-  - If retry < MAX_RETRIES: Restore to todo queue
-  - If retry >= MAX_RETRIES: Move to dead-letter queue
+- HTMX polling (`hx-trigger="every 5s"`) for dashboard stats
+- Server-Sent Events (optional) for live job updates
+- Optimistic UI updates for actions
 
-#### 4.3.2. Failed Job Retry
-- Scan `queue/failed/`
-- Increment retry count
-- If retry < MAX_RETRIES: Move back to todo queue
-- If retry >= MAX_RETRIES: Move to dead-letter queue
+## 6. Worker Protocol
 
-### 4.4. Dead-Letter Queue
+### 6.1. Lifecycle
 
-Jobs that exceed `MAX_RETRIES` (default: 3) are moved to `queue/dead/`. These jobs:
-- Will not be automatically retried
-- Can be manually retried via CLI: `blobforge retry <hash> --reset-retries`
-- Preserve error history for debugging
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Worker Lifecycle                        │
+└─────────────────────────────────────────────────────────────┘
 
-## 5. Configuration
+    ┌──────────┐
+    │  Start   │
+    └────┬─────┘
+         │
+         ▼
+    ┌──────────┐     POST /api/workers
+    │ Register │────────────────────────► Server
+    └────┬─────┘
+         │
+         ▼
+    ┌──────────┐     GET /api/jobs/claim?type=pdf&timeout=30
+    │  Poll    │◄───────────────────────────────────────────┐
+    │  (idle)  │                                            │
+    └────┬─────┘                                            │
+         │ job received                                     │
+         ▼                                                  │
+    ┌──────────┐     Download source via presigned URL      │
+    │ Download │                                            │
+    └────┬─────┘                                            │
+         │                                                  │
+         ▼                                                  │
+    ┌──────────┐     POST /api/workers/{id}/heartbeat       │
+    │ Process  │     (every 60s with progress)              │
+    │          │                                            │
+    └────┬─────┘                                            │
+         │                                                  │
+    ┌────┴────┐                                             │
+    ▼         ▼                                             │
+┌───────┐ ┌───────┐                                         │
+│Success│ │ Fail  │                                         │
+└───┬───┘ └───┬───┘                                         │
+    │         │                                             │
+    ▼         ▼                                             │
+┌───────┐ ┌───────┐                                         │
+│Upload │ │ POST  │                                         │
+│output │ │ /fail │                                         │
+└───┬───┘ └───┬───┘                                         │
+    │         │                                             │
+    ▼         │                                             │
+┌────────┐    │                                             │
+│ POST   │    │                                             │
+│/complete│   │                                             │
+└───┬────┘    │                                             │
+    │         │                                             │
+    └─────────┴─────────────────────────────────────────────┘
+```
 
-Environment variables (all prefixed with `BLOBFORGE_`):
+### 6.2. Heartbeat Requirements
+
+- Workers MUST send heartbeat every 60 seconds while processing
+- Server marks workers as `offline` after 3 missed heartbeats (180s)
+- Jobs from offline workers are automatically returned to queue
+- Heartbeat includes optional progress info for dashboard display
+
+### 6.3. Graceful Shutdown
+
+1. Worker receives SIGTERM/SIGINT
+2. Stop accepting new jobs (drain mode)
+3. Complete current job (or release it)
+4. POST to deregister endpoint
+5. Exit
+
+## 7. Litestream Integration
+
+### 7.1. Backup Strategy
+
+- Continuous replication to S3: `s3://bucket/db/`
+- WAL streaming for minimal data loss
+- Automatic restore on server startup if local DB missing
+
+### 7.2. Configuration
+
+```yaml
+# litestream.yml (embedded in binary or external)
+dbs:
+  - path: /data/blobforge.db
+    replicas:
+      - type: s3
+        bucket: blobforge
+        path: db
+        endpoint: ${S3_ENDPOINT}
+        access-key-id: ${S3_ACCESS_KEY}
+        secret-access-key: ${S3_SECRET_KEY}
+```
+
+### 7.3. Disaster Recovery
+
+1. Server crashes
+2. New server starts
+3. Litestream restores latest snapshot + WAL from S3
+4. Server resumes with <1 minute of potential data loss
+5. Workers reconnect and resume polling
+
+## 8. Configuration
+
+### 8.1. Server Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BLOBFORGE_S3_BUCKET` | `blobforge` | S3 bucket name |
-| `BLOBFORGE_S3_PREFIX` | `pdf/` | Optional prefix for namespacing |
-| `BLOBFORGE_WORKER_ID` | (auto-generated) | Persistent worker identifier |
-| `BLOBFORGE_MAX_RETRIES` | `3` | Max failures before dead-letter |
-| `BLOBFORGE_HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats |
-| `BLOBFORGE_STALE_TIMEOUT_MINUTES` | `15` | Minutes until job considered stale |
-| `BLOBFORGE_CONVERSION_TIMEOUT` | `3600` | Seconds before conversion killed |
-| `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level |
+| `BLOBFORGE_PORT` | `8080` | HTTP server port |
+| `BLOBFORGE_DB_PATH` | `./data/blobforge.db` | SQLite database path |
+| `BLOBFORGE_S3_BUCKET` | - | S3 bucket name |
+| `BLOBFORGE_S3_ENDPOINT` | - | S3 endpoint (for R2, MinIO) |
+| `BLOBFORGE_S3_ACCESS_KEY` | - | S3 access key |
+| `BLOBFORGE_S3_SECRET_KEY` | - | S3 secret key |
+| `BLOBFORGE_S3_REGION` | `auto` | S3 region |
+| `BLOBFORGE_WORKER_TIMEOUT` | `180` | Seconds before worker considered offline |
+| `BLOBFORGE_MAX_ATTEMPTS` | `3` | Default max job attempts |
+| `BLOBFORGE_LOG_LEVEL` | `info` | Logging level |
 
-## 6. CLI Commands
+### 8.2. OIDC Authentication Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLOBFORGE_OIDC_ISSUER` | - | OIDC provider URL |
+| `BLOBFORGE_OIDC_CLIENT_ID` | - | OAuth2 client ID |
+| `BLOBFORGE_OIDC_CLIENT_SECRET` | - | OAuth2 client secret |
+| `BLOBFORGE_OIDC_REDIRECT_URL` | - | OAuth2 callback URL |
+| `BLOBFORGE_OIDC_ALLOWED_GROUPS` | - | Groups allowed access (comma-separated) |
+| `BLOBFORGE_OIDC_ADMIN_GROUPS` | - | Groups with admin access |
+
+## 9. Authentication & Authorization
+
+### 9.1. Authentication Methods
+
+BlobForge supports two authentication methods:
+
+1. **OIDC (Browser)**: For dashboard access, users authenticate via OIDC provider
+2. **API Tokens**: For workers and CLI, hashed tokens stored in database
+
+### 9.2. OIDC Flow
+
+```
+┌────────┐     1. GET /auth/login      ┌─────────┐     2. Redirect     ┌──────────┐
+│ User   │──────────────────────────►  │ Server  │ ─────────────────► │   OIDC   │
+└────────┘                             └─────────┘                     │ Provider │
+    │                                       ▲                          └──────────┘
+    │                                       │                               │
+    │     5. Set session cookie            │ 4. Verify + get user info     │
+    │ ◄─────────────────────────────────────                               │
+    │                                                                       │
+    └────────────────── 3. Callback with code ──────────────────────────────┘
+```
+
+### 9.3. Group-Based Access Control
+
+- `BLOBFORGE_OIDC_ALLOWED_GROUPS`: If set, only users in these groups can access
+- `BLOBFORGE_OIDC_ADMIN_GROUPS`: Users in these groups get admin privileges
+- Groups are extracted from the `groups` claim in the ID token
+
+### 9.4. API Token Authentication
+
+Workers and CLI use Bearer tokens:
 
 ```bash
-# Ingest PDFs from a directory
-blobforge ingest /path/to/pdfs --priority 1_critical
-
-# Check status of a job
-blobforge status <hash>
-
-# List queue statistics
-blobforge list --verbose
-
-# Change job priority
-blobforge reprioritize <hash> 1_critical
-
-# Retry a failed/dead job
-blobforge retry <hash> --priority 2_high --reset-retries
-
-# Run janitor
-blobforge janitor --dry-run
-
-# Show dashboard
-blobforge dashboard --verbose
-
-# Search manifest by filename or tag
-blobforge search "Call of Cthulhu"
-
-# Look up file by hash or path
-blobforge lookup --hash <hash>
-blobforge lookup --path "DnD/PHB.pdf"
-
-# Show manifest statistics
-blobforge manifest --verbose
+curl -H "Authorization: Bearer bf_xxxxxxxxxxxxxxxxxxxx" \
+     http://localhost:8080/api/jobs
 ```
 
-## 7. Implementation
+Token format: `bf_` prefix + 32 random hex characters. Tokens are hashed (SHA-256) before storage.
 
-### 7.1. Module Structure
+### 9.5. Database Schema for Auth
+
+```sql
+-- Users (populated via OIDC)
+CREATE TABLE users (
+    id TEXT PRIMARY KEY,      -- OIDC subject
+    email TEXT UNIQUE,
+    name TEXT,
+    picture TEXT,
+    groups TEXT,              -- JSON array of groups
+    is_admin INTEGER DEFAULT 0,
+    provider TEXT,            -- 'oidc', etc.
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Sessions (for web dashboard)
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,      -- session token
+    user_id TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+-- API Tokens (for workers/CLI)
+CREATE TABLE api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,  -- SHA-256 hash
+    description TEXT,
+    last_used_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+```
+
+## 10. Live Dashboard Updates (SSE)
+
+### 10.1. Server-Sent Events
+
+The dashboard receives real-time updates via SSE at `GET /api/events`:
+
+```javascript
+const eventSource = new EventSource('/api/events');
+
+eventSource.addEventListener('job_created', (e) => {
+    // Add new job row to table
+});
+
+eventSource.addEventListener('job_updated', (e) => {
+    // Update job row in place
+});
+
+eventSource.addEventListener('worker_online', (e) => {
+    // Update worker status
+});
+
+eventSource.addEventListener('stats_updated', (e) => {
+    // Refresh stats counters
+});
+```
+
+### 10.2. Event Types
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `job_created` | Job JSON | New job added to queue |
+| `job_updated` | Job JSON | Job status/progress changed |
+| `job_completed` | Job JSON | Job finished successfully |
+| `job_failed` | Job JSON | Job failed (may retry) |
+| `worker_online` | Worker JSON | Worker registered/reconnected |
+| `worker_offline` | Worker JSON | Worker went offline |
+| `stats_updated` | Stats JSON | Queue statistics changed |
+
+### 10.3. Hub Architecture
 
 ```
-├── config.py        # Configuration and constants
-├── s3_client.py     # Consolidated S3 operations
-├── ingestor.py      # PDF discovery and queueing
-├── worker.py        # Job processing with heartbeat
-├── janitor.py       # Stale recovery and retry management
-├── status.py        # Status display
-└── cli.py           # Command-line interface
+┌──────────────────────────────────────────────────────────┐
+│                      SSE Hub                              │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  clients: map[chan Event]*Client                   │  │
+│  │  broadcast: chan Event                             │  │
+│  │  register: chan *Client                            │  │
+│  │  unregister: chan *Client                          │  │
+│  └────────────────────────────────────────────────────┘  │
+│            │               │               │              │
+│            ▼               ▼               ▼              │
+│      ┌─────────┐     ┌─────────┐     ┌─────────┐         │
+│      │ Client  │     │ Client  │     │ Client  │  ...    │
+│      │ (conn)  │     │ (conn)  │     │ (conn)  │         │
+│      └─────────┘     └─────────┘     └─────────┘         │
+└──────────────────────────────────────────────────────────┘
+          │                  │                │
+          ▼                  ▼                ▼
+       Browser           Browser          Browser
 ```
 
-### 7.2. Technology Stack
+## 11. Priority System
 
-- **Language:** Python 3.8+
-- **S3 Library:** boto3
-- **PDF Conversion:** marker (or pymupdf4llm)
-- **Worker Identity:** Machine fingerprint (hostname + /etc/machine-id)
+Jobs have a priority from 1-5 (lower = higher priority):
 
-## 8. Scaling Considerations
+| Priority | Name | Use Case |
+|----------|------|----------|
+| 1 | Critical | User-requested, immediate processing |
+| 2 | High | Important batch processing |
+| 3 | Normal | Default priority |
+| 4 | Low | Background processing |
+| 5 | Background | Lowest, processed when idle |
 
-The system is designed for moderate scale (~50,000 files, ~20 workers):
+Workers claim jobs ordered by: `ORDER BY priority ASC, created_at ASC`
 
-- **Sharding:** 256 shards (2-char hex prefix) prevents hot spots
-- **Heartbeat:** 15-minute timeout balances responsiveness vs overhead
-- **Listing Cost:** With 50K files and 20 workers polling every 10s, expect ~120 LIST requests/minute
-- **Single Ingestor:** Design assumes single writer for ingestion (no manifest conflicts)
+Priority can be changed via:
+- API: `PATCH /api/jobs/{id}/priority {"priority": 1}`
+- Dashboard: Edit job priority inline
 
-For larger scale, consider:
-- Adding SQS/SNS as optional acceleration layer
-- Using SQLite + Litestream for manifest storage
-- Implementing worker coordination for shard assignment
+## 12. Deployment
+
+### 12.1. Server
+
+```bash
+# Single binary deployment
+./blobforge-server
+
+# Or with Docker
+docker run -d \
+  -p 8080:8080 \
+  -v /data:/data \
+  -e BLOBFORGE_S3_BUCKET=my-bucket \
+  -e BLOBFORGE_S3_ACCESS_KEY=... \
+  -e BLOBFORGE_S3_SECRET_KEY=... \
+  ghcr.io/tionis/blobforge-server
+```
+
+### 12.2. Workers
+
+```bash
+# PDF Worker (Python)
+docker run -d \
+  -v worker-cache:/root/.cache \
+  -e BLOBFORGE_SERVER_URL=http://server:8080 \
+  -e BLOBFORGE_WORKER_ID=pdf-worker-01 \
+  ghcr.io/tionis/blobforge-worker-pdf
+```
+
+## 13. Monorepo Structure
+
+```
+blobforge/
+├── server/                    # Go server
+│   ├── main.go
+│   ├── api/                   # HTTP handlers
+│   ├── auth/                  # OIDC + API token auth
+│   ├── db/                    # SQLite operations
+│   ├── s3/                    # S3 client
+│   ├── sse/                   # Server-Sent Events hub
+│   └── web/                   # HTMX templates
+├── workers/
+│   └── pdf/                   # Python PDF worker
+│       ├── worker.py
+│       ├── requirements.txt
+│       └── Containerfile
+├── cli/                       # Python CLI tool
+│   └── blobforge.py
+├── docs/
+│   └── WORK_LOG.md
+├── DESIGN.md
+├── README.md
+└── docker-compose.yml         # Full stack for development
+```
+
+## 14. Future Extensions
+
+- **Worker Types**: Image processing, embedding generation, OCR-only
+- **Webhooks**: Notify external systems on job completion
+- **Multi-tenancy**: Namespace jobs by user/project
+- **Metrics**: Prometheus endpoint for monitoring
+- **Distributed Server**: Multiple server instances with shared DB (via Litestream)

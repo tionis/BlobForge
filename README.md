@@ -1,372 +1,370 @@
 # BlobForge
 
-**BlobForge** is a distributed, infrastructure-agnostic ingestion pipeline designed to process massive datasets (starting with RPG Rulebooks) into usable formats (Markdown/Assets).
+**BlobForge** is a distributed job queue system with a web dashboard, designed for processing large files (PDFs, documents, etc.) across multiple workers. Features OIDC authentication, live SSE updates, and SQLite with Litestream replication.
 
-It relies entirely on an **S3-compatible object store** for coordination, state management, and data storage. This "Serverless / No-Database" approach allows the system to run for years with near-zero maintenance, scale from 1 to 100 workers instantly, and survive complete shutdowns without state loss.
+## Features
 
-## 🚀 Key Features
+- 🔐 **OIDC Authentication** - Secure login with group-based access control
+- 🔑 **API Tokens** - For worker authentication and CLI access
+- 📊 **Live Dashboard** - Real-time updates via Server-Sent Events (SSE)
+- ⚡ **Flexible Priority** - 5-level priority system (1=critical to 5=background)
+- 💾 **Litestream Backup** - Continuous SQLite replication to S3
+- 🔄 **Worker Management** - Drain, remove, and monitor workers from UI
+- 🎯 **Job Management** - Retry, cancel, and reprioritize from dashboard
+- 🐳 **GPU Support** - marker-pdf workers with CUDA acceleration
 
-*   **S3-Only Architecture:** No PostgreSQL, Redis, or RabbitMQ required. The bucket *is* the database.
-*   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
-*   **Distributed Locking:** Uses S3 atomic operations (`If-None-Match`) to coordinate workers without race conditions.
-*   **Priority Queues:** 5 levels: `critical`, `high`, `normal`, `low`, `background`.
-*   **Manifest with Optimistic Locking:** Tracks file metadata (paths, tags, size) with `If-Match` for safe concurrent updates.
-*   **Heartbeat Mechanism:** Workers send periodic heartbeats (60s), enabling fast stale detection (15 min vs 2 hours).
-*   **Retry & Dead-Letter:** Failed jobs are retried up to 3 times, then moved to dead-letter queue for manual review.
-*   **Resilient:** "Janitor" process recovers jobs from crashed workers automatically.
-*   **Hash-Addressed:** Deduplication built-in. Processing is idempotent based on file content (SHA256).
-
-## 🛠 Architecture
-
-The system uses a directory structure within S3 to manage state:
-
-```text
-s3://my-bucket/
-├── store/
-│   ├── raw/           # Source blobs (PDFs) with metadata
-│   └── out/           # Processed artifacts (Zips)
-├── queue/
-│   ├── todo/          # Pending jobs (with retry count)
-│   │   ├── 1_critical/
-│   │   ├── 2_high/
-│   │   ├── 3_normal/
-│   │   ├── 4_low/
-│   │   └── 5_background/
-│   ├── processing/    # Active locks (JSON with heartbeat)
-│   ├── failed/        # Jobs pending retry
-│   └── dead/          # Jobs that exceeded MAX_RETRIES
-└── registry/
-    └── manifest.json  # File metadata index (path→hash, tags, size)
-```
-
-### State Transitions
+## Architecture
 
 ```
-[Ingest] ──► todo ──► processing ──► done
-              ▲            │
-              │            ▼
-              └──────── failed (janitor retries)
-                           │
-                           ▼ (after MAX_RETRIES)
-                         dead ──► (manual retry)
+┌─────────────────────────────────────────────────────────────────┐
+│                         BlobForge Server                        │
+│                           (Go + SQLite)                         │
+│                                                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
+│  │   REST API  │  │  Dashboard  │  │      Litestream         │  │
+│  │   /api/*    │  │ (HTMX+SSE)  │  │  (SQLite → S3 backup)   │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
+│                          │                                      │
+│  ┌─────────────┐  ┌──────┴──────┐  ┌─────────────────────────┐  │
+│  │ OIDC/Auth   │  │   SQLite    │  │    SSE Hub (live)       │  │
+│  │ middleware  │  │   (WAL)     │  │    updates              │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+        ▲                                           │
+        │ HTTP API                                  │ Presigned URLs
+        │                                           ▼
+┌───────┴───────┐                          ┌───────────────────┐
+│    Workers    │ ◄────── Download/Upload ─┤   S3 (R2/MinIO)   │
+│  (PDF, etc.)  │                          │   sources/        │
+└───────────────┘                          │   outputs/        │
+                                           └───────────────────┘
 ```
 
-## 📦 Installation
+## Quick Start
 
-### Option A: Docker/Podman (Recommended for Workers)
-
-The container image includes all dependencies for PDF processing (`marker-pdf`, `ocr`, `torch`).
+### 1. Start the Server
 
 ```bash
-# Build the image (or pull from ghcr.io/tionis/blobforge:latest)
-podman build -t blobforge .
+cd server
 
-# Run a Worker (set BLOBFORGE_WORKER_ID for stable identity across restarts)
-podman run -d \
-  -v blobforge-cache:/root/.cache \
-  -e BLOBFORGE_S3_BUCKET=my-forge-bucket \
-  -e BLOBFORGE_WORKER_ID=worker-01 \
-  -e AWS_ACCESS_KEY_ID=... \
-  -e AWS_SECRET_ACCESS_KEY=... \
-  blobforge worker
+# S3 configuration (required)
+export BLOBFORGE_S3_ENDPOINT=https://xxx.r2.cloudflarestorage.com
+export BLOBFORGE_S3_BUCKET=blobforge
+export BLOBFORGE_S3_ACCESS_KEY=xxx
+export BLOBFORGE_S3_SECRET_KEY=xxx
+
+# Optional: OIDC authentication
+export BLOBFORGE_OIDC_ISSUER=https://accounts.google.com
+export BLOBFORGE_OIDC_CLIENT_ID=your-client-id
+export BLOBFORGE_OIDC_CLIENT_SECRET=your-client-secret
+export BLOBFORGE_OIDC_REDIRECT_URL=http://localhost:8080/auth/callback
+export BLOBFORGE_OIDC_ALLOWED_GROUPS=users,admins  # optional: restrict access
+export BLOBFORGE_OIDC_ADMIN_GROUPS=admins          # optional: admin access
+
+# Build and run
+go build -o blobforge .
+./blobforge
 ```
 
-**Important notes:**
-- **Model Cache:** Mount `/root/.cache` as a volume to persist the ~3GB marker/torch models across container restarts. Without this, models are re-downloaded on every container start.
-- **Worker ID:** Always set `BLOBFORGE_WORKER_ID` for containerized workers. Without it, the worker ID changes on every restart, leaving orphaned locks that the janitor must clean up.
+Dashboard at http://localhost:8080/
 
-### Option B: uv (Recommended for CLI)
-
-Install the CLI tool using [uv](https://docs.astral.sh/uv/):
+### 2. Start a PDF Worker (CPU)
 
 ```bash
-# Install globally as a tool
-uv tool install .
+cd workers/pdf
 
-# Or install with PDF conversion support
-uv tool install ".[convert]"
+# Install dependencies
+pip install -r requirements.txt
 
-# Verify installation
-blobforge --help
+# Configure
+export BLOBFORGE_SERVER_URL=http://localhost:8080
+export BLOBFORGE_API_TOKEN=your-api-token  # from admin UI
+
+# Run
+python worker.py
 ```
 
-### Option C: pip
-
-Requires Python 3.9+ and system dependencies for PDF conversion (`tesseract-ocr`, `ghostscript`).
+### 3. Start a PDF Worker (GPU - CUDA)
 
 ```bash
-pip install .
+cd workers/pdf
 
-# With PDF conversion support
-pip install ".[convert]"
+# Install with GPU support
+pip install marker-pdf[gpu]
+
+# Enable GPU processing
+export BLOBFORGE_USE_GPU=true
+export CUDA_VISIBLE_DEVICES=0  # specific GPU
+
+python worker.py
 ```
 
-## 💻 Usage (CLI)
-
-BlobForge provides a unified `blobforge` command for all operations.
-
-### 1. Ingest Data
-
-Ingests **PDF files only** (`.pdf` extension) and queues them for processing. Accepts files, directories, or shell globs.
-
-**How it works:**
-1. For directories: walks the tree recursively looking for `.pdf` files (case-insensitive)
-2. For files: checks if they're PDFs (by extension)
-3. For each PDF, determines the file hash:
-   - **Git LFS pointer files**: Extracts the SHA256 from the pointer (no download needed)
-   - **Regular PDF files**: Validates the `%PDF` header, then computes SHA256
-4. Checks if the file is already processed, queued, or failed (prevents duplicates)
-5. Uploads the raw PDF to S3 (if not already present)
-6. Creates a job in the todo queue
-
-**Git LFS Support:**
-- If the path is inside a Git repo with LFS, pointer files are detected automatically
-- The ingestor will `git lfs pull` individual files as needed, then revert them to pointers after upload
-- This saves local disk space when processing large libraries
-- Works with **smudge filter disabled** (`git lfs install --skip-smudge`)
-
-**Input flexibility:**
-- Single file: `blobforge ingest document.pdf`
-- Single directory: `blobforge ingest ./library/`
-- Multiple paths: `blobforge ingest file1.pdf file2.pdf ./more-pdfs/`
-- Shell globbing: `blobforge ingest *.pdf ./books/*.pdf`
-- Mix files and directories: `blobforge ingest urgent.pdf ./batch-folder/`
+### 4. Submit Jobs (Go CLI - Recommended)
 
 ```bash
-# Ingest a single PDF
-blobforge ingest ./document.pdf
+cd server
 
-# Ingest a directory recursively
-blobforge ingest ./library/rpg-books
+# Build the CLI
+go build -o blobforge ./cmd/blobforge
 
-# Ingest multiple paths (files and/or directories)
-blobforge ingest file1.pdf file2.pdf ./more-pdfs/
+# Configure
+export BLOBFORGE_SERVER_URL=http://localhost:8080
+export BLOBFORGE_API_TOKEN=your-api-token
 
-# Use shell globbing
-blobforge ingest *.pdf ./books/**/*.pdf
+# Submit a PDF
+./blobforge submit /path/to/document.pdf
 
-# Ingest with high priority
-blobforge ingest ./urgent/*.pdf --priority 1_critical
+# Submit with priority (1=critical, 5=background)
+./blobforge submit /path/to/urgent.pdf --priority 1
 
-# Preview what would be ingested (no changes made)
-blobforge ingest ./library --dry-run
+# Ingest all PDFs in a directory (batch processing)
+./blobforge ingest /path/to/pdfs/ --type pdf
+
+# Check status
+./blobforge stats
+./blobforge jobs list
+./blobforge workers list
+
+# Manage jobs
+./blobforge jobs retry 123
+./blobforge jobs cancel 456
+
+# Manage workers
+./blobforge workers drain worker-1
+./blobforge workers remove worker-1
+
+# Manage API tokens (admin)
+./blobforge tokens list
+./blobforge tokens create --description "Worker token"
 ```
 
-**State-aware behavior** - Files are skipped if they're:
-- Already converted (output exists)
-- Currently being processed by a worker
-- Already in the todo queue (any priority)
-- In the failed queue (janitor will retry)
-- In the dead-letter queue (exceeded max retries)
-
-### 2. Start a Worker
-
-Workers automatically find jobs, lock them, process them, and upload results.
-Worker IDs are persistent (based on machine fingerprint) so cleanup works across restarts.
+### 5. Submit Jobs (Python CLI - Alternative)
 
 ```bash
-# Start a worker (runs continuously)
-blobforge worker
+cd cli
 
-# Process one job and exit
-blobforge worker --run-once
+# Install
+pip install httpx
 
-# Preview without making changes
-blobforge worker --dry-run
+# Configure
+export BLOBFORGE_SERVER_URL=http://localhost:8080
+export BLOBFORGE_API_TOKEN=your-api-token
+
+# Submit a PDF
+python blobforge.py submit /path/to/document.pdf
+
+# Check status
+python blobforge.py stats
 ```
 
-*Run multiple instances on any number of machines to scale horizontally.*
+## Configuration
 
-### 3. Monitor Status
-
-View queue counts, active processing jobs, and failed jobs.
-
-```bash
-# Quick dashboard
-blobforge dashboard
-
-# Detailed dashboard
-blobforge dashboard -v
-
-# Queue statistics
-blobforge list -v
-
-# Check specific file status
-blobforge status <SHA256_HASH>
-```
-
-### 4. Maintenance (Janitor)
-
-The Janitor detects stale locks (no heartbeat for 15+ minutes) and failed jobs, then re-queues them.
-Jobs exceeding MAX_RETRIES are moved to the dead-letter queue.
-
-```bash
-# Run janitor
-blobforge janitor
-
-# Preview what janitor would do
-blobforge janitor --dry-run
-
-# Verbose output
-blobforge janitor -v
-```
-
-### 5. Retry Failed Jobs
-
-Manually retry jobs from the failed or dead-letter queue:
-
-```bash
-# Retry a failed job
-blobforge retry <SHA256_HASH>
-
-# Retry with higher priority
-blobforge retry <SHA256_HASH> --priority 1_critical
-
-# Reset retry counter (for dead-letter jobs)
-blobforge retry <SHA256_HASH> --reset-retries
-```
-
-### 6. Search & Lookup (Manifest)
-
-The manifest tracks all ingested files with metadata for fast lookups:
-
-```bash
-# Search by filename or tag
-blobforge search "Call of Cthulhu"
-
-# Look up by hash
-blobforge lookup --hash <SHA256_HASH>
-
-# Look up by path
-blobforge lookup --path "DnD/Players Handbook.pdf"
-
-# Show manifest statistics
-blobforge manifest -v
-```
-
-### 7. Reprioritize Jobs
-
-Change the priority of queued jobs:
-
-```bash
-blobforge reprioritize <SHA256_HASH> 1_critical
-```
-
-### 8. Manage Remote Configuration
-
-Operational settings are stored in S3 and cached with a 1-hour TTL. This allows updating configuration without restarting workers.
-
-```bash
-# View current config
-blobforge config --show
-
-# Update settings
-blobforge config --set max_retries=5 stale_timeout_minutes=20
-```
-
-### 9. List Workers
-
-View all registered workers and their status:
-
-```bash
-# All workers
-blobforge workers
-
-# Only active workers
-blobforge workers --active
-
-# With detailed info
-blobforge workers -v
-```
-
-## ⚙️ Configuration
-
-Configuration is split into two categories:
-
-### Local Configuration (Environment Variables)
-
-These **must** be set as environment variables (required for S3 connectivity).
+### Server Environment Variables
 
 | Variable | Default | Description |
-| :--- | :--- | :--- |
-| `BLOBFORGE_S3_BUCKET` | `blobforge` | The target S3 bucket name |
-| `BLOBFORGE_S3_PREFIX` | `pdf/` | Optional prefix for namespacing (e.g., `prod/`) |
-| `BLOBFORGE_S3_REGION` | `us-east-1` | S3 region |
-| `BLOBFORGE_S3_ACCESS_KEY_ID` | - | S3 access key (overrides AWS_ACCESS_KEY_ID) |
-| `BLOBFORGE_S3_SECRET_ACCESS_KEY` | - | S3 secret key (overrides AWS_SECRET_ACCESS_KEY) |
-| `BLOBFORGE_S3_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
-| `BLOBFORGE_WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set. **Required for containers** to maintain stable identity across restarts |
-| `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+|----------|---------|-------------|
+| `BLOBFORGE_PORT` | `8080` | HTTP server port |
+| `BLOBFORGE_DB_PATH` | `./data/blobforge.db` | SQLite database path |
+| `BLOBFORGE_S3_ENDPOINT` | - | S3/R2/MinIO endpoint URL |
+| `BLOBFORGE_S3_BUCKET` | `blobforge` | S3 bucket name |
+| `BLOBFORGE_S3_REGION` | `auto` | S3 region |
+| `BLOBFORGE_S3_ACCESS_KEY` | - | S3 access key |
+| `BLOBFORGE_S3_SECRET_KEY` | - | S3 secret key |
+| `BLOBFORGE_S3_PREFIX` | - | Optional path prefix in bucket |
+| `BLOBFORGE_WORKER_TIMEOUT` | `180` | Seconds before worker considered stale |
+| `BLOBFORGE_MAX_ATTEMPTS` | `3` | Max job retry attempts |
 
-### Remote Configuration (Stored in S3)
+### OIDC Authentication Variables
 
-These settings are stored in S3 at `{prefix}registry/config.json` and cached for 1 hour. Update via CLI:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLOBFORGE_OIDC_ISSUER` | - | OIDC provider URL (e.g., `https://accounts.google.com`) |
+| `BLOBFORGE_OIDC_CLIENT_ID` | - | OAuth2 client ID |
+| `BLOBFORGE_OIDC_CLIENT_SECRET` | - | OAuth2 client secret |
+| `BLOBFORGE_OIDC_REDIRECT_URL` | - | OAuth2 callback URL |
+| `BLOBFORGE_OIDC_ALLOWED_GROUPS` | - | Comma-separated groups allowed to access (empty = all) |
+| `BLOBFORGE_OIDC_ADMIN_GROUPS` | - | Comma-separated groups with admin access |
 
-| Setting | Default | Description |
-| :--- | :--- | :--- |
-| `max_retries` | `3` | Number of failures before moving to dead-letter queue |
-| `heartbeat_interval` | `60` | Seconds between heartbeat updates |
-| `stale_timeout_minutes` | `15` | Minutes without heartbeat before job is considered stale |
-| `conversion_timeout` | `3600` | Seconds before conversion is killed (1 hour) |
+### Worker Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLOBFORGE_SERVER_URL` | `http://localhost:8080` | Server URL |
+| `BLOBFORGE_API_TOKEN` | - | API token for authentication |
+| `BLOBFORGE_POLL_INTERVAL` | `5` | Seconds between job polls |
+| `BLOBFORGE_HEARTBEAT_INTERVAL` | `30` | Seconds between heartbeats |
+| `BLOBFORGE_USE_GPU` | `false` | Enable GPU acceleration (marker-pdf) |
+| `CUDA_VISIBLE_DEVICES` | - | Which GPU to use |
+
+## Authentication
+
+BlobForge supports two authentication methods:
+
+### OIDC (Browser)
+
+Configure OIDC environment variables and users will be redirected to the identity provider. Supports group-based access control.
+
+### API Tokens (Workers/CLI)
+
+Generate tokens from the Admin UI (requires admin access):
+
+1. Login via OIDC
+2. Go to Admin → API Tokens
+3. Create a new token with description
+4. Copy the token (only shown once!)
+5. Use in workers/CLI via `BLOBFORGE_API_TOKEN` or `Authorization: Bearer <token>`
+
+## Litestream (SQLite Replication)
+
+BlobForge can continuously backup SQLite to S3 using Litestream.
+
+### With Docker
+
+The Dockerfile includes Litestream. Configure via environment:
 
 ```bash
-# View all remote config
-blobforge config --show
-
-# Update settings (takes effect within 1 hour on all workers)
-blobforge config --set max_retries=5 conversion_timeout=7200
+export LITESTREAM_ACCESS_KEY_ID=xxx
+export LITESTREAM_SECRET_ACCESS_KEY=xxx
 ```
 
-### S3 Provider Compatibility
+### Standalone Litestream
 
-BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Tested providers:
+1. Install Litestream: https://litestream.io/install/
+2. Configure `litestream.yml`:
 
-| Provider | Status |
-| :--- | :--- |
-| AWS S3 | ✅ Full support |
-| Cloudflare R2 | ✅ Full support |
-| Ceph Object Gateway | ✅ Full support |
-| MinIO | ✅ Full support |
-
-## 🏗 Project Structure
-
-```
-├── pyproject.toml   # Package configuration and dependencies
-├── blobforge/       # Main package
-│   ├── cli.py       # Unified command-line interface
-│   ├── ingestor.py  # Scans filesystem, uploads RAW blobs, queues jobs
-│   ├── worker.py    # Polls S3, locks jobs, runs marker-pdf, sends heartbeats
-│   ├── janitor.py   # Recovers stale jobs, manages retries
-│   ├── status.py    # Reporting dashboard
-│   ├── s3_client.py # Consolidated S3 operations (single source of truth)
-│   └── config.py    # Shared configuration and constants
-├── tests/           # Unit tests
-├── DESIGN.md        # Detailed architectural decisions
-└── Dockerfile       # Container build for workers
+```yaml
+dbs:
+  - path: /data/blobforge.db
+    replicas:
+      - type: s3
+        bucket: ${BLOBFORGE_S3_BUCKET}
+        path: db
+        endpoint: ${BLOBFORGE_S3_ENDPOINT}
 ```
 
-## 🧪 Testing
-
-Run the test suite:
+3. Run with Litestream:
 
 ```bash
-# With uv
-uv run pytest tests/ -v
-
-# Or with unittest
-uv run python -m unittest tests.test_blobforge -v
-
-# Without uv
-python -m pytest tests/ -v
+litestream replicate -config litestream.yml
 ```
 
-## 🔮 Future Roadmap
+## Priority System
 
-*   **Metrics/Monitoring:** Prometheus metrics export for job duration, success rate
-*   **Batching:** Support for tarball ingestion to process thousands of small files efficiently
-*   **Vector Embeddings:** Worker modules for generating embeddings from images/text
-*   **SQLite + Litestream:** Optional fast manifest storage for filename→hash lookups
+Jobs have a priority from 1-5:
 
-## 📄 License
+| Priority | Name | Use Case |
+|----------|------|----------|
+| 1 | Critical | User-requested, needs immediate processing |
+| 2 | High | Important batch processing |
+| 3 | Normal | Default priority |
+| 4 | Low | Background processing |
+| 5 | Background | Lowest priority, processed when idle |
+
+Workers claim jobs in priority order (lowest number first), then by creation time.
+
+## API Endpoints
+
+### Authentication
+
+- `GET /auth/login` - Initiate OIDC login
+- `GET /auth/callback` - OIDC callback
+- `POST /auth/logout` - Logout
+
+### Workers
+
+- `POST /api/workers/register` - Register a worker
+- `POST /api/workers/{id}/heartbeat` - Send heartbeat
+- `POST /api/workers/{id}/unregister` - Unregister worker
+- `POST /api/workers/{id}/drain` - Set worker to draining (admin)
+- `DELETE /api/workers/{id}` - Remove worker (admin)
+- `GET /api/workers` - List all workers
+
+### Jobs
+
+- `POST /api/jobs` - Create a new job
+- `GET /api/jobs` - List jobs (with filters)
+- `GET /api/jobs/{id}` - Get job details
+- `POST /api/jobs/claim` - Claim next available job
+- `POST /api/jobs/{id}/complete` - Mark job complete
+- `POST /api/jobs/{id}/fail` - Mark job failed
+- `POST /api/jobs/{id}/retry` - Retry a failed job
+- `POST /api/jobs/{id}/cancel` - Cancel a pending job
+- `PATCH /api/jobs/{id}/priority` - Update job priority
+
+### Files
+
+- `GET /api/files/{job_id}/{type}/url` - Get presigned download URL
+- `POST /api/files/upload-url` - Get presigned upload URL
+
+### Admin (requires admin access)
+
+- `GET /api/admin/tokens` - List API tokens
+- `POST /api/admin/tokens` - Create API token
+- `DELETE /api/admin/tokens/{id}` - Delete API token
+- `GET /api/admin/users` - List users
+
+### Stats & Health
+
+- `GET /api/stats` - Get queue statistics
+- `GET /api/health` - Health check
+- `GET /api/events` - SSE stream for live updates
+
+## Live Dashboard Updates
+
+The dashboard uses Server-Sent Events (SSE) for real-time updates:
+
+- Job created/updated/completed/failed
+- Worker online/offline
+- Stats updates
+
+No page refresh needed - changes appear instantly.
+
+## GPU Acceleration
+
+PDF workers using marker-pdf support GPU acceleration for faster processing:
+
+```bash
+# Install with GPU support
+pip install marker-pdf[gpu]
+
+# Configure NVIDIA runtime
+export BLOBFORGE_USE_GPU=true
+export CUDA_VISIBLE_DEVICES=0
+```
+
+For Docker, use the NVIDIA runtime:
+
+```bash
+docker run --gpus all -e BLOBFORGE_USE_GPU=true blobforge-pdf-worker
+```
+
+## Docker Deployment
+
+```bash
+# Build images
+docker build -t blobforge-server -f server/Containerfile server/
+docker build -t blobforge-pdf-worker -f workers/pdf/Containerfile workers/pdf/
+
+# Run with docker-compose
+docker-compose up
+```
+
+## Development
+
+```bash
+# Server (with hot reload)
+cd server
+go run github.com/air-verse/air@latest
+
+# Run tests
+cd server
+go test ./...
+
+# PDF Worker
+cd workers/pdf
+python worker.py
+```
+
+## License
 
 MIT

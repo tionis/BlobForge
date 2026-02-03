@@ -1,0 +1,124 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <a href="/jobs" class="link">← Back to Jobs</a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div>
+            <h1 class="page-title">Job #{{.Job.ID}}</h1>
+            <p class="text-muted">{{.Job.Type}}</p>
+        </div>
+        <span class="status-badge status-{{.Job.Status}}">{{.Job.Status}}</span>
+    </div>
+    <div class="card-body">
+        <div class="grid-2">
+            <div>
+                <h3 class="section-title">Details</h3>
+                <dl class="detail-list">
+                    <div class="detail-row">
+                        <dt>Source Hash</dt>
+                        <dd class="font-mono">{{truncate .Job.SourceHash 20}}</dd>
+                    </div>
+                    {{if .Job.SourcePath}}
+                    <div class="detail-row">
+                        <dt>Source Path</dt>
+                        <dd>{{.Job.SourcePath}}</dd>
+                    </div>
+                    {{end}}
+                    <div class="detail-row">
+                        <dt>Priority</dt>
+                        <dd>{{.Job.Priority}}</dd>
+                    </div>
+                    <div class="detail-row">
+                        <dt>Attempts</dt>
+                        <dd>{{.Job.Attempts}}/{{.Job.MaxAttempts}}</dd>
+                    </div>
+                    {{if .Job.WorkerID}}
+                    <div class="detail-row">
+                        <dt>Worker</dt>
+                        <dd class="font-mono">{{truncate (deref .Job.WorkerID) 16}}</dd>
+                    </div>
+                    {{end}}
+                </dl>
+            </div>
+
+            <div>
+                <h3 class="section-title">Timestamps</h3>
+                <dl class="detail-list">
+                    <div class="detail-row">
+                        <dt>Created</dt>
+                        <dd>{{formatTime (addr .Job.CreatedAt)}}</dd>
+                    </div>
+                    {{if .Job.StartedAt}}
+                    <div class="detail-row">
+                        <dt>Started</dt>
+                        <dd>{{formatTime .Job.StartedAt}}</dd>
+                    </div>
+                    {{end}}
+                    {{if .Job.CompletedAt}}
+                    <div class="detail-row">
+                        <dt>Completed</dt>
+                        <dd>{{formatTime .Job.CompletedAt}}</dd>
+                    </div>
+                    <div class="detail-row">
+                        <dt>Duration</dt>
+                        <dd>{{formatDuration .Job.StartedAt .Job.CompletedAt}}</dd>
+                    </div>
+                    {{end}}
+                </dl>
+            </div>
+        </div>
+
+        {{if .Job.LastError}}
+        <div class="mt-6">
+            <h3 class="section-title text-danger">Last Error</h3>
+            <pre class="error-box">{{deref .Job.LastError}}</pre>
+        </div>
+        {{end}}
+
+        {{if .Files}}
+        <div class="mt-6">
+            <h3 class="section-title">Files</h3>
+            <div class="list-group">
+                {{range .Files}}
+                <div class="list-item">
+                    <div class="list-item-content">
+                        <span class="list-item-title">{{.Type}}</span>
+                        <span class="text-muted text-sm">{{.S3Key}}</span>
+                    </div>
+                    <a href="/api/files/{{$.Job.ID}}/{{.Type}}/url" target="_blank" class="btn btn-secondary btn-sm">Download</a>
+                </div>
+                {{end}}
+            </div>
+        </div>
+        {{end}}
+
+        {{if or (eq .Job.Status "failed") (eq .Job.Status "dead")}}
+        <div class="action-bar">
+            <button
+                class="btn btn-primary"
+                hx-post="/api/jobs/{{.Job.ID}}/retry"
+                hx-headers='{"Content-Type": "application/json"}'
+                hx-vals='{"reset_attempts": true}'
+                hx-swap="none"
+                hx-on::after-request="window.location.reload()"
+            >Retry Job</button>
+        </div>
+        {{end}}
+
+        {{if eq .Job.Status "pending"}}
+        <div class="action-bar">
+            <button
+                class="btn btn-danger"
+                hx-post="/api/jobs/{{.Job.ID}}/cancel"
+                hx-swap="none"
+                hx-on::after-request="window.location.reload()"
+            >Cancel Job</button>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

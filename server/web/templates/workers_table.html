@@ -1,0 +1,59 @@
+<div class="table-container">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Current Job</th>
+                <th>Last Heartbeat</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Workers}}
+            <tr>
+                <td class="font-mono">{{truncate .ID 12}}</td>
+                <td>{{if .Name}}{{.Name}}{{else}}<span class="text-muted">-</span>{{end}}</td>
+                <td>{{.Type}}</td>
+                <td>
+                    <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                </td>
+                <td>
+                    {{if .CurrentJobID}}
+                    <a href="/jobs/{{deref .CurrentJobID}}" class="link">#{{deref .CurrentJobID}}</a>
+                    {{else}}
+                    <span class="text-muted">idle</span>
+                    {{end}}
+                </td>
+                <td class="text-muted">{{timeAgo .LastHeartbeat}}</td>
+                <td class="actions">
+                    {{if eq .Status "online"}}
+                    <button class="btn btn-warning btn-sm" 
+                            hx-post="/api/workers/{{.ID}}/drain"
+                            hx-swap="none"
+                            hx-confirm="Drain this worker? It will stop accepting new jobs.">
+                        Drain
+                    </button>
+                    {{else if eq .Status "draining"}}
+                    <span class="text-warning">Draining...</span>
+                    {{end}}
+                    {{if ne .Status "online"}}
+                    <button class="btn btn-danger btn-sm"
+                            hx-delete="/api/workers/{{.ID}}"
+                            hx-swap="none"
+                            hx-confirm="Remove this worker? This cannot be undone.">
+                        Remove
+                    </button>
+                    {{end}}
+                </td>
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="7" class="text-center text-muted">No workers registered</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>

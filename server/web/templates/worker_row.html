@@ -1,0 +1,42 @@
+<tr id="worker-{{.Worker.ID}}" class="hover:bg-gray-50">
+    <td class="px-4 py-3 text-sm font-medium text-gray-900">{{.Worker.ID}}</td>
+    <td class="px-4 py-3 text-sm text-gray-500">{{.Worker.Type}}</td>
+    <td class="px-4 py-3 text-sm">
+        <span class="px-2 py-1 text-xs rounded-full {{statusBg .Worker.Status}} {{workerStatusColor .Worker.Status}}">
+            {{.Worker.Status}}
+        </span>
+    </td>
+    <td class="px-4 py-3 text-sm text-gray-500">
+        {{if .Worker.CurrentJobID}}
+        <a href="/jobs/{{deref .Worker.CurrentJobID}}" class="text-indigo-600 hover:text-indigo-800">
+            #{{deref .Worker.CurrentJobID}}
+        </a>
+        {{else}}
+        <span class="text-gray-400">idle</span>
+        {{end}}
+    </td>
+    <td class="px-4 py-3 text-sm text-gray-500">{{timeAgo .Worker.LastHeartbeat}}</td>
+    <td class="px-4 py-3 text-sm">
+        <div class="flex space-x-2">
+            {{if eq .Worker.Status "online"}}
+            <button 
+                hx-post="/actions/workers/{{.Worker.ID}}/drain" 
+                hx-target="#worker-{{.Worker.ID}}"
+                hx-swap="outerHTML"
+                class="text-yellow-600 hover:text-yellow-800 text-xs"
+                title="Set worker to draining mode">
+                ⏸ Drain
+            </button>
+            {{end}}
+            <button 
+                hx-delete="/actions/workers/{{.Worker.ID}}" 
+                hx-target="#worker-{{.Worker.ID}}"
+                hx-swap="outerHTML"
+                hx-confirm="Are you sure you want to remove this worker?"
+                class="text-red-600 hover:text-red-800 text-xs"
+                title="Remove worker">
+                ✕ Remove
+            </button>
+        </div>
+    </td>
+</tr>

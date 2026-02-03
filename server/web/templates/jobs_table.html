@@ -1,0 +1,78 @@
+<div class="table-container">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Worker</th>
+                <th>Created</th>
+                {{if not .Compact}}
+                <th>Actions</th>
+                {{end}}
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Jobs}}
+            <tr>
+                <td>
+                    <a href="/jobs/{{.ID}}" class="link">#{{.ID}}</a>
+                </td>
+                <td>{{.Type}}</td>
+                <td>
+                    <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                </td>
+                <td class="text-muted">
+                    {{if .WorkerID}}{{truncate (deref .WorkerID) 12}}{{else}}-{{end}}
+                </td>
+                <td class="text-muted">{{timeAgo (addr .CreatedAt)}}</td>
+                {{if not $.Compact}}
+                <td class="actions">
+                    {{if or (eq .Status "failed") (eq .Status "dead")}}
+                    <button 
+                        class="btn btn-primary btn-sm"
+                        hx-post="/api/jobs/{{.ID}}/retry"
+                        hx-swap="none"
+                        hx-headers='{"Content-Type": "application/json"}'
+                        hx-vals='{"reset_attempts": true}'
+                    >Retry</button>
+                    {{end}}
+                    {{if eq .Status "pending"}}
+                    <button
+                        class="btn btn-danger btn-sm"
+                        hx-post="/api/jobs/{{.ID}}/cancel"
+                        hx-swap="none"
+                    >Cancel</button>
+                    {{end}}
+                </td>
+                {{end}}
+            </tr>
+            {{else}}
+            <tr>
+                <td colspan="6" class="text-center text-muted">No jobs found</td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{if and .Total (gt .Total .Limit)}}
+<div class="pagination">
+    <span class="text-muted">Showing {{len .Jobs}} of {{.Total}} jobs</span>
+    <div class="pagination-buttons">
+        {{if gt .Offset 0}}
+        <button 
+            class="btn btn-secondary btn-sm"
+            hx-get="/partials/jobs?offset={{sub .Offset .Limit}}&limit={{.Limit}}&status={{.Status}}&type={{.Type}}"
+            hx-target="#jobs-table"
+        >Previous</button>
+        {{end}}
+        {{if lt (add .Offset .Limit) .Total}}
+        <button
+            class="btn btn-secondary btn-sm"
+            hx-get="/partials/jobs?offset={{add .Offset .Limit}}&limit={{.Limit}}&status={{.Status}}&type={{.Type}}"
+            hx-target="#jobs-table"
+        >Next</button>
+        {{end}}
+    </div>
+</div>
+{{end}}

@@ -1,0 +1,46 @@
+{{template "base" .}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">Jobs</h1>
+    <div class="page-actions">
+        <!-- Status filter -->
+        <select 
+            id="status-filter"
+            hx-get="/partials/jobs"
+            hx-target="#jobs-table"
+            hx-include="#type-filter"
+            name="status"
+            class="form-select"
+        >
+            <option value="">All Statuses</option>
+            <option value="pending" {{if eq .Status "pending"}}selected{{end}}>Pending</option>
+            <option value="running" {{if eq .Status "running"}}selected{{end}}>Running</option>
+            <option value="completed" {{if eq .Status "completed"}}selected{{end}}>Completed</option>
+            <option value="failed" {{if eq .Status "failed"}}selected{{end}}>Failed</option>
+            <option value="dead" {{if eq .Status "dead"}}selected{{end}}>Dead</option>
+        </select>
+        <!-- Type filter -->
+        <select
+            id="type-filter"
+            hx-get="/partials/jobs"
+            hx-target="#jobs-table"
+            hx-include="#status-filter"
+            name="type"
+            class="form-select"
+        >
+            <option value="">All Types</option>
+            <option value="pdf-convert" {{if eq .Type "pdf-convert"}}selected{{end}}>PDF Convert</option>
+        </select>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body" id="jobs-table" 
+         hx-get="/partials/jobs?status={{.Status}}&type={{.Type}}" 
+         hx-trigger="every 5s, sse:job_created, sse:job_updated, sse:job_completed, sse:job_failed" 
+         hx-swap="innerHTML">
+        {{template "jobs_table.html" .}}
+    </div>
+</div>
+{{end}}

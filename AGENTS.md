@@ -9,16 +9,17 @@ All LLM agents operating in this repository MUST adhere to the following protoco
 
 ## Findings
 
-- **2026-02-03:** Added `S3_PREFIX` support to `config.py` to allow namespacing in the S3 bucket. All queue and storage paths now respect this prefix.
-- **2026-02-03:** Standardized `janitor.py` and `status.py` to use the central `config.py` for path resolution.
-- **2026-02-03:** Major refactor - consolidated all S3 operations into single `s3_client.py` module. All components now use this unified client.
-- **2026-02-03:** Added dead-letter queue (`queue/dead/`) for jobs exceeding MAX_RETRIES. Jobs can be manually retried via CLI.
-- **2026-02-03:** Worker now uses heartbeat mechanism (60s interval) with 15-minute stale timeout instead of 2-hour fixed timeout.
-- **2026-02-03:** Fixed race condition: todo markers are now kept until job completion (not deleted on lock acquisition).
-- **2026-02-03:** Improved sharding from 16 to 256 shards (2-char hex prefix) for better worker distribution.
-- **2026-02-03:** Worker ID is now persistent based on machine fingerprint (hostname + /etc/machine-id) instead of random per session.
-- **2026-02-03:** Restructured as Python package with `pyproject.toml` entry point. Install via `uv tool install .`
-- **2026-02-03:** All env vars now use `BLOBFORGE_` prefix. S3 credentials use `BLOBFORGE_S3_ACCESS_KEY_ID`, etc.
-- **2026-02-03:** Operational config (max_retries, timeouts) now stored in S3 at `{prefix}registry/config.json` with 1-hour TTL cache.
-- **2026-02-03:** Worker registration: workers push metadata to `{prefix}registry/workers/{id}.json` on startup/shutdown.
-- **2026-02-03:** New CLI commands: `blobforge config` (view/update remote config), `blobforge workers` (list registered workers).
+- **2026-02-03:** Major architecture redesign - migrated from S3-only coordination to centralized Go server with SQLite.
+- **2026-02-03:** New Go server in `server/` with Chi router, SQLite database, HTMX dashboard.
+- **2026-02-03:** Workers are now simple HTTP clients that poll the server API for jobs.
+- **2026-02-03:** S3 is now used only for file storage (sources/, outputs/), not coordination.
+- **2026-02-03:** Added presigned URL generation for secure worker file transfers.
+- **2026-02-03:** PDF worker refactored to `workers/pdf/` as HTTP client using marker-pdf.
+- **2026-02-03:** Created Python CLI tool in `cli/` for job submission and status checking.
+- **2026-02-03:** Added docker-compose.yml for easy deployment of server + workers.
+- **2026-02-03:** Created Go admin CLI in `server/cmd/blobforge/` with Cobra - supports submit, ingest, stats, jobs, workers, tokens commands.
+- **2026-02-03:** Implemented SQLite migration system using `user_version` pragma in `server/db/migrations.go`.
+- **2026-02-03:** Added comprehensive API tests in `server/api/handlers_test.go` (~600 lines covering all endpoints and failure scenarios).
+- **2026-02-03:** Added Discord-inspired dark mode with 3-way toggle (system/light/dark) via CSS custom properties.
+- **2026-02-03:** All web assets (CSS, JS, templates) embedded in binary using Go's `embed.FS`.
+- **2026-02-03:** Introduced `S3Client` interface in `server/api/handlers.go` for dependency injection in tests.

@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  server:
+    build:
+      context: ./server
+      dockerfile: Containerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - BLOBFORGE_S3_ENDPOINT=${BLOBFORGE_S3_ENDPOINT}
+      - BLOBFORGE_S3_BUCKET=${BLOBFORGE_S3_BUCKET}
+      - BLOBFORGE_S3_ACCESS_KEY=${BLOBFORGE_S3_ACCESS_KEY}
+      - BLOBFORGE_S3_SECRET_KEY=${BLOBFORGE_S3_SECRET_KEY}
+      - BLOBFORGE_S3_PREFIX=${BLOBFORGE_S3_PREFIX:-}
+      - BLOBFORGE_LOG_LEVEL=${BLOBFORGE_LOG_LEVEL:-info}
+    volumes:
+      - blobforge-data:/app/data
+    restart: unless-stopped
+
+  pdf-worker:
+    build:
+      context: ./workers/pdf
+      dockerfile: Containerfile
+    environment:
+      - BLOBFORGE_SERVER_URL=http://server:8080
+    volumes:
+      - blobforge-cache:/root/.cache
+    depends_on:
+      - server
+    restart: unless-stopped
+    # Uncomment for GPU support
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  blobforge-data:
+  blobforge-cache:

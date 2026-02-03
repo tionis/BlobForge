@@ -1,6 +1,97 @@
 # Work Log
 
-## 2026-02-03
+## 2026-02-03 (CLI, Migrations, Tests, Dark Mode)
+- **Objective:** Add Go admin CLI, migration system, comprehensive tests, and dark mode UI
+- **Features Implemented:**
+    1. **Go Admin CLI** (`server/cmd/blobforge/main.go`)
+        - Cobra-based CLI replacing Python CLI
+        - Commands: submit, ingest, stats, jobs (list/retry/cancel), workers (list/drain/remove), tokens (list/create/delete)
+        - PDF ingestor with batch processing, SHA256 hashing, S3 upload via presigned URLs
+        - Progress reporting for batch operations
+    2. **SQLite Migration System** (`server/db/migrations.go`)
+        - Uses user_version pragma to track schema version
+        - Versioned migrations with up SQL
+        - Auto-runs pending migrations on startup
+        - Initial migrations: V1 (schema), V2 (auth tables), V3 (output_path)
+    3. **Comprehensive API Tests** (`server/api/handlers_test.go`)
+        - ~600 lines of tests covering all API endpoints
+        - Worker API: register, heartbeat, list, drain, remove
+        - Job API: create, list, get, retry, cancel, priority
+        - Scheduling logic: priority order, type matching, busy workers
+        - Failure scenarios: stale worker cleanup, concurrent claims, draining workers
+    4. **Discord-inspired Dark Mode** (`server/web/static/style.css`)
+        - CSS custom properties for theming
+        - Discord color palette (#313338, #2b2d31, #1e1f22)
+        - 3-way toggle: system/light/dark with localStorage persistence
+        - JavaScript theme manager (`server/web/static/app.js`)
+    5. **WebUI Enhancements**
+        - All templates use base.html with navbar, theme toggle, footer
+        - Worker management: add, drain, remove buttons
+        - Embedded static assets in binary (no external CDN)
+        - Status badges with proper colors for all states
+- **Status:** Complete. Server compiles, all tests pass.
+
+## 2026-02-03 (Production Features Implementation)
+- **Objective:** Add authentication, real-time updates, and management features
+- **Features Implemented:**
+    1. **OIDC Authentication** (`server/auth/auth.go`)
+        - Full OIDC flow with coreos/go-oidc library
+        - Group-based access control (allowed groups, admin groups)
+        - Session management with cookies
+        - API token authentication for workers/CLI
+    2. **Server-Sent Events** (`server/sse/sse.go`)
+        - Live dashboard updates without polling
+        - Event types: job_created, job_updated, worker_online, stats_updated
+        - Hub architecture with client management
+    3. **Worker Management**
+        - Drain mode (stop accepting new jobs)
+        - Remove worker from dashboard
+        - Real-time status updates
+    4. **Job Management**
+        - Retry/cancel from dashboard
+        - Priority updates (1-5)
+        - HTMX partial updates
+    5. **Database Enhancements** (`server/db/db.go`)
+        - Users, sessions, api_tokens tables
+        - Fixed NULL JSON scanning with custom nullableJSON type
+        - UTC time comparison for stale workers
+    6. **Tests** (`server/db/db_test.go`)
+        - 12 comprehensive tests for all DB operations
+        - All tests passing
+    7. **Litestream Config** (`server/litestream.yml`)
+        - SQLite replication to S3
+        - 10s sync interval, 7 day retention
+    8. **Documentation Updates**
+        - README.md with auth, SSE, GPU acceleration docs
+        - DESIGN.md with auth, SSE, priority sections
+        - TODO.md updated with completed items
+- **Status:** Complete. Server compiles, all tests pass.
+
+## 2026-02-03 (Major Architecture Redesign)
+- **Objective:** Migrate from S3-only coordination to centralized Go server with SQLite.
+- **Motivation:**
+    - S3-only coordination had polling inefficiency, complex locking, no ACID transactions
+    - Hard to debug without centralized view
+    - High S3 API costs from constant coordination calls
+- **Actions:**
+    - Designed new architecture with Go server as central coordinator
+    - Created `server/` directory with Go implementation:
+        - `main.go` - HTTP server with Chi router, graceful shutdown
+        - `db/db.go` - SQLite database layer with migrations
+        - `s3/s3.go` - S3 client with presigned URL generation
+        - `api/handlers.go` - REST API handlers for workers and jobs
+        - `web/web.go` - HTMX dashboard handlers and templates
+    - Created `workers/pdf/` with Python HTTP client worker:
+        - Simple loop: register → claim → process → complete/fail
+        - Uses presigned URLs for file transfers
+    - Created `cli/` with Python CLI for job submission
+    - Removed old Python files (worker.py, janitor.py, ingestor.py, etc.)
+    - Updated README.md with new architecture
+    - Updated DESIGN.md with comprehensive documentation
+    - Added docker-compose.yml for easy deployment
+- **Status:** Complete. Server compiles and starts successfully.
+
+## 2026-02-03 (Previous S3-only work - now replaced)
 - **Objective:** Add S3 namespacing support and establish agent protocols.
 - **Actions:**
     - Modified `config.py` to include `S3_PREFIX`.

@@ -1,28 +1,43 @@
 # TODO List
 
 ## High Priority
-- [ ] Add unit tests for S3 operations and queue state transitions.
-- [ ] Test heartbeat mechanism under load.
+- [ ] Test full end-to-end flow with real OIDC provider
+- [ ] Add worker GPU health monitoring
 
 ## Normal Priority
-- [ ] Update README.md with full configuration reference.
-- [ ] Add metrics/monitoring hooks (job duration, success rate).
-- [ ] Consider adding optional SQS/SNS integration for larger scale.
+- [ ] Add metrics/monitoring hooks (job duration, success rate, Prometheus)
+- [ ] Add progress reporting during conversion (page count)
+- [ ] Add batch job operations (retry all failed, cancel all pending)
+- [ ] Add job dependencies (job A waits for job B)
 
 ## Low Priority
-- [ ] Add progress reporting during conversion (page count).
-- [ ] Implement optional SQLite + Litestream for manifest storage.
+- [ ] Add webhooks for job completion notifications
+- [ ] Add multi-tenancy support
 
 ## Done
-- [x] Add S3 namespacing support via `S3_PREFIX`.
-- [x] Refactor scripts to use central config.
-- [x] Initialize agent protocols and documentation structure.
-- [x] Consolidate S3Client into single module.
-- [x] Implement sharding logic (256 shards with 2-char prefix).
-- [x] Fix race condition in job acquisition.
-- [x] Add heartbeat mechanism with configurable timeout.
-- [x] Add retry limits and dead-letter queue.
-- [x] Make ingestor state-aware (check all queues).
-- [x] Add CLI retry command.
-- [x] Generate persistent worker ID from machine fingerprint.
-- [x] Fix DESIGN.md and document all features.
+- [x] Redesign architecture from S3-only to centralized Go server
+- [x] Create Go server with SQLite database
+- [x] Implement REST API for workers and jobs
+- [x] Create HTMX dashboard
+- [x] Refactor PDF worker to use HTTP API
+- [x] Add presigned URL generation for S3
+- [x] Add worker heartbeat and stale detection
+- [x] Create CLI for job submission
+- [x] Write comprehensive README
+- [x] Add docker-compose for easy deployment
+- [x] Add OIDC authentication with group-based access control
+- [x] Add API token authentication for workers/CLI
+- [x] Add SSE for real-time dashboard updates (replaces polling)
+- [x] Add worker management (drain, remove) from dashboard
+- [x] Add job management (retry, cancel, priority) from dashboard
+- [x] Add flexible priority system (1-5)
+- [x] Create Litestream configuration for SQLite backup
+- [x] Add comprehensive database tests
+- [x] Document GPU acceleration for marker-pdf workers
+- [x] Update DESIGN.md with auth and SSE sections
+- [x] Implement Go admin CLI with cobra (submit, ingest, stats, jobs, workers, tokens)
+- [x] Add SQLite migration system using user_version pragma
+- [x] Add comprehensive API and scheduling tests
+- [x] Add Discord-inspired dark mode with 3-way toggle (system/light/dark)
+- [x] Worker management features in WebUI (add/drain/remove)
+- [x] Embed all web assets (CSS, JS) in the binary

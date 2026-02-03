@@ -1,0 +1,26 @@
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-label">Total Jobs</div>
+        <div class="stat-value">{{.Stats.TotalJobs}}</div>
+    </div>
+    <div class="stat-card stat-pending">
+        <div class="stat-label">Pending</div>
+        <div class="stat-value">{{.Stats.PendingJobs}}</div>
+    </div>
+    <div class="stat-card stat-running">
+        <div class="stat-label">Running</div>
+        <div class="stat-value">{{.Stats.RunningJobs}}</div>
+    </div>
+    <div class="stat-card stat-completed">
+        <div class="stat-label">Completed</div>
+        <div class="stat-value">{{.Stats.CompletedJobs}}</div>
+    </div>
+    <div class="stat-card stat-failed">
+        <div class="stat-label">Failed</div>
+        <div class="stat-value">{{.Stats.FailedJobs}}</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Workers Online</div>
+        <div class="stat-value">{{.Stats.OnlineWorkers}}<span class="stat-subvalue">/{{.Stats.TotalWorkers}}</span></div>
+    </div>
+</div>
