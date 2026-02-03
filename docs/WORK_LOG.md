@@ -50,3 +50,26 @@
         - Added configuration reference
 - **Status:** All changes complete. Code compiles successfully.
 
+## 2026-02-03 (Quality Improvements)
+- **Objective:** Address remaining issues from code review.
+- **Actions:**
+    - Added comprehensive unit test suite (`tests/test_blobforge.py`)
+        - 35 tests covering S3 operations, locking, heartbeat, retry logic
+        - Tests skip gracefully when botocore not available
+    - Added logging framework:
+        - Replaced `print()` with `logging` module in worker.py
+        - Added `LOG_LEVEL` environment variable
+        - Structured log format with timestamps
+    - Made conversion timeout configurable:
+        - Added `CONVERSION_TIMEOUT_SECONDS` to config.py
+        - Updated worker to use configurable timeout
+    - Fixed graceful shutdown:
+        - `worker.shutdown()` now waits for heartbeat thread to finish
+    - Updated README.md with complete documentation:
+        - All CLI commands with examples
+        - Full configuration reference
+        - S3 provider compatibility matrix
+        - State transition diagram
+    - Fixed `datetime.utcnow()` deprecation warnings
+- **Status:** All improvements complete. 35 tests pass.
+
