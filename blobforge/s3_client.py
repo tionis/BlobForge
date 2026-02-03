@@ -43,6 +43,12 @@ class S3Client:
             if S3_ENDPOINT_URL:
                 kwargs["endpoint_url"] = S3_ENDPOINT_URL
             
+            # Warn if no explicit credentials and using custom endpoint
+            if S3_ENDPOINT_URL and not (S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY):
+                print(f"Warning: BLOBFORGE_S3_ENDPOINT_URL is set but credentials are missing.")
+                print(f"  Set BLOBFORGE_S3_ACCESS_KEY_ID and BLOBFORGE_S3_SECRET_ACCESS_KEY")
+                print(f"  Boto3 will try default credential chain (may fail for custom endpoints)")
+            
             self.s3 = boto3.client('s3', **kwargs)
             self.ClientError = botocore.exceptions.ClientError
         except ImportError:
