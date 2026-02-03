@@ -20,9 +20,19 @@ FROM alpine:3.19
 
 RUN apk add --no-cache ca-certificates
 
+# Install Litestream for SQLite replication
+ARG LITESTREAM_VERSION=0.3.13
+RUN wget -q https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz && \
+    tar -xzf litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz -C /usr/local/bin && \
+    rm litestream-v${LITESTREAM_VERSION}-linux-amd64.tar.gz
+
 WORKDIR /app
 
 COPY --from=builder /app/blobforge .
+COPY run.sh ./
+
+# Make run.sh executable
+RUN chmod +x /app/run.sh
 
 # Create data directory
 RUN mkdir -p /app/data
@@ -32,4 +42,5 @@ ENV BLOBFORGE_PORT=8080
 
 EXPOSE 8080
 
-CMD ["./blobforge"]
+# Use the startup script as entrypoint (handles Litestream)
+ENTRYPOINT ["/app/run.sh"]

@@ -23,3 +23,8 @@ All LLM agents operating in this repository MUST adhere to the following protoco
 - **2026-02-03:** Added Discord-inspired dark mode with 3-way toggle (system/light/dark) via CSS custom properties.
 - **2026-02-03:** All web assets (CSS, JS, templates) embedded in binary using Go's `embed.FS`.
 - **2026-02-03:** Introduced `S3Client` interface in `server/api/handlers.go` for dependency injection in tests.
+- **2026-02-03:** Added proper Litestream integration to server container with exec pattern.
+    - New `server/run.sh` - handles restore and execs Litestream
+    - Updated `server/Containerfile` - includes Litestream v0.3.13
+    - Reuses same `BLOBFORGE_S3_*` credentials (backups go to `litestream/` prefix)
+    - Optional Age encryption via `BLOBFORGE_LITESTREAM_AGE_*` env vars

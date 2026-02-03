@@ -216,36 +216,67 @@ Generate tokens from the Admin UI (requires admin access):
 
 ## Litestream (SQLite Replication)
 
-BlobForge can continuously backup SQLite to S3 using Litestream.
+BlobForge includes built-in [Litestream](https://litestream.io/) support for continuous SQLite backup to S3. Backups are stored in the same bucket as job files, under the `litestream/` prefix.
 
-### With Docker
+**Key features:**
+- **Automatic restore** on container startup (if no local database exists)
+- **Continuous replication** every 10 seconds
+- **Point-in-time recovery** with 7-day retention
+- **Optional Age encryption** for backups
+- **Same credentials** as file storage (no extra S3 config needed)
 
-The Dockerfile includes Litestream. Configure via environment:
+### How It Works
+
+1. Uses the "exec" pattern: Litestream supervises the BlobForge server process
+2. On startup: Restores database from S3 if no local copy exists
+3. During operation: Syncs changes every 10 seconds to `s3://{bucket}/litestream/`
+4. On shutdown: Performs a final sync before exiting
+
+### Litestream Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BLOBFORGE_LITESTREAM_DISABLED` | `false` | Set to `true` to disable Litestream |
+| `BLOBFORGE_LITESTREAM_SKIP_RESTORE` | `false` | Set to `true` to skip restore on startup |
+| `BLOBFORGE_LITESTREAM_AGE_SECRET_KEY` | - | Age secret key for encryption (optional) |
+| `BLOBFORGE_LITESTREAM_AGE_PUBLIC_KEY` | - | Age public key for encryption (optional) |
+
+### Encryption Setup
+
+To encrypt database backups with Age:
 
 ```bash
-export LITESTREAM_ACCESS_KEY_ID=xxx
-export LITESTREAM_SECRET_ACCESS_KEY=xxx
+# Install age (https://github.com/FiloSottile/age)
+brew install age  # macOS
+apt install age   # Debian/Ubuntu
+
+# Generate a keypair
+age-keygen -o key.txt
+cat key.txt
+# Output:
+# # public key: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# AGE-SECRET-KEY-1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+# Configure BlobForge
+export BLOBFORGE_LITESTREAM_AGE_SECRET_KEY=AGE-SECRET-KEY-1XXXX...
+export BLOBFORGE_LITESTREAM_AGE_PUBLIC_KEY=age1xxxx...
 ```
 
-### Standalone Litestream
+### Running Without Container
 
-1. Install Litestream: https://litestream.io/install/
-2. Configure `litestream.yml`:
-
-```yaml
-dbs:
-  - path: /data/blobforge.db
-    replicas:
-      - type: s3
-        bucket: ${BLOBFORGE_S3_BUCKET}
-        path: db
-        endpoint: ${BLOBFORGE_S3_ENDPOINT}
-```
-
-3. Run with Litestream:
+If running BlobForge directly (not in Docker), you can use Litestream manually:
 
 ```bash
-litestream replicate -config litestream.yml
+# Install Litestream: https://litestream.io/install/
+
+# Run with Litestream supervision
+litestream replicate -config server/litestream.yml
+```
+
+Or run BlobForge without Litestream (set S3 env vars for file storage):
+
+```bash
+./blobforge  # Runs without automatic backup
 ```
 
 ## Priority System
