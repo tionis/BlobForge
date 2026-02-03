@@ -84,20 +84,20 @@ def compute_sha256(filepath: str) -> str:
             sha256_hash.update(byte_block)
     return sha256_hash.hexdigest()
 
-def pull_lfs_file(filepath: str):
+def pull_lfs_file(repo_path: str, filepath: str):
     """Runs git lfs pull for a specific file to materialize it."""
     print(f"Materializing LFS file: {filepath}")
-    subprocess.run(["git", "lfs", "pull", "--include", filepath], check=True)
+    subprocess.run(["git", "lfs", "pull", "--include", filepath], check=True, cwd=repo_path)
 
-def cleanup_lfs_file(filepath: str):
+def cleanup_lfs_file(repo_path: str, filepath: str):
     """
     Reverts a file back to its pointer state to save space.
     This effectively does 'git checkout <file>' if the index expects a pointer.
     """
     print(f"Cleaning up (reverting to pointer): {filepath}")
-    subprocess.run(["git", "checkout", filepath], check=True)
+    subprocess.run(["git", "checkout", filepath], check=True, cwd=repo_path)
 
-def ingest(repo_path: str, dry_run: bool = False):
+def ingest(repo_path: str, priority: str = "2_normal", dry_run: bool = False):
     s3 = S3Client(dry_run=dry_run)
     
     print(f"Scanning {repo_path}...")
@@ -117,6 +117,18 @@ def ingest(repo_path: str, dry_run: bool = False):
             if not file_hash:
                 # It's a real PDF (not LFS pointer), compute hash manually
                 is_pointer = False
+                
+                # Verify Magic Number
+                try:
+                    with open(full_path, 'rb') as f:
+                        header = f.read(4)
+                        if header != b'%PDF':
+                            print(f"Skipping {rel_path}: Not a valid PDF (Magic number: {header})")
+                            continue
+                except Exception as e:
+                    print(f"Error reading {rel_path}: {e}")
+                    continue
+
                 print(f"Found non-LFS PDF: {rel_path}. Computing hash...")
                 file_hash = compute_sha256(full_path)
             
@@ -135,10 +147,10 @@ def ingest(repo_path: str, dry_run: bool = False):
                 
                 if is_pointer:
                     try:
-                        pull_lfs_file(rel_path) # Must use relative path for git command usually
+                        pull_lfs_file(repo_path, rel_path) # Must use relative path for git command usually
                         # Now the file is the real PDF
                         s3.upload_file(full_path, raw_key)
-                        cleanup_lfs_file(rel_path)
+                        cleanup_lfs_file(repo_path, rel_path)
                     except subprocess.CalledProcessError as e:
                         print(f"  [ERROR] Git LFS pull failed for {rel_path}: {e}")
                         continue
@@ -149,7 +161,7 @@ def ingest(repo_path: str, dry_run: bool = False):
                 print(f"  [OK] Raw PDF exists in S3.")
 
             # 4. Queue for Processing
-            todo_key = f"{S3_PREFIX_TODO}/{file_hash}"
+            todo_key = f"{S3_PREFIX_TODO}/{priority}/{file_hash}"
             # Naive check: if not in todo, add it. 
             # (Ideally check processing/failed too, but this is idempotent-ish)
             if not s3.exists(todo_key):
@@ -161,6 +173,7 @@ def ingest(repo_path: str, dry_run: bool = False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest PDFs from Git LFS to S3 Queue")
     parser.add_argument("path", help="Path to local git repository")
+    parser.add_argument("--priority", default="2_normal", help="Priority tier (1_high, 2_normal, 3_low)")
     parser.add_argument("--dry-run", action="store_true", help="Don't upload or modify S3")
     
     args = parser.parse_args()
@@ -169,4 +182,4 @@ if __name__ == "__main__":
         print(f"Error: {args.path} is not a directory")
         sys.exit(1)
         
-    ingest(args.path, args.dry_run)
+    ingest(args.path, priority=args.priority, dry_run=args.dry_run)
