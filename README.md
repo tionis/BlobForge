@@ -101,8 +101,26 @@ BlobForge provides a unified `blobforge` command for all operations.
 
 ### 1. Ingest Data
 
-Scans a local directory (or Git repo), calculates hashes, and queues new files.
-The ingestor is **state-aware** - it checks all queues before adding jobs to prevent duplicates.
+Recursively scans a directory for **PDF files only** (`.pdf` extension) and queues them for processing.
+
+**How it works:**
+1. Walks the directory tree looking for files ending in `.pdf` (case-insensitive)
+2. For each PDF, determines the file hash:
+   - **Git LFS pointer files**: Extracts the SHA256 from the pointer (no download needed)
+   - **Regular PDF files**: Validates the `%PDF` header, then computes SHA256
+3. Checks if the file is already processed, queued, or failed (prevents duplicates)
+4. Uploads the raw PDF to S3 (if not already present)
+5. Creates a job in the todo queue
+
+**Git LFS Support:**
+- If the directory is a Git repo with LFS, pointer files are detected automatically
+- The ingestor will `git lfs pull` individual files as needed, then revert them to pointers after upload
+- This saves local disk space when processing large libraries
+- Works with **smudge filter disabled** (`git lfs install --skip-smudge`)
+
+**Non-Git directories work too:**
+- Any directory with PDFs can be ingested (doesn't need to be a Git repo)
+- Just point it at a folder containing PDFs
 
 ```bash
 # Ingest a library with normal priority
@@ -111,9 +129,16 @@ blobforge ingest ./library/rpg-books
 # Ingest urgent files
 blobforge ingest ./library/hot-fixes --priority 1_critical
 
-# Preview what would be ingested
+# Preview what would be ingested (no changes made)
 blobforge ingest ./library --dry-run
 ```
+
+**State-aware behavior** - Files are skipped if they're:
+- Already converted (output exists)
+- Currently being processed by a worker
+- Already in the todo queue (any priority)
+- In the failed queue (janitor will retry)
+- In the dead-letter queue (exceeded max retries)
 
 ### 2. Start a Worker
 
