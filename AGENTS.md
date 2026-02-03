@@ -17,3 +17,8 @@ All LLM agents operating in this repository MUST adhere to the following protoco
 - **2026-02-03:** Fixed race condition: todo markers are now kept until job completion (not deleted on lock acquisition).
 - **2026-02-03:** Improved sharding from 16 to 256 shards (2-char hex prefix) for better worker distribution.
 - **2026-02-03:** Worker ID is now persistent based on machine fingerprint (hostname + /etc/machine-id) instead of random per session.
+- **2026-02-03:** Restructured as Python package with `pyproject.toml` entry point. Install via `uv tool install .`
+- **2026-02-03:** All env vars now use `BLOBFORGE_` prefix. S3 credentials use `BLOBFORGE_S3_ACCESS_KEY_ID`, etc.
+- **2026-02-03:** Operational config (max_retries, timeouts) now stored in S3 at `{prefix}registry/config.json` with 1-hour TTL cache.
+- **2026-02-03:** Worker registration: workers push metadata to `{prefix}registry/workers/{id}.json` on startup/shutdown.
+- **2026-02-03:** New CLI commands: `blobforge config` (view/update remote config), `blobforge workers` (list registered workers).

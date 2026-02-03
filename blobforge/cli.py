@@ -16,7 +16,9 @@ import argparse
 
 from .config import (
     S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
-    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
+    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY,
+    get_remote_config, save_remote_config, refresh_remote_config, WORKER_ID,
+    get_stale_timeout_minutes
 )
 from .s3_client import S3Client
 from . import ingestor
@@ -425,6 +427,113 @@ def cmd_manifest_stats(args):
     return 0
 
 
+def cmd_config(args):
+    """View or update remote configuration."""
+    s3 = S3Client()
+    
+    if args.show:
+        # Show current config
+        refresh_remote_config()
+        config = get_remote_config()
+        print("--- Remote Configuration ---")
+        print(f"(Stored in S3: {S3_BUCKET}/registry/config.json)")
+        print()
+        for key, value in sorted(config.items()):
+            print(f"  {key}: {value}")
+        return 0
+    
+    if args.set:
+        # Parse key=value pairs
+        updates = {}
+        for kv in args.set:
+            if '=' not in kv:
+                print(f"Error: Invalid format '{kv}'. Use key=value")
+                return 1
+            key, value = kv.split('=', 1)
+            # Try to convert to int if it looks like a number
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+            updates[key] = value
+        
+        # Get current config and merge
+        refresh_remote_config()
+        config = get_remote_config()
+        config.update(updates)
+        
+        if save_remote_config(config):
+            print("Configuration updated:")
+            for key, value in updates.items():
+                print(f"  {key} = {value}")
+            return 0
+        else:
+            print("Error: Failed to save configuration")
+            return 1
+    
+    # Default: show config
+    refresh_remote_config()
+    config = get_remote_config()
+    print("--- Remote Configuration ---")
+    for key, value in sorted(config.items()):
+        print(f"  {key}: {value}")
+    return 0
+
+
+def cmd_workers(args):
+    """List registered workers."""
+    s3 = S3Client()
+    
+    if args.active:
+        stale_timeout = get_stale_timeout_minutes()
+        workers = s3.get_active_workers(stale_minutes=stale_timeout)
+        title = f"Active Workers (heartbeat < {stale_timeout}m ago)"
+    else:
+        workers = s3.list_workers()
+        title = "All Registered Workers"
+    
+    print(f"--- {title} ---")
+    print()
+    
+    if not workers:
+        print("  No workers found.")
+        return 0
+    
+    # Sort by last heartbeat
+    from datetime import datetime
+    workers.sort(key=lambda w: w.get('last_heartbeat', ''), reverse=True)
+    
+    for w in workers:
+        worker_id = w.get('worker_id', '?')[:12]
+        hostname = w.get('hostname', '?')
+        status = w.get('status', '?')
+        last_hb = w.get('last_heartbeat', '?')
+        current_job = w.get('current_job')
+        
+        status_icon = "🟢" if status == "active" or status == "processing" else "🔴" if status == "stopped" else "⚪"
+        
+        if current_job:
+            print(f"  {status_icon} {worker_id} ({hostname}) [{status}] - Processing: {current_job[:12]}...")
+        else:
+            print(f"  {status_icon} {worker_id} ({hostname}) [{status}]")
+        
+        if args.verbose:
+            print(f"      Platform: {w.get('platform', '?')} {w.get('platform_release', '')}")
+            print(f"      Python: {w.get('python_version', '?')}")
+            print(f"      CPUs: {w.get('cpu_count', '?')}, Memory: {w.get('memory_gb', '?')} GB")
+            print(f"      Last heartbeat: {last_hb}")
+            print()
+    
+    print()
+    print(f"Total: {len(workers)} worker(s)")
+    
+    if args.active:
+        # Show this worker's ID
+        print(f"\nThis machine's worker ID: {WORKER_ID}")
+    
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
@@ -498,6 +607,19 @@ def main():
     p_manifest = subparsers.add_parser("manifest", help="Show manifest statistics")
     p_manifest.add_argument("--verbose", "-v", action="store_true", help="Show tag breakdown")
     p_manifest.set_defaults(func=cmd_manifest_stats)
+    
+    # Config
+    p_config = subparsers.add_parser("config", help="View or update remote configuration")
+    p_config.add_argument("--show", action="store_true", help="Show current configuration")
+    p_config.add_argument("--set", nargs="+", metavar="KEY=VALUE",
+                          help="Set configuration values (e.g., max_retries=5)")
+    p_config.set_defaults(func=cmd_config)
+    
+    # Workers
+    p_workers = subparsers.add_parser("workers", help="List registered workers")
+    p_workers.add_argument("--active", action="store_true", help="Show only active workers")
+    p_workers.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
+    p_workers.set_defaults(func=cmd_workers)
     
     if len(sys.argv) == 1:
         parser.print_help()

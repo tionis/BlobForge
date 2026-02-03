@@ -4,7 +4,7 @@ BlobForge Janitor - Recovers stale jobs and manages failed job retries.
 Responsibilities:
 1. Scan processing queue for stale jobs (no heartbeat update within STALE_TIMEOUT)
 2. Move stale jobs back to todo queue with incremented retry count
-3. Move jobs exceeding MAX_RETRIES to dead-letter queue
+3. Move jobs exceeding max_retries to dead-letter queue
 4. Clean up orphaned entries
 """
 import os
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 from .config import (
     S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD,
-    PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
+    PRIORITIES, DEFAULT_PRIORITY, get_max_retries, get_stale_timeout_minutes
 )
 from .s3_client import S3Client
 
@@ -25,12 +25,15 @@ def run_janitor(dry_run: bool = False, verbose: bool = False):
     Main janitor routine.
     
     Scans for:
-    1. Stale processing jobs (no heartbeat within STALE_TIMEOUT_MINUTES)
+    1. Stale processing jobs (no heartbeat within stale_timeout_minutes)
     2. Failed jobs ready for retry
     """
     s3 = S3Client(dry_run=dry_run)
     
-    print(f"Janitor: Starting scan (stale timeout: {STALE_TIMEOUT_MINUTES} min, max retries: {MAX_RETRIES})...")
+    stale_timeout = get_stale_timeout_minutes()
+    max_retries = get_max_retries()
+    
+    print(f"Janitor: Starting scan (stale timeout: {stale_timeout} min, max retries: {max_retries})...")
     
     now = datetime.now()
     stats = {
@@ -50,7 +53,7 @@ def run_janitor(dry_run: bool = False, verbose: bool = False):
     for job in processing_jobs:
         job_hash = job['hash']
         age = job['age']
-        is_stale = age > timedelta(minutes=STALE_TIMEOUT_MINUTES)
+        is_stale = age > timedelta(minutes=stale_timeout)
         
         if verbose:
             status = "STALE" if is_stale else "OK"
@@ -74,9 +77,9 @@ def run_janitor(dry_run: bool = False, verbose: bool = False):
         # Increment retry count for stale recovery
         retry_count += 1
         
-        if retry_count > MAX_RETRIES:
+        if retry_count > max_retries:
             # Too many retries - move to dead-letter queue
-            print(f"    -> Moving to dead-letter queue (retries: {retry_count} > {MAX_RETRIES})")
+            print(f"    -> Moving to dead-letter queue (retries: {retry_count} > {max_retries})")
             if not dry_run:
                 s3.mark_dead(job_hash, f"Exceeded max retries ({retry_count})", retry_count)
                 s3.release_lock(job_hash)
@@ -86,7 +89,7 @@ def run_janitor(dry_run: bool = False, verbose: bool = False):
             stats["moved_to_dead"] += 1
         else:
             # Restore to todo queue
-            print(f"    -> Restoring to queue (priority: {priority}, retry: {retry_count}/{MAX_RETRIES})")
+            print(f"    -> Restoring to queue (priority: {priority}, retry: {retry_count}/{max_retries})")
             if not dry_run:
                 # Create todo marker with retry count
                 marker_content = json.dumps({
@@ -124,9 +127,9 @@ def run_janitor(dry_run: bool = False, verbose: bool = False):
         error_msg = failed_data.get('error', 'Unknown error')
         
         if verbose:
-            print(f"  {job_hash[:12]}... Retry: {retry_count}/{MAX_RETRIES}, Error: {error_msg[:50]}...")
+            print(f"  {job_hash[:12]}... Retry: {retry_count}/{max_retries}, Error: {error_msg[:50]}...")
         
-        if retry_count > MAX_RETRIES:
+        if retry_count > max_retries:
             # Move to dead-letter queue
             print(f"  {job_hash[:12]}... -> Moving to dead-letter queue")
             if not dry_run:

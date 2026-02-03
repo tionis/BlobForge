@@ -8,7 +8,12 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-from .config import S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY
+from .config import (
+    S3_BUCKET, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL,
+    S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, 
+    S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY, S3_PREFIX_WORKERS,
+    WORKER_ID, get_worker_metadata
+)
 
 
 class S3Client:
@@ -26,7 +31,19 @@ class S3Client:
         try:
             import boto3
             import botocore.exceptions
-            self.s3 = boto3.client('s3')
+            
+            # Build client kwargs using BLOBFORGE_S3_* env vars
+            kwargs = {
+                "region_name": S3_REGION,
+            }
+            if S3_ACCESS_KEY_ID:
+                kwargs["aws_access_key_id"] = S3_ACCESS_KEY_ID
+            if S3_SECRET_ACCESS_KEY:
+                kwargs["aws_secret_access_key"] = S3_SECRET_ACCESS_KEY
+            if S3_ENDPOINT_URL:
+                kwargs["endpoint_url"] = S3_ENDPOINT_URL
+            
+            self.s3 = boto3.client('s3', **kwargs)
             self.ClientError = botocore.exceptions.ClientError
         except ImportError:
             print("Warning: boto3 not found. Running in MOCK mode.")
@@ -666,3 +683,158 @@ class S3Client:
                         break
         
         return results
+
+    # -------------------------------------------------------------------------
+    # Worker Registration
+    # -------------------------------------------------------------------------
+    
+    def register_worker(self, extra_metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Register this worker in S3.
+        
+        Creates a worker metadata file at registry/workers/<worker_id>.json
+        containing machine info, start time, etc.
+        
+        Args:
+            extra_metadata: Additional metadata to include
+            
+        Returns:
+            True if registration succeeded
+        """
+        key = f"{S3_PREFIX_WORKERS}/{WORKER_ID}.json"
+        
+        metadata = get_worker_metadata()
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        
+        metadata["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+        metadata["status"] = "active"
+        
+        if self.dry_run or self.mock:
+            print(f"[DRY-RUN/MOCK] Registering worker {WORKER_ID}")
+            return True
+        
+        try:
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(metadata, indent=2),
+                ContentType="application/json"
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to register worker: {e}")
+            return False
+    
+    def update_worker_heartbeat(self, current_job: Optional[str] = None) -> bool:
+        """
+        Update worker heartbeat and optionally current job.
+        
+        Args:
+            current_job: Hash of job currently being processed
+            
+        Returns:
+            True if update succeeded
+        """
+        key = f"{S3_PREFIX_WORKERS}/{WORKER_ID}.json"
+        
+        if self.dry_run or self.mock:
+            return True
+        
+        try:
+            # Get existing metadata
+            existing = self.get_object_json(key) or get_worker_metadata()
+            existing["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+            existing["status"] = "processing" if current_job else "idle"
+            if current_job:
+                existing["current_job"] = current_job
+            elif "current_job" in existing:
+                del existing["current_job"]
+            
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(existing, indent=2),
+                ContentType="application/json"
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to update worker heartbeat: {e}")
+            return False
+    
+    def deregister_worker(self) -> bool:
+        """
+        Mark this worker as inactive (on graceful shutdown).
+        
+        Returns:
+            True if deregistration succeeded
+        """
+        key = f"{S3_PREFIX_WORKERS}/{WORKER_ID}.json"
+        
+        if self.dry_run or self.mock:
+            print(f"[DRY-RUN/MOCK] Deregistering worker {WORKER_ID}")
+            return True
+        
+        try:
+            existing = self.get_object_json(key) or get_worker_metadata()
+            existing["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+            existing["status"] = "stopped"
+            existing["stopped_at"] = datetime.utcnow().isoformat() + "Z"
+            if "current_job" in existing:
+                del existing["current_job"]
+            
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(existing, indent=2),
+                ContentType="application/json"
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to deregister worker: {e}")
+            return False
+    
+    def list_workers(self) -> List[Dict[str, Any]]:
+        """
+        List all registered workers.
+        
+        Returns:
+            List of worker metadata dicts
+        """
+        if self.mock:
+            return []
+        
+        workers = []
+        keys = self.list_keys(f"{S3_PREFIX_WORKERS}/")
+        
+        for key in keys:
+            if key.endswith(".json"):
+                data = self.get_object_json(key)
+                if data:
+                    workers.append(data)
+        
+        return workers
+    
+    def get_active_workers(self, stale_minutes: int = 15) -> List[Dict[str, Any]]:
+        """
+        Get workers that have sent a heartbeat within stale_minutes.
+        
+        Args:
+            stale_minutes: Consider worker stale after this many minutes
+            
+        Returns:
+            List of active worker metadata dicts
+        """
+        workers = self.list_workers()
+        cutoff = datetime.utcnow() - timedelta(minutes=stale_minutes)
+        
+        active = []
+        for w in workers:
+            try:
+                last_hb = datetime.fromisoformat(w.get("last_heartbeat", "").rstrip("Z"))
+                if last_hb > cutoff and w.get("status") != "stopped":
+                    active.append(w)
+            except (ValueError, TypeError):
+                pass
+        
+        return active

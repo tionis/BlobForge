@@ -208,23 +208,70 @@ Change the priority of queued jobs:
 blobforge reprioritize <SHA256_HASH> 1_critical
 ```
 
+### 8. Manage Remote Configuration
+
+Operational settings are stored in S3 and cached with a 1-hour TTL. This allows updating configuration without restarting workers.
+
+```bash
+# View current config
+blobforge config --show
+
+# Update settings
+blobforge config --set max_retries=5 stale_timeout_minutes=20
+```
+
+### 9. List Workers
+
+View all registered workers and their status:
+
+```bash
+# All workers
+blobforge workers
+
+# Only active workers
+blobforge workers --active
+
+# With detailed info
+blobforge workers -v
+```
+
 ## ⚙️ Configuration
 
-Configuration is handled via Environment Variables (all prefixed with `BLOBFORGE_`).
+Configuration is split into two categories:
+
+### Local Configuration (Environment Variables)
+
+These **must** be set as environment variables (required for S3 connectivity).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `BLOBFORGE_S3_BUCKET` | `blobforge` | The target S3 bucket name |
 | `BLOBFORGE_S3_PREFIX` | `pdf/` | Optional prefix for namespacing (e.g., `prod/`) |
+| `BLOBFORGE_S3_REGION` | `us-east-1` | S3 region |
+| `BLOBFORGE_S3_ACCESS_KEY_ID` | - | S3 access key (overrides AWS_ACCESS_KEY_ID) |
+| `BLOBFORGE_S3_SECRET_ACCESS_KEY` | - | S3 secret key (overrides AWS_SECRET_ACCESS_KEY) |
+| `BLOBFORGE_S3_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
 | `BLOBFORGE_WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set |
-| `BLOBFORGE_MAX_RETRIES` | `3` | Number of failures before moving to dead-letter queue |
-| `BLOBFORGE_HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeat updates |
-| `BLOBFORGE_STALE_TIMEOUT_MINUTES` | `15` | Minutes without heartbeat before job is considered stale |
-| `BLOBFORGE_CONVERSION_TIMEOUT` | `3600` | Seconds before conversion is killed (1 hour) |
 | `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
-| `AWS_ACCESS_KEY_ID` | - | Standard AWS/Boto3 credentials |
-| `AWS_SECRET_ACCESS_KEY` | - | Standard AWS/Boto3 credentials |
-| `AWS_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
+
+### Remote Configuration (Stored in S3)
+
+These settings are stored in S3 at `{prefix}registry/config.json` and cached for 1 hour. Update via CLI:
+
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `max_retries` | `3` | Number of failures before moving to dead-letter queue |
+| `heartbeat_interval` | `60` | Seconds between heartbeat updates |
+| `stale_timeout_minutes` | `15` | Minutes without heartbeat before job is considered stale |
+| `conversion_timeout` | `3600` | Seconds before conversion is killed (1 hour) |
+
+```bash
+# View all remote config
+blobforge config --show
+
+# Update settings (takes effect within 1 hour on all workers)
+blobforge config --set max_retries=5 conversion_timeout=7200
+```
 
 ### S3 Provider Compatibility
 

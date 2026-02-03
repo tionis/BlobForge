@@ -26,7 +26,7 @@ from typing import Optional
 from .config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY, WORKER_ID,
-    MAX_RETRIES, HEARTBEAT_INTERVAL_SECONDS, CONVERSION_TIMEOUT_SECONDS
+    get_max_retries, get_heartbeat_interval, get_conversion_timeout
 )
 from .s3_client import S3Client
 
@@ -62,8 +62,9 @@ class HeartbeatThread(threading.Thread):
     
     def run(self):
         """Main heartbeat loop."""
+        heartbeat_interval = get_heartbeat_interval()
         while self.running:
-            time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            time.sleep(heartbeat_interval)
             
             with self._lock:
                 job = self.current_job
@@ -73,6 +74,9 @@ class HeartbeatThread(threading.Thread):
                 success = self.s3.update_heartbeat(job, self.worker_id, progress)
                 if not success:
                     logger.warning(f"Failed to update heartbeat for {job}")
+            
+            # Also update worker heartbeat
+            self.s3.update_worker_heartbeat(current_job=job)
 
 
 class Worker:
@@ -91,6 +95,10 @@ class Worker:
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
         self.current_priority: Optional[str] = None
+        
+        # Register worker in S3
+        logger.info(f"Registering worker {self.id}...")
+        self.s3.register_worker()
         
         # Start heartbeat thread
         self.heartbeat = HeartbeatThread(s3_client, self.id)
@@ -231,16 +239,18 @@ class Worker:
             self.heartbeat.update_progress({"stage": "converting"})
             
             try:
+                timeout = get_conversion_timeout()
                 cmd = ["marker_single", pdf_path, out_dir, "--batch_multiplier", "2", "--max_pages", "10"]
                 if self.s3.mock:
                     logger.info(f"[MOCK] Executing: {' '.join(cmd)}")
                     with open(os.path.join(out_dir, "index.md"), "w") as f:
                         f.write("# Mock Conversion\n\nThis is mock content.")
                 else:
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=CONVERSION_TIMEOUT_SECONDS)
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
             except subprocess.TimeoutExpired as e:
-                logger.error(f"Marker timed out after {CONVERSION_TIMEOUT_SECONDS}s")
-                self._handle_failure(job_hash, f"Conversion timeout ({CONVERSION_TIMEOUT_SECONDS}s)", retry_count)
+                timeout = get_conversion_timeout()
+                logger.error(f"Marker timed out after {timeout}s")
+                self._handle_failure(job_hash, f"Conversion timeout ({timeout}s)", retry_count)
                 return
             except Exception as e:
                 logger.error(f"Marker failed: {e}")
@@ -301,12 +311,13 @@ class Worker:
     def _handle_failure(self, job_hash: str, reason: str, retry_count: int):
         """
         Handle a job failure:
-        - If retries < MAX_RETRIES: Mark as failed (janitor will retry)
-        - If retries >= MAX_RETRIES: Move to dead-letter queue
+        - If retries < max_retries: Mark as failed (janitor will retry)
+        - If retries >= max_retries: Move to dead-letter queue
         """
-        logger.warning(f"Job {job_hash} FAILED (retry {retry_count}/{MAX_RETRIES}): {reason}")
+        max_retries = get_max_retries()
+        logger.warning(f"Job {job_hash} FAILED (retry {retry_count}/{max_retries}): {reason}")
         
-        if retry_count >= MAX_RETRIES:
+        if retry_count >= max_retries:
             logger.error(f"Job {job_hash} exceeded max retries. Moving to dead-letter queue.")
             self.s3.mark_dead(job_hash, reason, retry_count)
             
@@ -326,7 +337,12 @@ class Worker:
         """Clean shutdown of worker."""
         self.heartbeat.stop()
         # Wait for heartbeat thread to finish current iteration
-        self.heartbeat.join(timeout=HEARTBEAT_INTERVAL_SECONDS + 5)
+        self.heartbeat.join(timeout=get_heartbeat_interval() + 5)
+        
+        # Deregister worker
+        logger.info(f"Deregistering worker {self.id}...")
+        self.s3.deregister_worker()
+        
         logger.info(f"Worker {self.id} shut down.")
 
 
