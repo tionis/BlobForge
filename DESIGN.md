@@ -206,16 +206,18 @@ Jobs that exceed `MAX_RETRIES` (default: 3) are moved to `queue/dead/`. These jo
 
 ## 5. Configuration
 
-Environment variables:
+Environment variables (all prefixed with `BLOBFORGE_`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `S3_BUCKET` | `my-pdf-bucket` | S3 bucket name |
-| `S3_PREFIX` | `""` | Optional prefix for namespacing |
-| `WORKER_ID` | (auto-generated) | Persistent worker identifier |
-| `MAX_RETRIES` | `3` | Max failures before dead-letter |
-| `HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats |
-| `STALE_TIMEOUT_MINUTES` | `15` | Minutes until job considered stale |
+| `BLOBFORGE_S3_BUCKET` | `blobforge` | S3 bucket name |
+| `BLOBFORGE_S3_PREFIX` | `pdf/` | Optional prefix for namespacing |
+| `BLOBFORGE_WORKER_ID` | (auto-generated) | Persistent worker identifier |
+| `BLOBFORGE_MAX_RETRIES` | `3` | Max failures before dead-letter |
+| `BLOBFORGE_HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeats |
+| `BLOBFORGE_STALE_TIMEOUT_MINUTES` | `15` | Minutes until job considered stale |
+| `BLOBFORGE_CONVERSION_TIMEOUT` | `3600` | Seconds before conversion killed |
+| `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level |
 
 ## 6. CLI Commands
 

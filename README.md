@@ -63,7 +63,7 @@ docker build -t blobforge .
 
 # Run a Worker
 docker run -d \
-  -e S3_BUCKET=my-forge-bucket \
+  -e BLOBFORGE_S3_BUCKET=my-forge-bucket \
   -e AWS_ACCESS_KEY_ID=... \
   -e AWS_SECRET_ACCESS_KEY=... \
   blobforge worker
@@ -210,17 +210,18 @@ blobforge reprioritize <SHA256_HASH> 1_critical
 
 ## ⚙️ Configuration
 
-Configuration is handled via Environment Variables or `config.py`.
+Configuration is handled via Environment Variables (all prefixed with `BLOBFORGE_`).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `S3_BUCKET` | `my-pdf-bucket` | The target S3 bucket name |
-| `S3_PREFIX` | `""` | Optional prefix for namespacing (e.g., `prod/`) |
-| `WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set |
-| `MAX_RETRIES` | `3` | Number of failures before moving to dead-letter queue |
-| `HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeat updates |
-| `STALE_TIMEOUT_MINUTES` | `15` | Minutes without heartbeat before job is considered stale |
-| `CONVERSION_TIMEOUT` | `3600` | Seconds before conversion is killed (1 hour) |
+| `BLOBFORGE_S3_BUCKET` | `blobforge` | The target S3 bucket name |
+| `BLOBFORGE_S3_PREFIX` | `pdf/` | Optional prefix for namespacing (e.g., `prod/`) |
+| `BLOBFORGE_WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set |
+| `BLOBFORGE_MAX_RETRIES` | `3` | Number of failures before moving to dead-letter queue |
+| `BLOBFORGE_HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeat updates |
+| `BLOBFORGE_STALE_TIMEOUT_MINUTES` | `15` | Minutes without heartbeat before job is considered stale |
+| `BLOBFORGE_CONVERSION_TIMEOUT` | `3600` | Seconds before conversion is killed (1 hour) |
+| `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `AWS_ACCESS_KEY_ID` | - | Standard AWS/Boto3 credentials |
 | `AWS_SECRET_ACCESS_KEY` | - | Standard AWS/Boto3 credentials |
 | `AWS_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |

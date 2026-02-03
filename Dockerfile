@@ -27,7 +27,7 @@ COPY blobforge/ ./blobforge/
 RUN pip install --no-cache-dir .
 
 # Environment Variables (Override these at runtime)
-ENV S3_BUCKET=my-pdf-bucket
+ENV BLOBFORGE_S3_BUCKET=my-pdf-bucket
 ENV PYTHONUNBUFFERED=1
 
 # Default Command: Run Worker

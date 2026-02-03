@@ -4,7 +4,7 @@ import socket
 import logging
 
 # Logging Configuration
-LOG_LEVEL = os.getenv("BLOBFORGE_LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 
 # S3 Configuration
-S3_BUCKET = os.getenv("BLOBFORGE_S3_BUCKET", "blobforge")
-S3_PREFIX = os.getenv("BLOBFORGE_S3_PREFIX", "pdf/")
+S3_BUCKET = os.getenv("S3_BUCKET", "blobforge")
+S3_PREFIX = os.getenv("S3_PREFIX", "pdf/")
 
 # Ensure trailing slash if prefix exists
 if S3_PREFIX and not S3_PREFIX.endswith("/"):
@@ -33,14 +33,14 @@ PRIORITIES = ["1_critical", "2_high", "3_normal", "4_low", "5_background"]
 DEFAULT_PRIORITY = "3_normal"
 
 # Retry Configuration
-MAX_RETRIES = int(os.getenv("BLOBFORGE_MAX_RETRIES", "3"))  # Move to dead-letter after this many failures
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))  # Move to dead-letter after this many failures
 
 # Heartbeat Configuration
-HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("BLOBFORGE_HEARTBEAT_INTERVAL", "60"))  # How often to update heartbeat
-STALE_TIMEOUT_MINUTES = int(os.getenv("BLOBFORGE_STALE_TIMEOUT_MINUTES", "15"))  # Job considered stale after this
+HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("HEARTBEAT_INTERVAL", "60"))  # How often to update heartbeat
+STALE_TIMEOUT_MINUTES = int(os.getenv("STALE_TIMEOUT_MINUTES", "15"))  # Job considered stale after this
 
 # Conversion Configuration
-CONVERSION_TIMEOUT_SECONDS = int(os.getenv("BLOBFORGE_CONVERSION_TIMEOUT", "3600"))  # 1 hour default
+CONVERSION_TIMEOUT_SECONDS = int(os.getenv("CONVERSION_TIMEOUT", "3600"))  # 1 hour default
 
 # Worker Identity
 # If not provided, generates a persistent ID based on machine fingerprint (hostname + MAC-ish)
@@ -66,4 +66,4 @@ def _generate_worker_id() -> str:
         import uuid
         return str(uuid.uuid4())[:12]
 
-WORKER_ID = os.getenv("BLOBFORGE_WORKER_ID", None) or _generate_worker_id() 
+WORKER_ID = os.getenv("WORKER_ID", None) or _generate_worker_id() 
