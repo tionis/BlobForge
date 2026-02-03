@@ -28,9 +28,9 @@ s3://my-bucket/
 │       └── <HASH>.zip        # Converted results
 ├── queue/
 │   ├── todo/
-│   │   ├── 1_high/           # Priority Tiers
-│   │   ├── 2_normal/
-│   │   └── 3_low/
+│   │   ├── 1_highest/        # Priority Tiers
+│   │   ├── 2_higher/
+│   │   └── 3_normal/
 │   │       └── <HASH>        # Empty marker file
 │   ├── processing/
 │   │   └── <HASH>            # Content: {"worker_id": "...", "started": "...", "priority": "..."}
@@ -56,16 +56,21 @@ The ingestor is responsible for ensuring the PDF exists in `store/raw/` and is q
     - If raw PDF is missing in S3:
         - `git lfs pull --include <filepath>` (Download single file locally).
         - Upload to `store/raw/<HASH>.pdf`.
+        - **Metadata Attachment:** Attach `x-amz-meta-original-name`, `x-amz-meta-tags`, `x-amz-meta-size` to the S3 object.
         - Delete local file.
 5.  **Queue:**
     - Check if `queue/todo/.../<HASH>` or `queue/processing/<HASH>` exists.
-    - If neither exists, create `queue/todo/2_normal/<HASH>`.
+    - If neither exists, create `queue/todo/3_normal/<HASH>`.
 
 ### 4.2. Worker (Distributed Loop)
 Workers run anywhere. They only need S3 credentials.
 
-1.  **Acquire Job (Locking):**
-    - Iterate through priorities: `1_high` -> `2_normal` -> `3_low`.
+1.  **Startup (Self-Cleanup):**
+    - Scan `queue/processing/` for locks belonging to current `WORKER_ID`.
+    - If found, assume crash from previous run. Move job back to `queue/todo/<priority>/<HASH>` and release lock.
+
+2.  **Acquire Job (Locking):**
+    - Iterate through priorities: `1_highest` -> `2_higher` -> `3_normal`.
     - In each tier, list objects (sharded by random prefix).
     - Pick one.
     - **Atomic Lock:** Attempt to write `queue/processing/<HASH>` with `If-None-Match: *`.
@@ -75,8 +80,13 @@ Workers run anywhere. They only need S3 credentials.
     - If Write Success:
         - Delete `queue/todo/<Tier>/<HASH>`.
         - **Lock Acquired.**
-2.  **Process:**
+
+3.  **Process:**
     - Download `store/raw/<HASH>.pdf` to temp dir.
+    - **Fetch Metadata:** Read S3 Object Metadata (Original Name, Tags) from `store/raw/<HASH>.pdf`.
+    - Run conversion (Markdown + Asset extraction).
+    - Create `info.json` (including fetched metadata).
+    - Zip result to `<HASH>.zip`.
     - Run conversion (Markdown + Asset extraction).
     - Create `info.json`.
     - Zip result to `<HASH>.zip`.
