@@ -350,7 +350,7 @@ class S3Client:
         payload = json.dumps({
             "error": str(error),
             "worker": worker_id,
-            "failed_at": datetime.utcnow().isoformat(),
+            "failed_at": datetime.now().isoformat() + "Z",
             "timestamp": int(time.time() * 1000),
             "retries": retry_count
         })
@@ -367,7 +367,7 @@ class S3Client:
         """
         payload = json.dumps({
             "error": str(error),
-            "moved_to_dead_at": datetime.utcnow().isoformat(),
+            "moved_to_dead_at": datetime.now().isoformat() + "Z",
             "total_retries": total_retries,
             "reason": "exceeded_max_retries"
         })

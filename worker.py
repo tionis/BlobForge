@@ -19,15 +19,18 @@ import subprocess
 import zipfile
 import tempfile
 import threading
+import logging
 from datetime import datetime
 from typing import Optional
 
 from config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY, WORKER_ID,
-    MAX_RETRIES, HEARTBEAT_INTERVAL_SECONDS
+    MAX_RETRIES, HEARTBEAT_INTERVAL_SECONDS, CONVERSION_TIMEOUT_SECONDS
 )
 from s3_client import S3Client
+
+logger = logging.getLogger(__name__)
 
 
 class HeartbeatThread(threading.Thread):
@@ -69,7 +72,7 @@ class HeartbeatThread(threading.Thread):
             if job:
                 success = self.s3.update_heartbeat(job, self.worker_id, progress)
                 if not success:
-                    print(f"Warning: Failed to update heartbeat for {job}")
+                    logger.warning(f"Failed to update heartbeat for {job}")
 
 
 class Worker:
@@ -93,7 +96,7 @@ class Worker:
         self.heartbeat = HeartbeatThread(s3_client, self.id)
         self.heartbeat.start()
         
-        print(f"Worker {self.id} initialized.")
+        logger.info(f"Worker {self.id} initialized.")
         self.cleanup_previous_session()
     
     def cleanup_previous_session(self):
@@ -101,7 +104,7 @@ class Worker:
         Check for stale locks from previous runs of this worker.
         This handles the case where this worker crashed while holding a lock.
         """
-        print(f"Worker {self.id}: Checking for stale locks from previous session...")
+        logger.info(f"Worker {self.id}: Checking for stale locks from previous session...")
         jobs = self.s3.list_processing()
         count = 0
         
@@ -117,7 +120,7 @@ class Worker:
             if data.get('worker') == self.id:
                 job_hash = key.split("/")[-1]
                 priority = data.get('priority', DEFAULT_PRIORITY)
-                print(f"Recovering crashed job {job_hash} (Priority: {priority})")
+                logger.info(f"Recovering crashed job {job_hash} (Priority: {priority})")
                 
                 # Restore to todo queue (the todo marker might still exist due to our fix)
                 self.s3.move_to_todo(job_hash, priority, increment_retry=False)
@@ -125,9 +128,9 @@ class Worker:
                 count += 1
         
         if count > 0:
-            print(f"Recovered {count} jobs.")
+            logger.info(f"Recovered {count} jobs.")
         else:
-            print("No stale locks found.")
+            logger.debug("No stale locks found.")
     
     def acquire_job(self) -> Optional[str]:
         """
@@ -150,14 +153,14 @@ class Worker:
             for job_hash in todos:
                 # Check if job exceeds retry limit (in dead-letter queue)
                 if self.s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
-                    print(f"Skipping {job_hash}: In dead-letter queue")
+                    logger.debug(f"Skipping {job_hash}: In dead-letter queue")
                     continue
                 
-                print(f"Attempting to lock {job_hash} ({priority})...")
+                logger.debug(f"Attempting to lock {job_hash} ({priority})...")
                 
                 # Try to acquire lock atomically
                 if self.s3.acquire_lock(job_hash, self.id, priority):
-                    print(f"Lock acquired for {job_hash}")
+                    logger.info(f"Lock acquired for {job_hash}")
                     
                     # Get retry count from todo marker if available
                     todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
@@ -202,7 +205,7 @@ class Worker:
         4. Zip results and upload
         5. Clean up (delete todo marker and lock)
         """
-        print(f"Processing Job: {job_hash}")
+        logger.info(f"Processing Job: {job_hash}")
         
         # Get current retry count
         lock_info = self.s3.get_lock_info(job_hash)
@@ -219,28 +222,28 @@ class Worker:
                 self.s3.download_file(raw_key, pdf_path)
                 s3_meta = self.s3.get_object_metadata(raw_key)
             except Exception as e:
-                print(f"Download/Meta failed: {e}")
+                logger.error(f"Download/Meta failed: {e}")
                 self._handle_failure(job_hash, f"Download failed: {e}", retry_count)
                 return
             
             # 2. Convert
-            print("Running marker conversion...")
+            logger.info("Running marker conversion...")
             self.heartbeat.update_progress({"stage": "converting"})
             
             try:
                 cmd = ["marker_single", pdf_path, out_dir, "--batch_multiplier", "2", "--max_pages", "10"]
                 if self.s3.mock:
-                    print(f"[MOCK] Executing: {' '.join(cmd)}")
+                    logger.info(f"[MOCK] Executing: {' '.join(cmd)}")
                     with open(os.path.join(out_dir, "index.md"), "w") as f:
                         f.write("# Mock Conversion\n\nThis is mock content.")
                 else:
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+                    subprocess.run(cmd, check=True, capture_output=True, timeout=CONVERSION_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired as e:
-                print(f"Marker timed out: {e}")
-                self._handle_failure(job_hash, "Conversion timeout (1 hour)", retry_count)
+                logger.error(f"Marker timed out after {CONVERSION_TIMEOUT_SECONDS}s")
+                self._handle_failure(job_hash, f"Conversion timeout ({CONVERSION_TIMEOUT_SECONDS}s)", retry_count)
                 return
             except Exception as e:
-                print(f"Marker failed: {e}")
+                logger.error(f"Marker failed: {e}")
                 self._handle_failure(job_hash, str(e), retry_count)
                 return
             
@@ -249,7 +252,7 @@ class Worker:
             # 3. Create info.json with enriched metadata
             info = {
                 "hash": job_hash,
-                "converted_at": datetime.utcnow().isoformat(),
+                "converted_at": datetime.now().isoformat() + "Z",
                 "worker_id": self.id,
                 "original_filename": s3_meta.get("original-name", "unknown.pdf"),
                 "tags": json.loads(s3_meta.get("tags", "[]")),
@@ -271,7 +274,7 @@ class Worker:
             
             # 5. Finalize - NOW we delete the todo marker (atomic completion)
             self._complete_job(job_hash)
-            print(f"Job {job_hash} Complete.")
+            logger.info(f"Job {job_hash} Complete.")
     
     def _complete_job(self, job_hash: str):
         """
@@ -301,10 +304,10 @@ class Worker:
         - If retries < MAX_RETRIES: Mark as failed (janitor will retry)
         - If retries >= MAX_RETRIES: Move to dead-letter queue
         """
-        print(f"Job {job_hash} FAILED (retry {retry_count}/{MAX_RETRIES}): {reason}")
+        logger.warning(f"Job {job_hash} FAILED (retry {retry_count}/{MAX_RETRIES}): {reason}")
         
         if retry_count >= MAX_RETRIES:
-            print(f"Job {job_hash} exceeded max retries. Moving to dead-letter queue.")
+            logger.error(f"Job {job_hash} exceeded max retries. Moving to dead-letter queue.")
             self.s3.mark_dead(job_hash, reason, retry_count)
             
             # Also delete the todo marker since job is permanently failed
@@ -322,7 +325,9 @@ class Worker:
     def shutdown(self):
         """Clean shutdown of worker."""
         self.heartbeat.stop()
-        print(f"Worker {self.id} shutting down.")
+        # Wait for heartbeat thread to finish current iteration
+        self.heartbeat.join(timeout=HEARTBEAT_INTERVAL_SECONDS + 5)
+        logger.info(f"Worker {self.id} shut down.")
 
 
 def main():
@@ -334,7 +339,7 @@ def main():
     client = S3Client(dry_run=args.dry_run)
     worker = Worker(client)
     
-    print(f"Worker {worker.id} started. Polling for jobs...")
+    logger.info(f"Worker {worker.id} started. Polling for jobs...")
     
     try:
         while True:
@@ -345,11 +350,11 @@ def main():
                     break
             else:
                 if args.run_once:
-                    print("No jobs found.")
+                    logger.info("No jobs found.")
                     break
                 time.sleep(10)
     except KeyboardInterrupt:
-        print("\nInterrupted by user.")
+        logger.info("Interrupted by user.")
     finally:
         worker.shutdown()
 

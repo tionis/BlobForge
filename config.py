@@ -1,6 +1,15 @@
 import os
 import hashlib
 import socket
+import logging
+
+# Logging Configuration
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
 # S3 Configuration
 S3_BUCKET = os.getenv("S3_BUCKET", "my-pdf-bucket")
@@ -28,6 +37,9 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))  # Move to dead-letter after th
 # Heartbeat Configuration
 HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("HEARTBEAT_INTERVAL", "60"))  # How often to update heartbeat
 STALE_TIMEOUT_MINUTES = int(os.getenv("STALE_TIMEOUT_MINUTES", "15"))  # Job considered stale after this
+
+# Conversion Configuration
+CONVERSION_TIMEOUT_SECONDS = int(os.getenv("CONVERSION_TIMEOUT", "3600"))  # 1 hour default
 
 # Worker Identity
 # If not provided, generates a persistent ID based on machine fingerprint (hostname + MAC-ish)

@@ -10,6 +10,8 @@ It relies entirely on an **S3-compatible object store** for coordination, state 
 *   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
 *   **Distributed Locking:** Uses S3 atomic operations (`If-None-Match`) to coordinate workers without race conditions.
 *   **Priority Queues:** Supports `highest`, `higher`, and `normal` priority tiers.
+*   **Heartbeat Mechanism:** Workers send periodic heartbeats (60s), enabling fast stale detection (15 min vs 2 hours).
+*   **Retry & Dead-Letter:** Failed jobs are retried up to 3 times, then moved to dead-letter queue for manual review.
 *   **Resilient:** "Janitor" process recovers jobs from crashed workers automatically.
 *   **Hash-Addressed:** Deduplication built-in. Processing is idempotent based on file content (SHA256).
 
@@ -23,12 +25,25 @@ s3://my-bucket/
 │   ├── raw/           # Source blobs (PDFs) with metadata
 │   └── out/           # Processed artifacts (Zips)
 ├── queue/
-│   ├── todo/          # Pending jobs (Empty marker files)
+│   ├── todo/          # Pending jobs (with retry count)
 │   │   ├── 1_highest/
 │   │   ├── 2_higher/
 │   │   └── 3_normal/
-│   ├── processing/    # Active locks (JSON content)
-│   └── failed/        # Error logs
+│   ├── processing/    # Active locks (JSON with heartbeat)
+│   ├── failed/        # Jobs pending retry
+│   └── dead/          # Jobs that exceeded MAX_RETRIES
+```
+
+### State Transitions
+
+```
+[Ingest] ──► todo ──► processing ──► done
+              ▲            │
+              │            ▼
+              └──────── failed (janitor retries)
+                           │
+                           ▼ (after MAX_RETRIES)
+                         dead ──► (manual retry)
 ```
 
 ## 📦 Installation
@@ -54,8 +69,6 @@ docker run -d \
 Requires Python 3.9+ and system dependencies (`tesseract-ocr`, `ghostscript`).
 
 ```bash
-pip install -r requirements.txt  # (See Dockerfile for full list)
-# OR manually:
 pip install boto3 marker-pdf
 ```
 
@@ -64,7 +77,9 @@ pip install boto3 marker-pdf
 BlobForge comes with a unified CLI for managing the pipeline.
 
 ### 1. Ingest Data
+
 Scans a local directory (or Git repo), calculates hashes, and queues new files.
+The ingestor is **state-aware** - it checks all queues before adding jobs to prevent duplicates.
 
 ```bash
 # Ingest a library with normal priority
@@ -72,20 +87,41 @@ python3 cli.py ingest ./library/rpg-books
 
 # Ingest urgent files
 python3 cli.py ingest ./library/hot-fixes --priority 1_highest
+
+# Preview what would be ingested
+python3 cli.py ingest ./library --dry-run
 ```
 
 ### 2. Start a Worker
+
 Workers automatically find jobs, lock them, process them, and upload results.
+Worker IDs are persistent (based on machine fingerprint) so cleanup works across restarts.
 
 ```bash
+# Start a worker (runs continuously)
 python3 worker.py
+
+# Process one job and exit
+python3 worker.py --run-once
+
+# Preview without making changes
+python3 worker.py --dry-run
 ```
+
 *Run multiple instances of this script on any number of machines to scale.*
 
 ### 3. Monitor Status
-View queue counts, active processing jobs, and stalled workers.
+
+View queue counts, active processing jobs, and failed jobs.
 
 ```bash
+# Quick dashboard
+python3 cli.py dashboard
+
+# Detailed dashboard
+python3 cli.py dashboard -v
+
+# Queue statistics
 python3 cli.py list -v
 
 # Check specific file status
@@ -93,10 +129,42 @@ python3 cli.py status <SHA256_HASH>
 ```
 
 ### 4. Maintenance (Janitor)
-If a worker crashes, its lock remains in `processing/`. The Janitor detects stale locks (>2 hours) and re-queues them.
+
+The Janitor detects stale locks (no heartbeat for 15+ minutes) and failed jobs, then re-queues them.
+Jobs exceeding MAX_RETRIES are moved to the dead-letter queue.
 
 ```bash
-python3 janitor.py
+# Run janitor
+python3 cli.py janitor
+
+# Preview what janitor would do
+python3 cli.py janitor --dry-run
+
+# Verbose output
+python3 cli.py janitor -v
+```
+
+### 5. Retry Failed Jobs
+
+Manually retry jobs from the failed or dead-letter queue:
+
+```bash
+# Retry a failed job
+python3 cli.py retry <SHA256_HASH>
+
+# Retry with higher priority
+python3 cli.py retry <SHA256_HASH> --priority 1_highest
+
+# Reset retry counter (for dead-letter jobs)
+python3 cli.py retry <SHA256_HASH> --reset-retries
+```
+
+### 6. Reprioritize Jobs
+
+Change the priority of queued jobs:
+
+```bash
+python3 cli.py reprioritize <SHA256_HASH> 1_highest
 ```
 
 ## ⚙️ Configuration
@@ -105,21 +173,61 @@ Configuration is handled via Environment Variables or `config.py`.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `S3_BUCKET` | `my-pdf-bucket` | The target S3 bucket name. |
-| `WORKER_ID` | `(random)` | ID for the worker instance. Set this for persistent identity. |
-| `AWS_...` | - | Standard AWS/Boto3 credentials. |
+| `S3_BUCKET` | `my-pdf-bucket` | The target S3 bucket name |
+| `S3_PREFIX` | `""` | Optional prefix for namespacing (e.g., `prod/`) |
+| `WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set |
+| `MAX_RETRIES` | `3` | Number of failures before moving to dead-letter queue |
+| `HEARTBEAT_INTERVAL` | `60` | Seconds between heartbeat updates |
+| `STALE_TIMEOUT_MINUTES` | `15` | Minutes without heartbeat before job is considered stale |
+| `CONVERSION_TIMEOUT` | `3600` | Seconds before conversion is killed (1 hour) |
+| `AWS_ACCESS_KEY_ID` | - | Standard AWS/Boto3 credentials |
+| `AWS_SECRET_ACCESS_KEY` | - | Standard AWS/Boto3 credentials |
+| `AWS_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
+
+### S3 Provider Compatibility
+
+BlobForge requires S3 conditional writes (`If-None-Match`). Tested providers:
+
+| Provider | Status |
+| :--- | :--- |
+| AWS S3 | ✅ Full support |
+| Cloudflare R2 | ✅ Full support |
+| Ceph Object Gateway | ✅ Full support |
+| MinIO | ✅ Full support |
 
 ## 🏗 Project Structure
 
-*   `cli.py`: Unified management interface.
-*   `ingestor.py`: Scans filesystem, uploads RAW blobs, queues jobs.
-*   `worker.py`: The workhorse. Polls S3, locks jobs, runs `marker-pdf`.
-*   `janitor.py`: Cleans up stale locks.
-*   `status.py`: Reporting dashboard.
-*   `config.py`: Shared constants.
-*   `DESIGN.md`: Detailed architectural decisions.
+```
+├── cli.py           # Unified management interface
+├── ingestor.py      # Scans filesystem, uploads RAW blobs, queues jobs
+├── worker.py        # Polls S3, locks jobs, runs marker-pdf, sends heartbeats
+├── janitor.py       # Recovers stale jobs, manages retries
+├── status.py        # Reporting dashboard
+├── s3_client.py     # Consolidated S3 operations (single source of truth)
+├── config.py        # Shared configuration and constants
+├── DESIGN.md        # Detailed architectural decisions
+└── tests/           # Unit tests
+```
 
-## 🔮 Future Roadmap (BlobForge Expansion)
+## 🧪 Testing
 
-*   **Batching:** Support for tarball ingestion to process thousands of small files (images) efficiently.
-*   **Vector Embeddings:** Worker modules for generating embeddings from images/text.
+Run the test suite:
+
+```bash
+# With unittest
+python3 -m unittest tests.test_blobforge -v
+
+# With pytest (if installed)
+python3 -m pytest tests/ -v
+```
+
+## 🔮 Future Roadmap
+
+*   **Metrics/Monitoring:** Prometheus metrics export for job duration, success rate
+*   **Batching:** Support for tarball ingestion to process thousands of small files efficiently
+*   **Vector Embeddings:** Worker modules for generating embeddings from images/text
+*   **SQLite + Litestream:** Optional fast manifest storage for filename→hash lookups
+
+## 📄 License
+
+MIT
