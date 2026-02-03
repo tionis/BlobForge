@@ -185,6 +185,7 @@ func main() {
 		r.Post("/actions/jobs/{id}/retry", webHandler.RetryJobAction)
 		r.Post("/actions/jobs/{id}/cancel", webHandler.CancelJobAction)
 		r.Post("/actions/jobs/{id}/priority", webHandler.UpdatePriorityAction)
+		r.Post("/actions/workers/register", webHandler.RegisterWorkerAction)
 		r.Post("/actions/workers/{id}/drain", webHandler.DrainWorkerAction)
 		r.Delete("/actions/workers/{id}", webHandler.RemoveWorkerAction)
 

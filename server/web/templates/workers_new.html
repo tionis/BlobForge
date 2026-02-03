@@ -26,11 +26,11 @@
             <h3>Register New Worker</h3>
             <button class="modal-close" onclick="BlobForge.hideModal('add-worker-modal')">&times;</button>
         </div>
-        <form hx-post="/actions/workers/register" hx-target="#add-worker-result" hx-swap="innerHTML">
+        <form hx-post="/api/workers" hx-target="#add-worker-result" hx-swap="innerHTML">
             <div class="modal-body">
-                <p class="text-muted mb-4">
-                    Workers typically self-register when they start. Use this form to pre-register a worker 
-                    or see the registration commands.
+                <p class="text-secondary mb-4">
+                    Workers self-register when they start. Use this form to pre-register a worker 
+                    or generate registration commands.
                 </p>
                 <div class="form-group">
                     <label class="form-label">Worker Name</label>
@@ -51,6 +51,19 @@
                 <button type="submit" class="btn btn-primary">Register</button>
             </div>
         </form>
+    </div>
+</div>
+
+<!-- Worker Details Modal (for drain/remove actions) -->
+<div id="worker-details-modal" class="modal-backdrop">
+    <div class="modal">
+        <div class="modal-header">
+            <h3>Worker Details</h3>
+            <button class="modal-close" onclick="BlobForge.hideModal('worker-details-modal')">&times;</button>
+        </div>
+        <div class="modal-body" id="worker-details-content">
+            <!-- Loaded via HTMX -->
+        </div>
     </div>
 </div>
 {{end}}

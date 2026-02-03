@@ -24,7 +24,7 @@ var staticFS embed.FS
 type Handler struct {
 	db        *db.DB
 	auth      *auth.Auth
-	templates *template.Template
+	templates map[string]*template.Template
 	staticFS  http.Handler
 }
 
@@ -190,9 +190,84 @@ func NewHandler(database *db.DB, authenticator *auth.Auth) (*Handler, error) {
 		},
 	}
 
-	tmpl, err := template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html")
-	if err != nil {
-		return nil, err
+	// Shared templates (partials used by pages)
+	sharedFiles := []string{
+		"templates/base.html",
+		"templates/stats_cards.html",
+		"templates/jobs_table.html",
+		"templates/job_row.html",
+		"templates/workers_table.html",
+		"templates/worker_row.html",
+	}
+
+	// Page templates that include their own "content" definition
+	pageFiles := []string{
+		"templates/dashboard.html",
+		"templates/jobs.html",
+		"templates/job_detail.html",
+		"templates/workers.html",
+		"templates/admin.html",
+		"templates/tokens.html",
+	}
+
+	// Partial templates (rendered directly, not through base)
+	partialFiles := []string{
+		"templates/stats_cards.html",
+		"templates/jobs_table.html",
+		"templates/workers_table.html",
+	}
+
+	// Parse each page template with the shared templates
+	templates := make(map[string]*template.Template)
+	for _, page := range pageFiles {
+		// Create a new template for each page
+		tmpl := template.New("").Funcs(funcs)
+
+		// Parse shared templates first
+		for _, shared := range sharedFiles {
+			content, err := templateFS.ReadFile(shared)
+			if err != nil {
+				return nil, err
+			}
+			_, err = tmpl.Parse(string(content))
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// Then parse the page template
+		content, err := templateFS.ReadFile(page)
+		if err != nil {
+			return nil, err
+		}
+		_, err = tmpl.Parse(string(content))
+		if err != nil {
+			return nil, err
+		}
+
+		// Extract filename for the key
+		name := page[len("templates/"):]
+		templates[name] = tmpl
+	}
+
+	// Parse partial templates for HTMX responses
+	for _, partial := range partialFiles {
+		tmpl := template.New("").Funcs(funcs)
+
+		// Parse all shared files (partials may reference each other)
+		for _, shared := range sharedFiles {
+			content, err := templateFS.ReadFile(shared)
+			if err != nil {
+				return nil, err
+			}
+			_, err = tmpl.Parse(string(content))
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		name := partial[len("templates/"):]
+		templates[name] = tmpl
 	}
 
 	// Create static file server from embedded filesystem
@@ -205,7 +280,7 @@ func NewHandler(database *db.DB, authenticator *auth.Auth) (*Handler, error) {
 	return &Handler{
 		db:        database,
 		auth:      authenticator,
-		templates: tmpl,
+		templates: templates,
 		staticFS:  staticHandler,
 	}, nil
 }
@@ -216,8 +291,28 @@ func (h *Handler) Static(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) render(w http.ResponseWriter, name string, data map[string]interface{}) {
+	tmpl, ok := h.templates[name]
+	if !ok {
+		log.Error().Str("template", name).Msg("template not found")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.templates.ExecuteTemplate(w, name, data); err != nil {
+
+	// Page templates use base, partials execute directly
+	if _, isPartial := map[string]bool{
+		"stats_cards.html":   true,
+		"jobs_table.html":    true,
+		"workers_table.html": true,
+	}[name]; isPartial {
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Error().Err(err).Str("template", name).Msg("failed to render partial")
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if err := tmpl.ExecuteTemplate(w, "base", data); err != nil {
 		log.Error().Err(err).Str("template", name).Msg("failed to render template")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
@@ -564,4 +659,37 @@ func (h *Handler) RemoveWorkerAction(w http.ResponseWriter, r *http.Request) {
 
 	// Return empty response - HTMX will remove the row
 	w.WriteHeader(http.StatusOK)
+}
+
+// RegisterWorkerAction registers a new worker from the web form
+func (h *Handler) RegisterWorkerAction(w http.ResponseWriter, r *http.Request) {
+	name := r.FormValue("name")
+	workerType := r.FormValue("worker_type")
+
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`<div class="alert alert-error">Worker name is required</div>`))
+		return
+	}
+	if workerType == "" {
+		workerType = "general"
+	}
+
+	// Use the name as the ID
+	worker := &db.Worker{
+		ID:   name,
+		Type: workerType,
+	}
+
+	if err := h.db.CreateWorker(worker); err != nil {
+		log.Error().Err(err).Str("worker_id", name).Msg("failed to register worker")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`<div class="alert alert-error">Failed to register worker</div>`))
+		return
+	}
+
+	log.Info().Str("worker_id", name).Str("type", workerType).Msg("worker registered via web UI")
+
+	// Return success message
+	w.Write([]byte(`<div class="alert alert-success">Worker registered successfully! Refresh the page to see it.</div>`))
 }
