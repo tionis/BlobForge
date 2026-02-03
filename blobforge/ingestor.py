@@ -126,8 +126,16 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         return
     
     print(f"Found {len(files_to_process)} PDF(s) to process...")
-    stats = {"found": 0, "skipped_done": 0, "skipped_queued": 0, "skipped_processing": 0,
-             "skipped_failed": 0, "skipped_dead": 0, "uploaded": 0, "queued": 0}
+    
+    # Fetch manifest once for efficient duplicate detection
+    print("Fetching manifest for duplicate detection...")
+    manifest = s3.get_manifest()
+    known_hashes = set(manifest.get('entries', {}).keys())
+    print(f"Manifest contains {len(known_hashes)} known files.")
+    
+    stats = {"found": 0, "skipped_known": 0, "skipped_done": 0, "skipped_queued": 0, 
+             "skipped_processing": 0, "skipped_failed": 0, "skipped_dead": 0, 
+             "uploaded": 0, "queued": 0}
     
     # Batch manifest entries for efficient updates
     manifest_batch = []
@@ -160,7 +168,18 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         
         print(f"Found: {rel_path} -> {file_hash[:8]}...")
         
-        # 2. Check ALL queue states before proceeding
+        # 2. Fast path: check if already known from manifest
+        if file_hash in known_hashes:
+            # Already ingested - check if done for accurate stats
+            if s3.exists(f"{S3_PREFIX_DONE}/{file_hash}.zip"):
+                print(f"  [SKIP] Already converted")
+                stats["skipped_done"] += 1
+            else:
+                print(f"  [SKIP] Already known (in queue/processing)")
+                stats["skipped_known"] += 1
+            continue
+        
+        # 3. Not in manifest - check ALL queue states (new file or manifest out of sync)
         states = s3.job_exists_anywhere(file_hash, PRIORITIES)
         
         if states['done']:
@@ -225,6 +244,9 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         print(f"  [QUEUED] Added with priority {priority}")
         stats["queued"] += 1
         
+        # Add to known hashes so duplicates in same run are caught
+        known_hashes.add(file_hash)
+        
         # 5. Collect manifest entry
         try:
             size = os.path.getsize(full_path)
@@ -277,6 +299,7 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     print(f"  Found:              {stats['found']} PDFs")
     print(f"  Uploaded:           {stats['uploaded']}")
     print(f"  Queued:             {stats['queued']}")
+    print(f"  Skipped (known):    {stats['skipped_known']}")
     print(f"  Skipped (done):     {stats['skipped_done']}")
     print(f"  Skipped (queued):   {stats['skipped_queued']}")
     print(f"  Skipped (processing): {stats['skipped_processing']}")
