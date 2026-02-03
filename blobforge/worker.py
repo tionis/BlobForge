@@ -7,6 +7,7 @@ Features:
 - Retry tracking and dead-letter queue support
 - Improved sharding (2-char prefix = 256 shards)
 - Race-condition-free job acquisition (todo marker kept until completion)
+- Direct marker Python API (models stay loaded in memory)
 """
 import os
 import sys
@@ -15,13 +16,12 @@ import json
 import shutil
 import random
 import argparse
-import subprocess
 import zipfile
 import tempfile
 import threading
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 from .config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
@@ -88,7 +88,12 @@ class Worker:
     2. Uses 2-character prefix sharding (256 shards vs 16)
     3. Implements heartbeat mechanism for faster stale detection
     4. Tracks retries and respects MAX_RETRIES limit
+    5. Uses marker Python API directly (models stay in memory)
     """
+    
+    # Lazy-loaded marker models (shared across all jobs)
+    _marker_models: Optional[Any] = None
+    _marker_converter: Optional[Any] = None
     
     def __init__(self, s3_client: S3Client):
         self.s3 = s3_client
@@ -168,14 +173,16 @@ class Worker:
                 
                 # Try to acquire lock atomically
                 if self.s3.acquire_lock(job_hash, self.id, priority):
-                    logger.info(f"Lock acquired for {job_hash}")
-                    
                     # Get retry count from todo marker if available
                     todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
                     todo_data = self.s3.get_object_json(todo_key)
                     retry_count = 0
+                    original_name = "unknown"
                     if todo_data:
                         retry_count = todo_data.get('retries', 0)
+                        original_name = todo_data.get('original_name', 'unknown')
+                    
+                    logger.info(f"Lock acquired for {job_hash[:12]}... (priority={priority}, retry={retry_count}, file={original_name})")
                     
                     # Update lock with retry count
                     lock_data = self.s3.get_lock_info(job_hash)
@@ -234,30 +241,47 @@ class Worker:
                 self._handle_failure(job_hash, f"Download failed: {e}", retry_count)
                 return
             
-            # 2. Convert
+            # 2. Convert using marker Python API
             logger.info("Running marker conversion...")
             self.heartbeat.update_progress({"stage": "converting"})
             
             try:
-                timeout = get_conversion_timeout()
-                cmd = ["marker_single", pdf_path, out_dir, "--batch_multiplier", "2", "--max_pages", "10"]
                 if self.s3.mock:
-                    logger.info(f"[MOCK] Executing: {' '.join(cmd)}")
-                    with open(os.path.join(out_dir, "index.md"), "w") as f:
-                        f.write("# Mock Conversion\n\nThis is mock content.")
+                    # Mock marker output
+                    logger.info("[MOCK] Skipping actual conversion")
+                    md_text = "# Mock Conversion\n\nThis is mock content."
+                    images = {}
+                    marker_meta = {"mock": True}
                 else:
-                    subprocess.run(cmd, check=True, capture_output=True, timeout=timeout)
-            except subprocess.TimeoutExpired as e:
-                timeout = get_conversion_timeout()
-                logger.error(f"Marker timed out after {timeout}s")
-                self._handle_failure(job_hash, f"Conversion timeout ({timeout}s)", retry_count)
-                return
+                    md_text, images, marker_meta = self._run_marker_conversion(pdf_path)
+                    logger.info(f"Marker conversion completed: {len(md_text)} chars, {len(images)} images")
             except Exception as e:
-                logger.error(f"Marker failed: {e}")
+                logger.error(f"Marker failed: {type(e).__name__}: {e}")
                 self._handle_failure(job_hash, str(e), retry_count)
                 return
             
             self.heartbeat.update_progress({"stage": "packaging"})
+            
+            # Save markdown
+            md_path = os.path.join(out_dir, "content.md")
+            with open(md_path, "w", encoding="utf-8") as f:
+                f.write(md_text)
+            
+            # Save images to assets folder
+            if images:
+                assets_dir = os.path.join(out_dir, "assets")
+                os.makedirs(assets_dir, exist_ok=True)
+                for img_name, img in images.items():
+                    img_path = os.path.join(assets_dir, img_name)
+                    # Convert to RGB if needed (for JPEG)
+                    if hasattr(img, 'mode') and img.mode != "RGB":
+                        img = img.convert("RGB")
+                    img.save(img_path)
+                logger.info(f"Saved {len(images)} images to assets/")
+            
+            # List files for debugging
+            output_files = [f for _, _, files in os.walk(out_dir) for f in files]
+            logger.info(f"Output files: {output_files}")
             
             # 3. Create info.json with enriched metadata
             info = {
@@ -266,7 +290,8 @@ class Worker:
                 "worker_id": self.id,
                 "original_filename": s3_meta.get("original-name", "unknown.pdf"),
                 "tags": json.loads(s3_meta.get("tags", "[]")),
-                "size_bytes": s3_meta.get("size", "0")
+                "size_bytes": s3_meta.get("size", "0"),
+                "marker_meta": marker_meta
             }
             with open(os.path.join(out_dir, "info.json"), "w") as f:
                 json.dump(info, f, indent=2)
@@ -332,6 +357,69 @@ class Worker:
         self.heartbeat.set_job(None)
         self.current_job = None
         self.current_priority = None
+    
+    def _init_marker(self):
+        """
+        Initialize marker models (lazy loading).
+        Models are shared across all jobs to avoid reloading ~3GB of weights.
+        """
+        if Worker._marker_converter is not None:
+            return
+        
+        logger.info("Initializing marker models (this may take a while on first run)...")
+        try:
+            from marker.models import create_model_dict
+            from marker.converters.pdf import PdfConverter
+            
+            Worker._marker_models = create_model_dict()
+            Worker._marker_converter = PdfConverter(
+                artifact_dict=Worker._marker_models,
+                config={},
+            )
+            logger.info("Marker models initialized successfully.")
+        except ImportError as e:
+            raise RuntimeError(
+                f"marker-pdf not installed. Install with: pip install marker-pdf\n"
+                f"Error: {e}"
+            )
+    
+    def _run_marker_conversion(self, pdf_path: str) -> tuple:
+        """
+        Convert PDF to markdown using marker Python API.
+        
+        Returns:
+            tuple: (markdown_text, images_dict, metadata_dict)
+        """
+        self._init_marker()
+        
+        from marker.output import text_from_rendered
+        
+        # Run conversion
+        rendered = Worker._marker_converter(pdf_path)
+        
+        # Extract text, format, and images
+        text, ext, images = text_from_rendered(rendered)
+        
+        # Update image paths in markdown to use assets/ prefix
+        for img_name in images.keys():
+            text = text.replace(f"({img_name})", f"(assets/{img_name})")
+        
+        # Extract metadata (convert to JSON-serializable dict)
+        meta = {}
+        if hasattr(rendered, 'metadata') and rendered.metadata:
+            try:
+                # rendered.metadata might be a pydantic model or dict
+                if hasattr(rendered.metadata, 'model_dump'):
+                    meta = rendered.metadata.model_dump()
+                elif hasattr(rendered.metadata, 'dict'):
+                    meta = rendered.metadata.dict()
+                elif isinstance(rendered.metadata, dict):
+                    meta = rendered.metadata
+            except Exception as e:
+                logger.warning(f"Could not serialize marker metadata: {e}")
+                meta = {"error": str(e)}
+        
+        return text, images, meta
     
     def shutdown(self):
         """Clean shutdown of worker."""

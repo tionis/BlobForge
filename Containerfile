@@ -20,7 +20,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir marker-pdf boto3
 
 # Copy Package
-COPY pyproject.toml .
+COPY pyproject.toml README.md ./
 COPY blobforge/ ./blobforge/
 
 # Install the package

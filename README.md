@@ -53,21 +53,27 @@ s3://my-bucket/
 
 ## 📦 Installation
 
-### Option A: Docker (Recommended for Workers)
+### Option A: Docker/Podman (Recommended for Workers)
 
-The Docker image includes all dependencies for PDF processing (`marker-pdf`, `ocr`, `torch`).
+The container image includes all dependencies for PDF processing (`marker-pdf`, `ocr`, `torch`).
 
 ```bash
-# Build the image
-docker build -t blobforge .
+# Build the image (or pull from ghcr.io/tionis/blobforge:latest)
+podman build -t blobforge .
 
-# Run a Worker
-docker run -d \
+# Run a Worker (set BLOBFORGE_WORKER_ID for stable identity across restarts)
+podman run -d \
+  -v blobforge-cache:/root/.cache \
   -e BLOBFORGE_S3_BUCKET=my-forge-bucket \
+  -e BLOBFORGE_WORKER_ID=worker-01 \
   -e AWS_ACCESS_KEY_ID=... \
   -e AWS_SECRET_ACCESS_KEY=... \
   blobforge worker
 ```
+
+**Important notes:**
+- **Model Cache:** Mount `/root/.cache` as a volume to persist the ~3GB marker/torch models across container restarts. Without this, models are re-downloaded on every container start.
+- **Worker ID:** Always set `BLOBFORGE_WORKER_ID` for containerized workers. Without it, the worker ID changes on every restart, leaving orphaned locks that the janitor must clean up.
 
 ### Option B: uv (Recommended for CLI)
 
@@ -289,7 +295,7 @@ These **must** be set as environment variables (required for S3 connectivity).
 | `BLOBFORGE_S3_ACCESS_KEY_ID` | - | S3 access key (overrides AWS_ACCESS_KEY_ID) |
 | `BLOBFORGE_S3_SECRET_ACCESS_KEY` | - | S3 secret key (overrides AWS_SECRET_ACCESS_KEY) |
 | `BLOBFORGE_S3_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
-| `BLOBFORGE_WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set |
+| `BLOBFORGE_WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set. **Required for containers** to maintain stable identity across restarts |
 | `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Remote Configuration (Stored in S3)
