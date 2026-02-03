@@ -12,7 +12,7 @@ from .config import (
     S3_BUCKET, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL,
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, 
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY, S3_PREFIX_WORKERS,
-    WORKER_ID, get_worker_metadata
+    WORKER_ID, get_worker_metadata, get_s3_supports_conditional_writes
 )
 
 
@@ -556,6 +556,9 @@ class S3Client:
         """
         Update manifest with optimistic locking (If-Match).
         
+        Falls back to force_update_manifest if the S3 provider doesn't support
+        conditional writes (configured via remote config s3_supports_conditional_writes).
+        
         Args:
             new_entries: List of entry dicts, each with:
                 - hash: SHA256 hash
@@ -574,6 +577,10 @@ class S3Client:
         
         if not new_entries:
             return True
+        
+        # Check if provider supports conditional writes
+        if not get_s3_supports_conditional_writes():
+            return self.force_update_manifest(new_entries)
         
         key = f"{S3_PREFIX_REGISTRY}/manifest.json"
         

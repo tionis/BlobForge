@@ -128,6 +128,7 @@ class RemoteConfig:
         "heartbeat_interval": 60,
         "stale_timeout_minutes": 15,
         "conversion_timeout": 3600,
+        "s3_supports_conditional_writes": True,  # Set False for providers like Hetzner Ceph
     }
     
     TTL_SECONDS = 3600  # 1 hour cache
@@ -247,6 +248,9 @@ def get_stale_timeout_minutes() -> int:
 
 def get_conversion_timeout() -> int:
     return _remote_config.get("conversion_timeout")
+
+def get_s3_supports_conditional_writes() -> bool:
+    return _remote_config.get("s3_supports_conditional_writes")
 
 def get_remote_config() -> Dict[str, Any]:
     return _remote_config.get_all()
