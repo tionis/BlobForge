@@ -3,13 +3,7 @@ import argparse
 import time
 from datetime import datetime, timedelta
 import json
-
-# Configuration
-S3_BUCKET = os.getenv("S3_BUCKET", "my-pdf-bucket")
-S3_PREFIX_TODO = "queue/todo"
-S3_PREFIX_PROCESSING = "queue/processing"
-S3_PREFIX_DONE = "store/out"
-S3_PREFIX_FAILED = "queue/failed"
+from config import *
 
 class S3Client:
     def __init__(self, dry_run=False):
@@ -79,7 +73,7 @@ def show_status():
     # 1. TODO Counts
     print("\n[QUEUE]")
     total_todo = 0
-    for prio in ["1_high", "2_normal", "3_low"]:
+    for prio in PRIORITIES:
         count = s3.count_prefix(f"{S3_PREFIX_TODO}/{prio}")
         print(f"  {prio:<10}: {count}")
         total_todo += count

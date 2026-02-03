@@ -4,11 +4,8 @@ import json
 import time
 import argparse
 from datetime import datetime, timedelta
+from config import *
 
-# Configuration
-S3_BUCKET = os.getenv("S3_BUCKET", "my-pdf-bucket")
-S3_PREFIX_TODO = "queue/todo"
-S3_PREFIX_PROCESSING = "queue/processing"
 TIMEOUT_HOURS = 2
 
 class S3Client:

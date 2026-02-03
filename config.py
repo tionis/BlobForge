@@ -2,13 +2,18 @@ import os
 
 # S3 Configuration
 S3_BUCKET = os.getenv("S3_BUCKET", "my-pdf-bucket")
+S3_PREFIX = os.getenv("S3_PREFIX", "")
+
+# Ensure trailing slash if prefix exists
+if S3_PREFIX and not S3_PREFIX.endswith("/"):
+    S3_PREFIX += "/"
 
 # S3 Prefixes
-S3_PREFIX_RAW = "store/raw"
-S3_PREFIX_TODO = "queue/todo"
-S3_PREFIX_PROCESSING = "queue/processing"
-S3_PREFIX_DONE = "store/out"
-S3_PREFIX_FAILED = "queue/failed"
+S3_PREFIX_RAW = f"{S3_PREFIX}store/raw"
+S3_PREFIX_TODO = f"{S3_PREFIX}queue/todo"
+S3_PREFIX_PROCESSING = f"{S3_PREFIX}queue/processing"
+S3_PREFIX_DONE = f"{S3_PREFIX}store/out"
+S3_PREFIX_FAILED = f"{S3_PREFIX}queue/failed"
 
 # Priorities (Order matters: Workers poll index 0 first)
 PRIORITIES = ["1_highest", "2_higher", "3_normal"]
