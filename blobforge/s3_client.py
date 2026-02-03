@@ -552,7 +552,7 @@ class S3Client:
         except Exception:
             return {"version": 1, "updated_at": None, "entries": {}}, None
     
-    def update_manifest(self, new_entries: List[Dict[str, Any]], max_retries: int = 5) -> bool:
+    def update_manifest(self, new_entries: List[Dict[str, Any]], max_retries: int = 10) -> bool:
         """
         Update manifest with optimistic locking (If-Match).
         
@@ -563,13 +563,16 @@ class S3Client:
                 - size: File size in bytes
                 - tags: List of tags
                 - source: Source directory path
-            max_retries: Number of retries on conflict
+            max_retries: Number of retries on conflict (with exponential backoff)
         
         Returns:
             True if successful, False on persistent conflict
         """
         if self.dry_run:
             print(f"[DRY-RUN] Would update manifest with {len(new_entries)} entries")
+            return True
+        
+        if not new_entries:
             return True
         
         key = f"{S3_PREFIX_REGISTRY}/manifest.json"
@@ -626,14 +629,159 @@ class S3Client:
             except self.ClientError as e:
                 error_code = e.response.get('Error', {}).get('Code', '')
                 if error_code in ['PreconditionFailed', '412']:
-                    # Conflict - retry
-                    print(f"Manifest conflict (attempt {attempt + 1}/{max_retries}), retrying...")
-                    time.sleep(0.1 * (attempt + 1))  # Backoff
+                    # Conflict - exponential backoff with jitter
+                    import random
+                    delay = min(0.1 * (2 ** attempt) + random.uniform(0, 0.1), 5.0)
+                    print(f"Manifest conflict (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s...")
+                    time.sleep(delay)
                     continue
                 raise
         
         print(f"Failed to update manifest after {max_retries} attempts")
         return False
+    
+    def force_update_manifest(self, new_entries: List[Dict[str, Any]]) -> bool:
+        """
+        Force update manifest without optimistic locking.
+        
+        WARNING: This can cause data loss if concurrent updates are happening.
+        Use only for repair operations when no other processes are running.
+        
+        Returns:
+            True if successful
+        """
+        if self.dry_run:
+            print(f"[DRY-RUN] Would force update manifest with {len(new_entries)} entries")
+            return True
+        
+        if not new_entries:
+            return True
+        
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        
+        # Read current manifest (no ETag needed)
+        manifest = self.get_manifest()
+        
+        # Merge new entries
+        now = datetime.now().isoformat() + "Z"
+        for entry in new_entries:
+            file_hash = entry['hash']
+            if file_hash in manifest['entries']:
+                existing = manifest['entries'][file_hash]
+                if entry['path'] not in existing.get('paths', []):
+                    existing.setdefault('paths', []).append(entry['path'])
+                existing_tags = set(existing.get('tags', []))
+                existing_tags.update(entry.get('tags', []))
+                existing['tags'] = list(existing_tags)
+            else:
+                manifest['entries'][file_hash] = {
+                    'paths': [entry['path']],
+                    'size': entry.get('size', 0),
+                    'tags': entry.get('tags', []),
+                    'ingested_at': now,
+                    'source': entry.get('source', '')
+                }
+        
+        manifest['updated_at'] = now
+        
+        # Write without conditions
+        try:
+            if self.mock:
+                return True
+            
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(manifest, indent=2),
+                ContentType='application/json'
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to force update manifest: {e}")
+            return False
+    
+    def rebuild_manifest_from_raw(self) -> Dict[str, Any]:
+        """
+        Rebuild manifest by scanning all files in store/raw/.
+        
+        This reads metadata from each raw PDF and reconstructs the manifest.
+        Use this to repair a corrupted or out-of-sync manifest.
+        
+        Returns:
+            The rebuilt manifest dict
+        """
+        print("Scanning store/raw/ to rebuild manifest...")
+        
+        manifest = {
+            "version": 1,
+            "updated_at": datetime.now().isoformat() + "Z",
+            "entries": {}
+        }
+        
+        raw_files = self.list_objects(f"{S3_PREFIX_RAW}/")
+        total = len(raw_files)
+        
+        for i, obj in enumerate(raw_files):
+            key = obj['Key']
+            if not key.endswith('.pdf'):
+                continue
+            
+            # Extract hash from key: store/raw/<hash>.pdf
+            file_hash = key.split('/')[-1].replace('.pdf', '')
+            
+            # Get metadata
+            metadata = self.get_object_metadata(key)
+            
+            original_name = metadata.get('original-name', f'{file_hash[:8]}.pdf')
+            tags_str = metadata.get('tags', '[]')
+            try:
+                tags = json.loads(tags_str)
+            except:
+                tags = []
+            
+            size_str = metadata.get('size', '0')
+            try:
+                size = int(size_str)
+            except:
+                size = obj.get('Size', 0)
+            
+            manifest['entries'][file_hash] = {
+                'paths': [original_name],
+                'size': size,
+                'tags': tags,
+                'ingested_at': obj.get('LastModified', datetime.now()).isoformat() + "Z" if isinstance(obj.get('LastModified'), datetime) else str(obj.get('LastModified', '')),
+                'source': 'rebuilt'
+            }
+            
+            if (i + 1) % 100 == 0 or i + 1 == total:
+                print(f"  Processed {i + 1}/{total} files...")
+        
+        print(f"Rebuilt manifest with {len(manifest['entries'])} entries")
+        return manifest
+    
+    def save_manifest(self, manifest: Dict[str, Any]) -> bool:
+        """
+        Save a manifest dict to S3 (unconditional write).
+        
+        Use with rebuild_manifest_from_raw() to repair the manifest.
+        """
+        if self.dry_run:
+            print("[DRY-RUN] Would save manifest")
+            return True
+        
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        
+        try:
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(manifest, indent=2),
+                ContentType='application/json'
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to save manifest: {e}")
+            return False
     
     def lookup_by_path(self, path: str) -> Optional[str]:
         """

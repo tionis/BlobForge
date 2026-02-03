@@ -396,9 +396,76 @@ def cmd_search(args):
 
 
 def cmd_manifest_stats(args):
-    """Show manifest statistics."""
-    s3 = S3Client()
+    """Show manifest statistics, repair, or rebuild."""
+    s3 = S3Client(dry_run=args.dry_run if hasattr(args, 'dry_run') else False)
     
+    # Handle repair from recovery file
+    if args.repair:
+        recovery_file = "/tmp/blobforge_manifest_recovery.json"
+        if not os.path.exists(recovery_file):
+            print("No recovery file found at /tmp/blobforge_manifest_recovery.json")
+            print("Nothing to repair.")
+            return 0
+        
+        with open(recovery_file, 'r') as f:
+            entries = json.load(f)
+        
+        if not entries:
+            print("Recovery file is empty.")
+            os.remove(recovery_file)
+            return 0
+        
+        print(f"Found {len(entries)} entries to repair...")
+        
+        if args.force:
+            # Force update without optimistic locking
+            print("Using force update (no locking)...")
+            if s3.force_update_manifest(entries):
+                print("Manifest repaired successfully.")
+                os.remove(recovery_file)
+                return 0
+            else:
+                print("Force update failed.")
+                return 1
+        else:
+            # Try normal update with retries
+            if s3.update_manifest(entries, max_retries=20):
+                print("Manifest repaired successfully.")
+                os.remove(recovery_file)
+                return 0
+            else:
+                print("Repair failed. Try again with --force if no other processes are running.")
+                return 1
+    
+    # Handle full rebuild from S3
+    if args.rebuild:
+        print("Rebuilding manifest from S3 store/raw/...")
+        print("WARNING: This will replace the current manifest.")
+        
+        if not args.force:
+            confirm = input("Continue? [y/N] ").strip().lower()
+            if confirm != 'y':
+                print("Aborted.")
+                return 1
+        
+        manifest = s3.rebuild_manifest_from_raw()
+        
+        if args.dry_run:
+            print(f"[DRY-RUN] Would save manifest with {len(manifest['entries'])} entries")
+            return 0
+        
+        if s3.save_manifest(manifest):
+            print("Manifest rebuilt and saved successfully.")
+            return 0
+        else:
+            print("Failed to save rebuilt manifest.")
+            return 1
+    
+    # Handle sync (update manifest with metadata from already-ingested files)
+    if args.sync:
+        return cmd_manifest_sync(args, s3)
+    
+    # Default: show stats
     manifest = s3.get_manifest()
     entries = manifest.get('entries', {})
     
@@ -427,7 +494,91 @@ def cmd_manifest_stats(args):
             for tag, count in tag_counts.most_common(10):
                 print(f"  {tag}: {count}")
     
+    # Check for recovery file
+    recovery_file = "/tmp/blobforge_manifest_recovery.json"
+    if os.path.exists(recovery_file):
+        try:
+            with open(recovery_file, 'r') as f:
+                pending = json.load(f)
+            if pending:
+                print(f"\n⚠️  {len(pending)} entries pending in recovery file.")
+                print(f"   Run 'blobforge manifest --repair' to retry.")
+        except:
+            pass
+    
     return 0
+
+
+def cmd_manifest_sync(args, s3):
+    """Sync manifest with files that are already ingested but missing from manifest."""
+    print("Syncing manifest with ingested files...")
+    
+    # Get current manifest
+    manifest = s3.get_manifest()
+    manifest_hashes = set(manifest.get('entries', {}).keys())
+    
+    # List all raw files
+    raw_files = s3.list_objects(f"{S3_PREFIX_RAW}/")
+    raw_hashes = set()
+    
+    for obj in raw_files:
+        key = obj['Key']
+        if key.endswith('.pdf'):
+            file_hash = key.split('/')[-1].replace('.pdf', '')
+            raw_hashes.add(file_hash)
+    
+    # Find files in raw that are not in manifest
+    missing = raw_hashes - manifest_hashes
+    
+    if not missing:
+        print("Manifest is in sync. No missing entries.")
+        return 0
+    
+    print(f"Found {len(missing)} files in S3 not in manifest.")
+    
+    # Build entries for missing files
+    entries = []
+    for file_hash in missing:
+        key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
+        metadata = s3.get_object_metadata(key)
+        
+        original_name = metadata.get('original-name', f'{file_hash[:8]}.pdf')
+        tags_str = metadata.get('tags', '[]')
+        try:
+            tags = json.loads(tags_str)
+        except:
+            tags = []
+        
+        size_str = metadata.get('size', '0')
+        try:
+            size = int(size_str)
+        except:
+            size = 0
+        
+        entries.append({
+            'hash': file_hash,
+            'path': original_name,
+            'size': size,
+            'tags': tags,
+            'source': 'synced'
+        })
+    
+    print(f"Adding {len(entries)} entries to manifest...")
+    
+    if args.force:
+        if s3.force_update_manifest(entries):
+            print("Manifest synced successfully.")
+            return 0
+        else:
+            print("Sync failed.")
+            return 1
+    else:
+        if s3.update_manifest(entries, max_retries=20):
+            print("Manifest synced successfully.")
+            return 0
+        else:
+            print("Sync failed. Try again with --force if no other processes are running.")
+            return 1
 
 
 def cmd_config(args):
@@ -606,9 +757,18 @@ def main():
     p_search.add_argument("--limit", type=int, default=20, help="Max results to show")
     p_search.set_defaults(func=cmd_search)
     
-    # Manifest stats
-    p_manifest = subparsers.add_parser("manifest", help="Show manifest statistics")
+    # Manifest stats/repair/rebuild
+    p_manifest = subparsers.add_parser("manifest", help="Manifest operations: stats, repair, rebuild, sync")
     p_manifest.add_argument("--verbose", "-v", action="store_true", help="Show tag breakdown")
+    p_manifest.add_argument("--repair", action="store_true", 
+                            help="Retry failed manifest updates from recovery file")
+    p_manifest.add_argument("--rebuild", action="store_true",
+                            help="Rebuild manifest by scanning S3 store/raw/")
+    p_manifest.add_argument("--sync", action="store_true",
+                            help="Add files in S3 that are missing from manifest")
+    p_manifest.add_argument("--force", action="store_true",
+                            help="Skip confirmation and use non-locking update")
+    p_manifest.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_manifest.set_defaults(func=cmd_manifest_stats)
     
     # Config

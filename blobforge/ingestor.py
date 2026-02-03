@@ -246,9 +246,31 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             manifest_batch = []
     
     # Final manifest update for remaining entries
+    failed_manifest_entries = []
+    
     if manifest_batch:
         print(f"  [MANIFEST] Updating with {len(manifest_batch)} remaining entries...")
-        s3.update_manifest(manifest_batch)
+        if not s3.update_manifest(manifest_batch):
+            failed_manifest_entries.extend(manifest_batch)
+    
+    # If manifest update failed, save entries for later recovery
+    if failed_manifest_entries:
+        recovery_file = "/tmp/blobforge_manifest_recovery.json"
+        try:
+            # Append to existing recovery file if it exists
+            existing = []
+            if os.path.exists(recovery_file):
+                with open(recovery_file, 'r') as f:
+                    existing = json.load(f)
+            existing.extend(failed_manifest_entries)
+            with open(recovery_file, 'w') as f:
+                json.dump(existing, f, indent=2)
+            print(f"\n  [WARNING] Manifest update failed for {len(failed_manifest_entries)} entries.")
+            print(f"  Saved to {recovery_file} for recovery.")
+            print(f"  Run 'blobforge manifest --repair' to retry, or 'blobforge manifest --rebuild' to rebuild from S3.")
+        except Exception as e:
+            print(f"\n  [ERROR] Could not save recovery file: {e}")
+            print(f"  Failed entries: {[e['hash'][:12] for e in failed_manifest_entries]}")
     
     # Print summary
     print("\n--- Ingest Summary ---")
