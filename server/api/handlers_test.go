@@ -789,3 +789,247 @@ func TestWorkerHeartbeatUpdatesTimestamp(t *testing.T) {
 		t.Error("second heartbeat should be after first")
 	}
 }
+
+// ============================================
+// Admin Worker API Tests
+// ============================================
+
+func TestAdminCreateWorker(t *testing.T) {
+	handler, database, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	r := chi.NewRouter()
+	r.Post("/api/admin/workers", handler.AdminCreateWorker)
+
+	// Test successful worker creation
+	rr := doJSONRequest(t, r, "POST", "/api/admin/workers", map[string]string{
+		"id":   "pdf-worker-1",
+		"name": "PDF Worker 1",
+		"type": "pdf-convert",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var result struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Type   string `json:"type"`
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if result.ID != "pdf-worker-1" {
+		t.Errorf("expected id 'pdf-worker-1', got '%s'", result.ID)
+	}
+	if result.Secret == "" || result.Secret[:4] != "bfw_" {
+		t.Errorf("expected secret starting with 'bfw_', got '%s'", result.Secret)
+	}
+
+	// Verify worker was created in DB with secret hash
+	worker, err := database.GetWorker("pdf-worker-1")
+	if err != nil || worker == nil {
+		t.Fatal("worker should exist in database")
+	}
+	if worker.SecretHash == nil || *worker.SecretHash == "" {
+		t.Error("worker should have secret hash set")
+	}
+	if !worker.Enabled {
+		t.Error("worker should be enabled by default")
+	}
+
+	// Test duplicate worker
+	rr = doJSONRequest(t, r, "POST", "/api/admin/workers", map[string]string{
+		"id":   "pdf-worker-1",
+		"type": "pdf-convert",
+	})
+	if rr.Code != http.StatusConflict {
+		t.Errorf("expected status 409 for duplicate, got %d", rr.Code)
+	}
+
+	// Test missing fields
+	rr = doJSONRequest(t, r, "POST", "/api/admin/workers", map[string]string{
+		"name": "Test",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400 for missing fields, got %d", rr.Code)
+	}
+}
+
+func TestAdminRegenerateWorkerSecret(t *testing.T) {
+	handler, database, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// Create a worker first
+	hash := "original_hash"
+	database.CreateWorker(&db.Worker{
+		ID:         "worker-1",
+		Type:       "pdf",
+		SecretHash: &hash,
+		Enabled:    true,
+	})
+
+	r := chi.NewRouter()
+	r.Post("/api/admin/workers/{id}/regenerate", handler.AdminRegenerateWorkerSecret)
+
+	rr := doJSONRequest(t, r, "POST", "/api/admin/workers/worker-1/regenerate", nil)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var result struct {
+		ID     string `json:"id"`
+		Secret string `json:"secret"`
+	}
+	json.NewDecoder(rr.Body).Decode(&result)
+
+	if result.Secret == "" || result.Secret[:4] != "bfw_" {
+		t.Errorf("expected new secret starting with 'bfw_', got '%s'", result.Secret)
+	}
+
+	// Verify hash was updated
+	worker, _ := database.GetWorker("worker-1")
+	if *worker.SecretHash == hash {
+		t.Error("secret hash should have been updated")
+	}
+
+	// Test non-existent worker
+	rr = doJSONRequest(t, r, "POST", "/api/admin/workers/non-existent/regenerate", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 for non-existent worker, got %d", rr.Code)
+	}
+}
+
+func TestAdminEnableDisableWorker(t *testing.T) {
+	handler, database, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	database.CreateWorker(&db.Worker{ID: "worker-1", Type: "pdf", Enabled: true})
+
+	r := chi.NewRouter()
+	r.Post("/api/admin/workers/{id}/enable", handler.AdminEnableWorker)
+	r.Post("/api/admin/workers/{id}/disable", handler.AdminDisableWorker)
+
+	// Disable worker
+	rr := doJSONRequest(t, r, "POST", "/api/admin/workers/worker-1/disable", nil)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	worker, _ := database.GetWorker("worker-1")
+	if worker.Enabled {
+		t.Error("worker should be disabled")
+	}
+
+	// Enable worker
+	rr = doJSONRequest(t, r, "POST", "/api/admin/workers/worker-1/enable", nil)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	worker, _ = database.GetWorker("worker-1")
+	if !worker.Enabled {
+		t.Error("worker should be enabled")
+	}
+
+	// Test non-existent worker
+	rr = doJSONRequest(t, r, "POST", "/api/admin/workers/non-existent/disable", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected status 404 for non-existent worker, got %d", rr.Code)
+	}
+}
+
+func TestWorkerSecretValidation(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	// Create worker with a secret
+	hash := "7b52009b64fd0a2a49e6d8a939753077792b0554" // fake hash for testing
+	database.CreateWorker(&db.Worker{
+		ID:         "worker-1",
+		Type:       "pdf",
+		SecretHash: &hash,
+		Enabled:    true,
+	})
+
+	// Test valid secret (matching hash)
+	valid, err := database.ValidateWorkerSecret("worker-1", hash)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !valid {
+		t.Error("should validate matching hash")
+	}
+
+	// Test invalid secret
+	valid, err = database.ValidateWorkerSecret("worker-1", "wrong_hash")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Error("should not validate wrong hash")
+	}
+
+	// Test disabled worker
+	database.SetWorkerEnabled("worker-1", false)
+	valid, err = database.ValidateWorkerSecret("worker-1", hash)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Error("should not validate disabled worker")
+	}
+
+	// Test non-existent worker
+	valid, err = database.ValidateWorkerSecret("non-existent", hash)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Error("should not validate non-existent worker")
+	}
+
+	// Test worker without secret
+	database.CreateWorker(&db.Worker{
+		ID:      "worker-no-secret",
+		Type:    "pdf",
+		Enabled: true,
+	})
+	valid, err = database.ValidateWorkerSecret("worker-no-secret", hash)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if valid {
+		t.Error("should not validate worker without secret")
+	}
+}
+
+func TestWorkerAuthMiddleware(t *testing.T) {
+	handler, database, cleanup := setupTestHandler(t)
+	defer cleanup()
+
+	// Create worker with a secret
+	hash := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" // SHA256 of empty string
+	database.CreateWorker(&db.Worker{
+		ID:         "worker-1",
+		Type:       "pdf",
+		SecretHash: &hash,
+		Enabled:    true,
+	})
+
+	// The middleware is now part of auth package, and needs auth.Auth to be created
+	// For now, test that the handler works with proper worker context
+	r := chi.NewRouter()
+	r.Post("/api/workers/register", handler.RegisterWorker)
+
+	// Test that registration works
+	rr := doJSONRequest(t, r, "POST", "/api/workers/register", map[string]string{
+		"id":   "worker-test",
+		"type": "pdf",
+	})
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

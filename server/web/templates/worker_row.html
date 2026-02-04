@@ -1,10 +1,19 @@
-<tr id="worker-{{.Worker.ID}}" class="hover:bg-gray-50">
-    <td class="px-4 py-3 text-sm font-medium text-gray-900">{{.Worker.ID}}</td>
+<tr id="worker-{{.Worker.ID}}" class="hover:bg-gray-50 {{if not .Worker.Enabled}}opacity-50{{end}}">
+    <td class="px-4 py-3 text-sm font-medium text-gray-900">
+        {{.Worker.ID}}
+        {{if .Worker.Name}}<br><span class="text-gray-500 text-xs">{{deref .Worker.Name}}</span>{{end}}
+    </td>
     <td class="px-4 py-3 text-sm text-gray-500">{{.Worker.Type}}</td>
     <td class="px-4 py-3 text-sm">
+        {{if not .Worker.Enabled}}
+        <span class="px-2 py-1 text-xs rounded-full bg-gray-100 text-gray-600">
+            disabled
+        </span>
+        {{else}}
         <span class="px-2 py-1 text-xs rounded-full {{statusBg .Worker.Status}} {{workerStatusColor .Worker.Status}}">
             {{.Worker.Status}}
         </span>
+        {{end}}
     </td>
     <td class="px-4 py-3 text-sm text-gray-500">
         {{if .Worker.CurrentJobID}}
@@ -18,6 +27,8 @@
     <td class="px-4 py-3 text-sm text-gray-500">{{timeAgo .Worker.LastHeartbeat}}</td>
     <td class="px-4 py-3 text-sm">
         <div class="flex space-x-2">
+            {{if .IsAdmin}}
+            {{if .Worker.Enabled}}
             {{if eq .Worker.Status "online"}}
             <button 
                 hx-post="/actions/workers/{{.Worker.ID}}/drain" 
@@ -29,14 +40,40 @@
             </button>
             {{end}}
             <button 
+                onclick="BlobForge.showRegenerateSecret('{{.Worker.ID}}')"
+                class="text-blue-600 hover:text-blue-800 text-xs"
+                title="Regenerate worker secret">
+                🔑 Regen
+            </button>
+            <button 
+                hx-post="/actions/workers/{{.Worker.ID}}/disable" 
+                hx-target="#worker-{{.Worker.ID}}"
+                hx-swap="outerHTML"
+                hx-confirm="Disable this worker? It will not be able to connect."
+                class="text-orange-600 hover:text-orange-800 text-xs"
+                title="Disable worker">
+                🚫 Disable
+            </button>
+            {{else}}
+            <button 
+                hx-post="/actions/workers/{{.Worker.ID}}/enable" 
+                hx-target="#worker-{{.Worker.ID}}"
+                hx-swap="outerHTML"
+                class="text-green-600 hover:text-green-800 text-xs"
+                title="Enable worker">
+                ✓ Enable
+            </button>
+            {{end}}
+            <button 
                 hx-delete="/actions/workers/{{.Worker.ID}}" 
                 hx-target="#worker-{{.Worker.ID}}"
                 hx-swap="outerHTML"
-                hx-confirm="Are you sure you want to remove this worker?"
+                hx-confirm="Are you sure you want to delete this worker? This cannot be undone."
                 class="text-red-600 hover:text-red-800 text-xs"
-                title="Remove worker">
-                ✕ Remove
+                title="Delete worker">
+                ✕ Delete
             </button>
+            {{end}}
         </div>
     </td>
 </tr>

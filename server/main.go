@@ -112,14 +112,23 @@ func main() {
 
 	// API routes - protected by auth middleware
 	r.Route("/api", func(r chi.Router) {
-		// Worker API uses token auth
+		// Worker-specific endpoints - require worker authentication
 		r.Group(func(r chi.Router) {
-			r.Use(authenticator.Middleware(true))
+			r.Use(authenticator.WorkerAuthMiddleware)
 
-			// Worker endpoints (workers use API tokens)
 			r.Post("/workers/register", apiHandler.RegisterWorker)
 			r.Post("/workers/{id}/heartbeat", apiHandler.WorkerHeartbeat)
 			r.Post("/workers/{id}/unregister", apiHandler.UnregisterWorker)
+			r.Post("/jobs/claim", apiHandler.ClaimJob)
+			r.Post("/jobs/{id}/complete", apiHandler.CompleteJob)
+			r.Post("/jobs/{id}/fail", apiHandler.FailJob)
+		})
+
+		// General API endpoints - require API token or session auth
+		r.Group(func(r chi.Router) {
+			r.Use(authenticator.Middleware(true))
+
+			// Worker management (read-only for non-admins)
 			r.Get("/workers", apiHandler.ListWorkers)
 			r.Post("/workers/{id}/drain", apiHandler.DrainWorker)
 			r.Delete("/workers/{id}", apiHandler.RemoveWorker)
@@ -128,9 +137,6 @@ func main() {
 			r.Post("/jobs", apiHandler.CreateJob)
 			r.Get("/jobs", apiHandler.ListJobs)
 			r.Get("/jobs/{id}", apiHandler.GetJob)
-			r.Post("/jobs/claim", apiHandler.ClaimJob)
-			r.Post("/jobs/{id}/complete", apiHandler.CompleteJob)
-			r.Post("/jobs/{id}/fail", apiHandler.FailJob)
 			r.Post("/jobs/{id}/retry", apiHandler.RetryJob)
 			r.Post("/jobs/{id}/cancel", apiHandler.CancelJob)
 			r.Post("/jobs/{id}/priority", apiHandler.UpdateJobPriority)
@@ -155,6 +161,12 @@ func main() {
 
 			// User management
 			r.Get("/users", apiHandler.ListUsers)
+
+			// Worker management
+			r.Post("/admin/workers", apiHandler.AdminCreateWorker)
+			r.Post("/admin/workers/{id}/regenerate", apiHandler.AdminRegenerateWorkerSecret)
+			r.Post("/admin/workers/{id}/enable", apiHandler.AdminEnableWorker)
+			r.Post("/admin/workers/{id}/disable", apiHandler.AdminDisableWorker)
 		})
 	})
 
@@ -187,6 +199,8 @@ func main() {
 		r.Post("/actions/jobs/{id}/priority", webHandler.UpdatePriorityAction)
 		r.Post("/actions/workers/register", webHandler.RegisterWorkerAction)
 		r.Post("/actions/workers/{id}/drain", webHandler.DrainWorkerAction)
+		r.Post("/actions/workers/{id}/enable", webHandler.EnableWorkerAction)
+		r.Post("/actions/workers/{id}/disable", webHandler.DisableWorkerAction)
 		r.Delete("/actions/workers/{id}", webHandler.RemoveWorkerAction)
 
 		// SSE endpoint for live updates

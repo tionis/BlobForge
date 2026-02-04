@@ -130,6 +130,15 @@ var Migrations = []Migration{
 		ALTER TABLE workers ADD COLUMN name TEXT;
 		`,
 	},
+	{
+		Version:     5,
+		Description: "Add worker authentication",
+		Up: `
+		ALTER TABLE workers ADD COLUMN secret_hash TEXT;
+		ALTER TABLE workers ADD COLUMN enabled BOOLEAN DEFAULT TRUE;
+		CREATE INDEX IF NOT EXISTS idx_workers_enabled ON workers(enabled);
+		`,
+	},
 }
 
 // GetSchemaVersion returns the current schema version using user_version pragma

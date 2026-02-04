@@ -13,12 +13,16 @@
         </thead>
         <tbody>
             {{range .Workers}}
-            <tr>
+            <tr id="worker-{{.ID}}" class="{{if not .Enabled}}opacity-50{{end}}">
                 <td class="font-mono">{{truncate .ID 12}}</td>
-                <td>{{if .Name}}{{.Name}}{{else}}<span class="text-muted">-</span>{{end}}</td>
+                <td>{{if .Name}}{{deref .Name}}{{else}}<span class="text-muted">-</span>{{end}}</td>
                 <td>{{.Type}}</td>
                 <td>
+                    {{if not .Enabled}}
+                    <span class="status-badge status-disabled">disabled</span>
+                    {{else}}
                     <span class="status-badge status-{{.Status}}">{{.Status}}</span>
+                    {{end}}
                 </td>
                 <td>
                     {{if .CurrentJobID}}
@@ -29,22 +33,45 @@
                 </td>
                 <td class="text-muted">{{timeAgo .LastHeartbeat}}</td>
                 <td class="actions">
+                    {{if $.IsAdmin}}
+                    {{if .Enabled}}
                     {{if eq .Status "online"}}
                     <button class="btn btn-warning btn-sm" 
                             hx-post="/actions/workers/{{.ID}}/drain"
-                            hx-swap="none"
+                            hx-target="#worker-{{.ID}}"
+                            hx-swap="outerHTML"
                             hx-confirm="Drain this worker? It will stop accepting new jobs.">
                         Drain
                     </button>
                     {{else if eq .Status "draining"}}
                     <span class="text-warning">Draining...</span>
                     {{end}}
-                    {{if ne .Status "online"}}
+                    <button class="btn btn-secondary btn-sm"
+                            onclick="BlobForge.showRegenerateSecret('{{.ID}}')"
+                            title="Regenerate worker secret">
+                        🔑 Regen
+                    </button>
+                    <button class="btn btn-warning btn-sm"
+                            hx-post="/actions/workers/{{.ID}}/disable"
+                            hx-target="#worker-{{.ID}}"
+                            hx-swap="outerHTML"
+                            hx-confirm="Disable this worker? It will not be able to connect.">
+                        Disable
+                    </button>
+                    {{else}}
+                    <button class="btn btn-success btn-sm"
+                            hx-post="/actions/workers/{{.ID}}/enable"
+                            hx-target="#worker-{{.ID}}"
+                            hx-swap="outerHTML">
+                        Enable
+                    </button>
+                    {{end}}
                     <button class="btn btn-danger btn-sm"
                             hx-delete="/actions/workers/{{.ID}}"
-                            hx-swap="none"
-                            hx-confirm="Remove this worker? This cannot be undone.">
-                        Remove
+                            hx-target="#worker-{{.ID}}"
+                            hx-swap="outerHTML swap:1s"
+                            hx-confirm="Delete this worker? This cannot be undone.">
+                        Delete
                     </button>
                     {{end}}
                 </td>

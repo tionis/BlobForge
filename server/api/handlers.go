@@ -758,3 +758,151 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, users)
 }
+
+// ============================================
+// Admin worker management endpoints
+// ============================================
+
+// POST /api/admin/workers
+// Creates a new worker with a generated secret
+func (h *Handler) AdminCreateWorker(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.ID == "" || req.Type == "" {
+		writeError(w, http.StatusBadRequest, "id and type are required")
+		return
+	}
+
+	// Check if worker already exists
+	existing, err := h.db.GetWorker(req.ID)
+	if err != nil {
+		log.Error().Err(err).Str("worker_id", req.ID).Msg("failed to check existing worker")
+		writeError(w, http.StatusInternalServerError, "failed to check existing worker")
+		return
+	}
+	if existing != nil {
+		writeError(w, http.StatusConflict, "worker already exists")
+		return
+	}
+
+	// Generate worker secret
+	secret, hash, err := auth.GenerateWorkerSecret()
+	if err != nil {
+		log.Error().Err(err).Msg("failed to generate worker secret")
+		writeError(w, http.StatusInternalServerError, "failed to generate secret")
+		return
+	}
+
+	var name *string
+	if req.Name != "" {
+		name = &req.Name
+	}
+
+	worker := &db.Worker{
+		ID:         req.ID,
+		Name:       name,
+		Type:       req.Type,
+		SecretHash: &hash,
+		Enabled:    true,
+	}
+	if err := h.db.CreateWorker(worker); err != nil {
+		log.Error().Err(err).Str("worker_id", req.ID).Msg("failed to create worker")
+		writeError(w, http.StatusInternalServerError, "failed to create worker")
+		return
+	}
+
+	log.Info().Str("worker_id", req.ID).Str("type", req.Type).Msg("admin created worker")
+
+	// Return the secret only once
+	writeJSON(w, http.StatusCreated, map[string]interface{}{
+		"id":     req.ID,
+		"name":   req.Name,
+		"type":   req.Type,
+		"secret": secret, // One-time display
+	})
+}
+
+// POST /api/admin/workers/{id}/regenerate
+// Regenerates a worker's secret
+func (h *Handler) AdminRegenerateWorkerSecret(w http.ResponseWriter, r *http.Request) {
+	workerID := chi.URLParam(r, "id")
+
+	// Check worker exists
+	existing, err := h.db.GetWorker(workerID)
+	if err != nil {
+		log.Error().Err(err).Str("worker_id", workerID).Msg("failed to check worker")
+		writeError(w, http.StatusInternalServerError, "failed to check worker")
+		return
+	}
+	if existing == nil {
+		writeError(w, http.StatusNotFound, "worker not found")
+		return
+	}
+
+	// Generate new secret
+	secret, hash, err := auth.GenerateWorkerSecret()
+	if err != nil {
+		log.Error().Err(err).Msg("failed to generate worker secret")
+		writeError(w, http.StatusInternalServerError, "failed to generate secret")
+		return
+	}
+
+	if err := h.db.UpdateWorkerSecret(workerID, hash); err != nil {
+		log.Error().Err(err).Str("worker_id", workerID).Msg("failed to update worker secret")
+		writeError(w, http.StatusInternalServerError, "failed to update secret")
+		return
+	}
+
+	log.Info().Str("worker_id", workerID).Msg("admin regenerated worker secret")
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"id":     workerID,
+		"secret": secret, // One-time display
+	})
+}
+
+// POST /api/admin/workers/{id}/enable
+// Enables a worker
+func (h *Handler) AdminEnableWorker(w http.ResponseWriter, r *http.Request) {
+	workerID := chi.URLParam(r, "id")
+
+	if err := h.db.SetWorkerEnabled(workerID, true); err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			writeError(w, http.StatusNotFound, "worker not found")
+			return
+		}
+		log.Error().Err(err).Str("worker_id", workerID).Msg("failed to enable worker")
+		writeError(w, http.StatusInternalServerError, "failed to enable worker")
+		return
+	}
+
+	log.Info().Str("worker_id", workerID).Msg("admin enabled worker")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "enabled"})
+}
+
+// POST /api/admin/workers/{id}/disable
+// Disables a worker (revokes access)
+func (h *Handler) AdminDisableWorker(w http.ResponseWriter, r *http.Request) {
+	workerID := chi.URLParam(r, "id")
+
+	if err := h.db.SetWorkerEnabled(workerID, false); err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			writeError(w, http.StatusNotFound, "worker not found")
+			return
+		}
+		log.Error().Err(err).Str("worker_id", workerID).Msg("failed to disable worker")
+		writeError(w, http.StatusInternalServerError, "failed to disable worker")
+		return
+	}
+
+	log.Info().Str("worker_id", workerID).Msg("admin disabled worker")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
+}

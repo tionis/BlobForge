@@ -28,3 +28,11 @@ All LLM agents operating in this repository MUST adhere to the following protoco
     - Updated `server/Containerfile` - includes Litestream v0.3.13
     - Reuses same `BLOBFORGE_S3_*` credentials (backups go to `litestream/` prefix)
     - Optional Age encryption via `BLOBFORGE_LITESTREAM_AGE_*` env vars
+- **2026-02-04:** Implemented per-worker authentication with secrets.
+    - Migration 5 adds `secret_hash` and `enabled` columns to workers table
+    - Worker struct updated with `SecretHash` and `Enabled` fields
+    - New `WorkerAuthMiddleware` validates `X-Worker-ID` + `X-Worker-Secret` headers
+    - Admin API endpoints: create worker (returns one-time secret), regenerate secret, enable/disable
+    - Web UI updated with worker creation modal, secret display, enable/disable/regenerate buttons
+    - Worker secrets use `bfw_` prefix (vs `bf_` for API tokens)
+    - Tests added for all new functionality

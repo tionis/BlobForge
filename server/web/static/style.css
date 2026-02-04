@@ -599,12 +599,16 @@ tr:hover td {
 .status-online { background-color: rgba(35, 165, 90, 0.2); color: var(--status-online); }
 .status-offline { background-color: rgba(128, 132, 142, 0.2); color: var(--status-offline); }
 .status-draining { background-color: rgba(240, 178, 50, 0.2); color: var(--status-draining); }
+.status-disabled { background-color: rgba(128, 132, 142, 0.3); color: var(--status-offline); }
 .status-pending { background-color: rgba(245, 158, 11, 0.2); color: var(--status-pending); }
 .status-running { background-color: rgba(88, 101, 242, 0.2); color: var(--status-running); }
 .status-completed { background-color: rgba(35, 165, 90, 0.2); color: var(--status-completed); }
 .status-failed { background-color: rgba(237, 66, 69, 0.2); color: var(--status-failed); }
 .status-dead { background-color: rgba(128, 132, 142, 0.2); color: var(--status-dead); }
 .status-cancelled { background-color: rgba(249, 115, 22, 0.2); color: var(--status-cancelled); }
+
+/* Opacity utility */
+.opacity-50 { opacity: 0.5; }
 
 /* Page header */
 .page-header {
@@ -893,6 +897,31 @@ tr:hover td {
   overflow-x: auto;
   white-space: pre;
   color: var(--text-primary);
+}
+
+/* Alert styles */
+.alert {
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 0.5rem;
+}
+
+.alert-success {
+  background-color: rgba(35, 165, 90, 0.2);
+  color: var(--status-completed);
+  border: 1px solid rgba(35, 165, 90, 0.3);
+}
+
+.alert-danger {
+  background-color: rgba(237, 66, 69, 0.2);
+  color: var(--status-failed);
+  border: 1px solid rgba(237, 66, 69, 0.3);
+}
+
+.alert-warning {
+  background-color: rgba(240, 178, 50, 0.2);
+  color: var(--status-draining);
+  border: 1px solid rgba(240, 178, 50, 0.3);
 }
 
 /* Hidden utility */

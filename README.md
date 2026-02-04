@@ -66,12 +66,15 @@ go build -o blobforge .
 
 Dashboard at http://localhost:8080/
 
-### 2. Create an API Token
+### 2. Create a Worker
+
+Workers need individual credentials for authentication. Each worker gets a unique secret that can be revoked independently.
 
 1. Open the dashboard
-2. Go to **Admin** → **API Tokens**
-3. Click **Create Token**
-4. Copy the token
+2. Go to **Workers** page
+3. Click **Create Worker**
+4. Enter a worker ID (e.g., `pdf-worker-01`) and type
+5. **Copy the secret immediately** - it's only shown once!
 
 ### 3. Start a Worker
 
@@ -81,12 +84,20 @@ cd workers/pdf
 pip install httpx marker-pdf
 
 export BLOBFORGE_SERVER_URL=http://localhost:8080
-export BLOBFORGE_API_TOKEN=bf_your_token_here
+export BLOBFORGE_WORKER_ID=pdf-worker-01
+export BLOBFORGE_WORKER_SECRET=bfw_your_secret_here
 
 python worker.py
 ```
 
-### 4. Submit a Job
+### 4. Create an API Token (for CLI)
+
+1. Open the dashboard
+2. Go to **Admin** → **API Tokens**
+3. Click **Create Token**
+4. Copy the token
+
+### 5. Submit a Job
 
 ```bash
 cd server

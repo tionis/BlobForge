@@ -472,7 +472,57 @@ curl -H "Authorization: Bearer bf_xxxxxxxxxxxxxxxxxxxx" \
 
 Token format: `bf_` prefix + 32 random hex characters. Tokens are hashed (SHA-256) before storage.
 
-### 9.5. Database Schema for Auth
+### 9.5. Worker Authentication
+
+Workers use dedicated per-worker secrets for authentication. This provides:
+
+- **Individual revocation**: Disable a compromised worker without affecting others
+- **Audit trail**: Know which worker performed each action
+- **No credential sharing**: Each worker has unique credentials
+
+#### Worker Credential Flow
+
+```
+┌──────────┐     1. Admin creates worker      ┌──────────┐
+│  Admin   │ ────────────────────────────────►│  Server  │
+└──────────┘                                  └──────────┘
+     │                                             │
+     │  2. Server returns one-time secret          │
+     │◄────────────────────────────────────────────│
+     │    bfw_xxxxxxxxxxxxxxxxxxxxxxxxxx           │
+     │                                             │
+     ▼                                             │
+┌──────────┐     3. Configure worker env      ┌──────────┐
+│  Worker  │ ────────────────────────────────►│  Server  │
+│  Process │  X-Worker-ID: my-worker          └──────────┘
+└──────────┘  X-Worker-Secret: bfw_xxxxx
+```
+
+#### Worker Environment Variables
+
+```bash
+export BLOBFORGE_SERVER_URL=http://localhost:8080
+export BLOBFORGE_WORKER_ID=pdf-worker-01
+export BLOBFORGE_WORKER_SECRET=bfw_xxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+#### Admin API for Worker Management
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/admin/workers` | POST | Create worker, returns one-time secret |
+| `/api/admin/workers/{id}/regenerate` | POST | Generate new secret, invalidates old |
+| `/api/admin/workers/{id}/enable` | POST | Re-enable a disabled worker |
+| `/api/admin/workers/{id}/disable` | POST | Disable worker (revoke access) |
+
+#### Worker Database Schema
+
+```sql
+ALTER TABLE workers ADD COLUMN secret_hash TEXT;  -- SHA-256 of secret
+ALTER TABLE workers ADD COLUMN enabled BOOLEAN DEFAULT TRUE;
+```
+
+### 9.6. Database Schema for Auth
 
 ```sql
 -- Users (populated via OIDC)

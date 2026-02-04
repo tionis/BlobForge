@@ -164,3 +164,49 @@
     - Fixed `datetime.utcnow()` deprecation warnings
 - **Status:** All improvements complete. 35 tests pass.
 
+## 2026-02-04 (Per-Worker Authentication)
+- **Objective:** Implement per-worker secrets for better security and individual revocation
+- **Motivation:** 
+    - Workers previously used shared API tokens
+    - Compromised token affected all workers
+    - No way to know which worker performed actions
+    - No individual worker revocation
+- **Features Implemented:**
+    1. **Database Migration 5** (`server/db/migrations.go`)
+        - Added `secret_hash TEXT` column to workers table
+        - Added `enabled BOOLEAN DEFAULT TRUE` column
+        - Index on enabled column for efficient queries
+    2. **Worker Struct Updates** (`server/db/db.go`)
+        - New fields: `SecretHash *string`, `Enabled bool`
+        - `SecretHash` excluded from JSON (never exposed in API)
+        - Updated all worker queries to include new columns
+        - New functions: `UpdateWorkerSecret`, `SetWorkerEnabled`, `ValidateWorkerSecret`
+    3. **Worker Auth Middleware** (`server/auth/auth.go`)
+        - `WorkerAuthMiddleware` validates `X-Worker-ID` + `X-Worker-Secret` headers
+        - Hashes provided secret, compares with stored hash
+        - Checks worker is enabled before allowing access
+        - `GenerateWorkerSecret()` creates secrets with `bfw_` prefix
+    4. **Admin API Endpoints** (`server/api/handlers.go`)
+        - `POST /api/admin/workers` - Create worker, returns one-time secret
+        - `POST /api/admin/workers/{id}/regenerate` - Generate new secret
+        - `POST /api/admin/workers/{id}/enable` - Re-enable worker
+        - `POST /api/admin/workers/{id}/disable` - Disable worker (revoke access)
+    5. **Web UI Updates** (`server/web/templates/workers.html`, `workers_table.html`)
+        - Worker creation modal with ID, name, type inputs
+        - Secret display modal (one-time view) with copy button
+        - Environment variables display for easy copy
+        - Enable/Disable/Regenerate/Delete buttons per worker
+        - Disabled workers shown with reduced opacity
+        - Admin-only actions (hidden for non-admins)
+    6. **Route Updates** (`server/main.go`)
+        - Worker-specific endpoints use `WorkerAuthMiddleware`
+        - General API endpoints use standard token/session auth
+        - Admin endpoints for worker management
+    7. **Tests** (`server/api/handlers_test.go`)
+        - `TestAdminCreateWorker` - creation flow, secret format
+        - `TestAdminRegenerateWorkerSecret` - regeneration, hash changes
+        - `TestAdminEnableDisableWorker` - enable/disable flow
+        - `TestWorkerSecretValidation` - DB validation logic
+        - `TestWorkerAuthMiddleware` - middleware integration
+- **Status:** Complete. All tests pass.
+

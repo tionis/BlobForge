@@ -308,6 +308,8 @@ func (h *Handler) render(w http.ResponseWriter, name string, data map[string]int
 		"stats_cards.html":   true,
 		"jobs_table.html":    true,
 		"workers_table.html": true,
+		"worker_row.html":    true,
+		"job_row.html":       true,
 	}[name]; isPartial {
 		if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 			log.Error().Err(err).Str("template", name).Msg("failed to render partial")
@@ -443,11 +445,16 @@ func (h *Handler) Workers(w http.ResponseWriter, r *http.Request) {
 	}
 	serverURL := scheme + "://" + r.Host
 
+	// Check if user is admin
+	user := auth.GetUser(r.Context())
+	isAdmin := !h.auth.Enabled() || (user != nil && user.IsAdmin)
+
 	h.renderWithUser(w, r, "workers.html", map[string]interface{}{
 		"Title":      "Workers",
 		"ActivePage": "workers",
 		"Workers":    workers,
 		"ServerURL":  serverURL,
+		"IsAdmin":    isAdmin,
 	})
 }
 
@@ -535,8 +542,13 @@ func (h *Handler) WorkersPartial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if user is admin
+	user := auth.GetUser(r.Context())
+	isAdmin := !h.auth.Enabled() || (user != nil && user.IsAdmin)
+
 	h.render(w, "workers_table.html", map[string]interface{}{
 		"Workers": workers,
+		"IsAdmin": isAdmin,
 	})
 }
 
@@ -706,4 +718,60 @@ func (h *Handler) RegisterWorkerAction(w http.ResponseWriter, r *http.Request) {
 	// Return success message and refresh the workers table
 	w.Header().Set("HX-Trigger", "workersUpdated")
 	w.Write([]byte(`<div class="alert alert-success">Worker registered successfully!</div>`))
+}
+
+// EnableWorkerAction enables a worker
+func (h *Handler) EnableWorkerAction(w http.ResponseWriter, r *http.Request) {
+	workerID := chi.URLParam(r, "id")
+
+	if err := h.db.SetWorkerEnabled(workerID, true); err != nil {
+		log.Error().Err(err).Str("worker_id", workerID).Msg("failed to enable worker")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Info().Str("worker_id", workerID).Msg("worker enabled via web UI")
+
+	// Return updated worker row
+	worker, err := h.db.GetWorker(workerID)
+	if err != nil || worker == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	user := auth.GetUser(r.Context())
+	isAdmin := !h.auth.Enabled() || (user != nil && user.IsAdmin)
+
+	h.render(w, "worker_row.html", map[string]interface{}{
+		"Worker":  worker,
+		"IsAdmin": isAdmin,
+	})
+}
+
+// DisableWorkerAction disables a worker
+func (h *Handler) DisableWorkerAction(w http.ResponseWriter, r *http.Request) {
+	workerID := chi.URLParam(r, "id")
+
+	if err := h.db.SetWorkerEnabled(workerID, false); err != nil {
+		log.Error().Err(err).Str("worker_id", workerID).Msg("failed to disable worker")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	log.Info().Str("worker_id", workerID).Msg("worker disabled via web UI")
+
+	// Return updated worker row
+	worker, err := h.db.GetWorker(workerID)
+	if err != nil || worker == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	user := auth.GetUser(r.Context())
+	isAdmin := !h.auth.Enabled() || (user != nil && user.IsAdmin)
+
+	h.render(w, "worker_row.html", map[string]interface{}{
+		"Worker":  worker,
+		"IsAdmin": isAdmin,
+	})
 }

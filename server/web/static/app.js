@@ -244,6 +244,110 @@
     }
 
     // ========================================
+    // Worker Management
+    // ========================================
+    let currentWorkerIdForRegen = null;
+
+    async function createWorker(event) {
+        event.preventDefault();
+        const form = event.target;
+        const formData = new FormData(form);
+        const data = {
+            id: formData.get('id'),
+            name: formData.get('name'),
+            type: formData.get('type')
+        };
+
+        try {
+            const response = await fetch('/api/admin/workers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                document.getElementById('create-worker-result').innerHTML = 
+                    `<div class="alert alert-danger">${error.error || 'Failed to create worker'}</div>`;
+                return false;
+            }
+
+            const result = await response.json();
+            
+            // Hide create modal and show secret modal
+            hideModal('create-worker-modal');
+            form.reset();
+            document.getElementById('create-worker-result').innerHTML = '';
+            
+            // Display the secret
+            document.getElementById('new-worker-id').value = result.id;
+            document.getElementById('new-worker-secret').value = result.secret;
+            document.getElementById('worker-env-vars').textContent = 
+                `export BLOBFORGE_WORKER_ID=${result.id}\nexport BLOBFORGE_WORKER_SECRET=${result.secret}`;
+            
+            showModal('worker-secret-modal');
+        } catch (err) {
+            console.error('Failed to create worker:', err);
+            document.getElementById('create-worker-result').innerHTML = 
+                `<div class="alert alert-danger">Network error: ${err.message}</div>`;
+        }
+        return false;
+    }
+
+    function copySecret() {
+        const secret = document.getElementById('new-worker-secret').value;
+        copyToClipboard(secret);
+    }
+
+    function copyEnvVars() {
+        const envVars = document.getElementById('worker-env-vars').textContent;
+        copyToClipboard(envVars);
+    }
+
+    function showRegenerateSecret(workerId) {
+        currentWorkerIdForRegen = workerId;
+        document.getElementById('regenerate-worker-id').textContent = workerId;
+        document.getElementById('regenerate-result').innerHTML = '';
+        showModal('regenerate-secret-modal');
+    }
+
+    async function confirmRegenerateSecret() {
+        if (!currentWorkerIdForRegen) return;
+        
+        const resultDiv = document.getElementById('regenerate-result');
+        
+        try {
+            const response = await fetch(`/api/admin/workers/${currentWorkerIdForRegen}/regenerate`, {
+                method: 'POST'
+            });
+
+            if (!response.ok) {
+                const error = await response.json();
+                resultDiv.innerHTML = 
+                    `<div class="alert alert-danger">${error.error || 'Failed to regenerate secret'}</div>`;
+                return;
+            }
+
+            const result = await response.json();
+            
+            // Hide regenerate modal and show secret modal
+            hideModal('regenerate-secret-modal');
+            
+            // Display the new secret
+            document.getElementById('new-worker-id').value = result.id;
+            document.getElementById('new-worker-secret').value = result.secret;
+            document.getElementById('worker-env-vars').textContent = 
+                `export BLOBFORGE_WORKER_ID=${result.id}\nexport BLOBFORGE_WORKER_SECRET=${result.secret}`;
+            
+            showModal('worker-secret-modal');
+        } catch (err) {
+            console.error('Failed to regenerate secret:', err);
+            resultDiv.innerHTML = 
+                `<div class="alert alert-danger">Network error: ${err.message}</div>`;
+        }
+    }
+
+    // ========================================
     // Initialization
     // ========================================
     function init() {
@@ -274,6 +378,12 @@
         hideModal,
         copyToClipboard,
         showToast,
-        connectSSE
+        connectSSE,
+        // Worker management
+        createWorker,
+        copySecret,
+        copyEnvVars,
+        showRegenerateSecret,
+        confirmRegenerateSecret
     };
 })();

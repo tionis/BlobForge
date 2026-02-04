@@ -23,9 +23,10 @@ import (
 type contextKey string
 
 const (
-	UserContextKey    contextKey = "user"
-	TokenContextKey   contextKey = "api_token"
-	SessionCookieName            = "blobforge_session"
+	UserContextKey     contextKey = "user"
+	TokenContextKey    contextKey = "api_token"
+	WorkerIDContextKey contextKey = "worker_id"
+	SessionCookieName             = "blobforge_session"
 )
 
 // User represents an authenticated user
@@ -199,6 +200,61 @@ func (a *Auth) RequireAdmin(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// WorkerAuthMiddleware validates worker authentication using X-Worker-ID and X-Worker-Secret headers.
+// Workers must be enabled and have a valid secret configured.
+func (a *Auth) WorkerAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		workerID := r.Header.Get("X-Worker-ID")
+		workerSecret := r.Header.Get("X-Worker-Secret")
+
+		if workerID == "" || workerSecret == "" {
+			http.Error(w, "Worker authentication required", http.StatusUnauthorized)
+			return
+		}
+
+		// Hash the provided secret for comparison
+		secretHash := HashAPIToken(workerSecret)
+
+		// Validate against database
+		valid, err := a.db.ValidateWorkerSecret(workerID, secretHash)
+		if err != nil {
+			log.Error().Err(err).Str("worker_id", workerID).Msg("failed to validate worker secret")
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		if !valid {
+			log.Warn().Str("worker_id", workerID).Msg("invalid worker authentication")
+			http.Error(w, "Invalid worker credentials", http.StatusUnauthorized)
+			return
+		}
+
+		// Store worker ID in context
+		ctx := context.WithValue(r.Context(), WorkerIDContextKey, workerID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// GetWorkerID extracts the worker ID from the request context
+func GetWorkerID(ctx context.Context) string {
+	if id, ok := ctx.Value(WorkerIDContextKey).(string); ok {
+		return id
+	}
+	return ""
+}
+
+// GenerateWorkerSecret generates a new worker secret and returns both the plain secret and its hash.
+// The plain secret should be shown to the admin once and never stored.
+func GenerateWorkerSecret() (secret string, hash string, err error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", "", err
+	}
+	secret = "bfw_" + base64.URLEncoding.EncodeToString(bytes)
+	hash = HashAPIToken(secret)
+	return secret, hash, nil
 }
 
 // LoginHandler initiates OIDC login
