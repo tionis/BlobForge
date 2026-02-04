@@ -33,6 +33,7 @@ type Event struct {
 type Client struct {
 	ID      string
 	Channel chan *Event
+	done    chan struct{} // Used to signal client to disconnect
 }
 
 // Hub manages SSE clients and broadcasts events
@@ -100,11 +101,15 @@ func (h *Hub) Run() {
 	}
 }
 
-// Close shuts down the hub
+// Close shuts down the hub and disconnects all clients
 func (h *Hub) Close() {
 	h.mu.Lock()
 	if !h.closed {
 		h.closed = true
+		// Signal all clients to disconnect
+		for client := range h.clients {
+			close(client.done)
+		}
 		close(h.broadcast)
 	}
 	h.mu.Unlock()
@@ -195,6 +200,15 @@ func (h *Hub) BroadcastStats(stats interface{}) {
 
 // ServeHTTP handles SSE connections
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Check if hub is already closed
+	h.mu.RLock()
+	if h.closed {
+		h.mu.RUnlock()
+		http.Error(w, "Server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	h.mu.RUnlock()
+
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -212,6 +226,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		ID:      fmt.Sprintf("%d", time.Now().UnixNano()),
 		Channel: make(chan *Event, 16),
+		done:    make(chan struct{}),
 	}
 
 	// Register client
@@ -232,6 +247,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
+		case <-client.done:
+			// Hub is closing, disconnect gracefully
+			return
+
 		case <-r.Context().Done():
 			return
 

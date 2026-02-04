@@ -303,13 +303,13 @@ func (h *Handler) render(w http.ResponseWriter, name string, data map[string]int
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Page templates use base, partials execute directly
+	// Page templates use base, partials execute the named template directly
 	if _, isPartial := map[string]bool{
 		"stats_cards.html":   true,
 		"jobs_table.html":    true,
 		"workers_table.html": true,
 	}[name]; isPartial {
-		if err := tmpl.Execute(w, data); err != nil {
+		if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 			log.Error().Err(err).Str("template", name).Msg("failed to render partial")
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}
@@ -436,10 +436,18 @@ func (h *Handler) Workers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine server URL for setup guide
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	serverURL := scheme + "://" + r.Host
+
 	h.renderWithUser(w, r, "workers.html", map[string]interface{}{
 		"Title":      "Workers",
 		"ActivePage": "workers",
 		"Workers":    workers,
+		"ServerURL":  serverURL,
 	})
 }
 

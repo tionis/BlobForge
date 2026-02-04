@@ -19,6 +19,45 @@
     </div>
 </div>
 
+<!-- Worker Setup Guide -->
+<div class="card mb-4">
+    <div class="card-header">
+        <h2>Worker Setup Guide</h2>
+        <button class="btn btn-sm" onclick="this.closest('.card').querySelector('.card-body').classList.toggle('hidden')">
+            Toggle
+        </button>
+    </div>
+    <div class="card-body hidden">
+        <div class="setup-guide">
+            <h3>Quick Start</h3>
+            <p class="text-muted mb-4">To run a PDF worker, you need Python 3.10+ and an API token.</p>
+            
+            <h4>1. Get an API Token</h4>
+            <p class="text-muted">Go to <a href="/admin" class="link">Admin → API Tokens</a> and create a new token.</p>
+            
+            <h4>2. Install Dependencies</h4>
+            <pre class="code-block">pip install httpx marker-pdf</pre>
+            
+            <h4>3. Run the Worker</h4>
+            <pre class="code-block"># Set environment variables
+export BLOBFORGE_SERVER_URL={{.ServerURL}}
+export BLOBFORGE_API_TOKEN=bf_your_token_here
+
+# Optional: Enable GPU (requires CUDA)
+export BLOBFORGE_USE_GPU=true
+
+# Run the worker
+python worker.py</pre>
+
+            <h4>4. Docker (Alternative)</h4>
+            <pre class="code-block">docker run -d \
+  -e BLOBFORGE_SERVER_URL={{.ServerURL}} \
+  -e BLOBFORGE_API_TOKEN=bf_your_token_here \
+  ghcr.io/tionis/blobforge-pdf-worker:latest</pre>
+        </div>
+    </div>
+</div>
+
 <!-- Add Worker Modal -->
 <div id="add-worker-modal" class="modal-backdrop">
     <div class="modal">
@@ -30,7 +69,7 @@
             <div class="modal-body">
                 <p class="text-muted mb-4">
                     Workers typically self-register when they start. Use this form to pre-register a worker 
-                    or see the registration commands.
+                    or for testing purposes.
                 </p>
                 <div class="form-group">
                     <label class="form-label">Worker Name</label>

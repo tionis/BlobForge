@@ -1,6 +1,6 @@
 # BlobForge
 
-**BlobForge** is a distributed job queue system with a web dashboard, designed for processing large files (PDFs, documents, etc.) across multiple workers. Features OIDC authentication, live SSE updates, and SQLite with Litestream replication.
+**BlobForge** is a distributed job queue system for processing large files (PDFs, documents, etc.) across multiple workers.
 
 ## Features
 
@@ -40,6 +40,14 @@
                                            └───────────────────┘
 ```
 
+## Components
+
+| Component | Description | Documentation |
+|-----------|-------------|---------------|
+| **Server** | Go server with SQLite, REST API, web dashboard | [server/README.md](server/README.md) |
+| **PDF Worker** | Python worker for PDF→Markdown conversion | [workers/pdf/README.md](workers/pdf/README.md) |
+| **CLI** | Python CLI for job submission | [cli/README.md](cli/README.md) |
+
 ## Quick Start
 
 ### 1. Start the Server
@@ -47,353 +55,78 @@
 ```bash
 cd server
 
-# S3 configuration (required)
 export BLOBFORGE_S3_ENDPOINT=https://xxx.r2.cloudflarestorage.com
 export BLOBFORGE_S3_BUCKET=blobforge
 export BLOBFORGE_S3_ACCESS_KEY=xxx
 export BLOBFORGE_S3_SECRET_KEY=xxx
 
-# Optional: OIDC authentication
-export BLOBFORGE_OIDC_ISSUER=https://accounts.google.com
-export BLOBFORGE_OIDC_CLIENT_ID=your-client-id
-export BLOBFORGE_OIDC_CLIENT_SECRET=your-client-secret
-export BLOBFORGE_OIDC_REDIRECT_URL=http://localhost:8080/auth/callback
-export BLOBFORGE_OIDC_ALLOWED_GROUPS=users,admins  # optional: restrict access
-export BLOBFORGE_OIDC_ADMIN_GROUPS=admins          # optional: admin access
-
-# Build and run
 go build -o blobforge .
 ./blobforge
 ```
 
 Dashboard at http://localhost:8080/
 
-### 2. Start a PDF Worker (CPU)
+### 2. Create an API Token
+
+1. Open the dashboard
+2. Go to **Admin** → **API Tokens**
+3. Click **Create Token**
+4. Copy the token
+
+### 3. Start a Worker
 
 ```bash
 cd workers/pdf
 
-# Install dependencies
-pip install -r requirements.txt
+pip install httpx marker-pdf
 
-# Configure
 export BLOBFORGE_SERVER_URL=http://localhost:8080
-export BLOBFORGE_API_TOKEN=your-api-token  # from admin UI
-
-# Run
-python worker.py
-```
-
-### 3. Start a PDF Worker (GPU - CUDA)
-
-```bash
-cd workers/pdf
-
-# Install with GPU support
-pip install marker-pdf[gpu]
-
-# Enable GPU processing
-export BLOBFORGE_USE_GPU=true
-export CUDA_VISIBLE_DEVICES=0  # specific GPU
+export BLOBFORGE_API_TOKEN=bf_your_token_here
 
 python worker.py
 ```
 
-### 4. Submit Jobs (Go CLI - Recommended)
+### 4. Submit a Job
 
 ```bash
 cd server
-
-# Build the CLI
 go build -o blobforge ./cmd/blobforge
 
-# Configure
 export BLOBFORGE_SERVER_URL=http://localhost:8080
-export BLOBFORGE_API_TOKEN=your-api-token
+export BLOBFORGE_API_TOKEN=bf_your_token_here
 
-# Submit a PDF
 ./blobforge submit /path/to/document.pdf
-
-# Submit with priority (1=critical, 5=background)
-./blobforge submit /path/to/urgent.pdf --priority 1
-
-# Ingest all PDFs in a directory (batch processing)
-./blobforge ingest /path/to/pdfs/ --type pdf
-
-# Check status
-./blobforge stats
-./blobforge jobs list
-./blobforge workers list
-
-# Manage jobs
-./blobforge jobs retry 123
-./blobforge jobs cancel 456
-
-# Manage workers
-./blobforge workers drain worker-1
-./blobforge workers remove worker-1
-
-# Manage API tokens (admin)
-./blobforge tokens list
-./blobforge tokens create --description "Worker token"
 ```
 
-### 5. Submit Jobs (Python CLI - Alternative)
+## Docker Compose
 
 ```bash
-cd cli
-
-# Install
-pip install httpx
-
-# Configure
-export BLOBFORGE_SERVER_URL=http://localhost:8080
-export BLOBFORGE_API_TOKEN=your-api-token
-
-# Submit a PDF
-python blobforge.py submit /path/to/document.pdf
-
-# Check status
-python blobforge.py stats
+docker-compose up
 ```
 
-## Configuration
-
-### Server Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BLOBFORGE_PORT` | `8080` | HTTP server port |
-| `BLOBFORGE_DB_PATH` | `./data/blobforge.db` | SQLite database path |
-| `BLOBFORGE_S3_ENDPOINT` | - | S3/R2/MinIO endpoint URL |
-| `BLOBFORGE_S3_BUCKET` | `blobforge` | S3 bucket name |
-| `BLOBFORGE_S3_REGION` | `auto` | S3 region |
-| `BLOBFORGE_S3_ACCESS_KEY` | - | S3 access key |
-| `BLOBFORGE_S3_SECRET_KEY` | - | S3 secret key |
-| `BLOBFORGE_S3_PREFIX` | - | Optional path prefix in bucket |
-| `BLOBFORGE_WORKER_TIMEOUT` | `180` | Seconds before worker considered stale |
-| `BLOBFORGE_MAX_ATTEMPTS` | `3` | Max job retry attempts |
-
-### OIDC Authentication Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BLOBFORGE_OIDC_ISSUER` | - | OIDC provider URL (e.g., `https://accounts.google.com`) |
-| `BLOBFORGE_OIDC_CLIENT_ID` | - | OAuth2 client ID |
-| `BLOBFORGE_OIDC_CLIENT_SECRET` | - | OAuth2 client secret |
-| `BLOBFORGE_OIDC_REDIRECT_URL` | - | OAuth2 callback URL |
-| `BLOBFORGE_OIDC_ALLOWED_GROUPS` | - | Comma-separated groups allowed to access (empty = all) |
-| `BLOBFORGE_OIDC_ADMIN_GROUPS` | - | Comma-separated groups with admin access |
-
-### Worker Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BLOBFORGE_SERVER_URL` | `http://localhost:8080` | Server URL |
-| `BLOBFORGE_API_TOKEN` | - | API token for authentication |
-| `BLOBFORGE_POLL_INTERVAL` | `5` | Seconds between job polls |
-| `BLOBFORGE_HEARTBEAT_INTERVAL` | `30` | Seconds between heartbeats |
-| `BLOBFORGE_USE_GPU` | `false` | Enable GPU acceleration (marker-pdf) |
-| `CUDA_VISIBLE_DEVICES` | - | Which GPU to use |
-
-## Authentication
-
-BlobForge supports two authentication methods:
-
-### OIDC (Browser)
-
-Configure OIDC environment variables and users will be redirected to the identity provider. Supports group-based access control.
-
-### API Tokens (Workers/CLI)
-
-Generate tokens from the Admin UI (requires admin access):
-
-1. Login via OIDC
-2. Go to Admin → API Tokens
-3. Create a new token with description
-4. Copy the token (only shown once!)
-5. Use in workers/CLI via `BLOBFORGE_API_TOKEN` or `Authorization: Bearer <token>`
-
-## Litestream (SQLite Replication)
-
-BlobForge includes built-in [Litestream](https://litestream.io/) support for continuous SQLite backup to S3. Backups are stored in the same bucket as job files, under the `litestream/` prefix.
-
-**Key features:**
-- **Automatic restore** on container startup (if no local database exists)
-- **Continuous replication** every 10 seconds
-- **Point-in-time recovery** with 7-day retention
-- **Optional Age encryption** for backups
-- **Same credentials** as file storage (no extra S3 config needed)
-
-### How It Works
-
-1. Uses the "exec" pattern: Litestream supervises the BlobForge server process
-2. On startup: Restores database from S3 if no local copy exists
-3. During operation: Syncs changes every 10 seconds to `s3://{bucket}/litestream/`
-4. On shutdown: Performs a final sync before exiting
-
-### Litestream Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BLOBFORGE_LITESTREAM_DISABLED` | `false` | Set to `true` to disable Litestream |
-| `BLOBFORGE_LITESTREAM_SKIP_RESTORE` | `false` | Set to `true` to skip restore on startup |
-| `BLOBFORGE_LITESTREAM_AGE_SECRET_KEY` | - | Age secret key for encryption (optional) |
-| `BLOBFORGE_LITESTREAM_AGE_PUBLIC_KEY` | - | Age public key for encryption (optional) |
-
-### Encryption Setup
-
-To encrypt database backups with Age:
-
-```bash
-# Install age (https://github.com/FiloSottile/age)
-brew install age  # macOS
-apt install age   # Debian/Ubuntu
-
-# Generate a keypair
-age-keygen -o key.txt
-cat key.txt
-# Output:
-# # public key: age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-# AGE-SECRET-KEY-1XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-
-# Configure BlobForge
-export BLOBFORGE_LITESTREAM_AGE_SECRET_KEY=AGE-SECRET-KEY-1XXXX...
-export BLOBFORGE_LITESTREAM_AGE_PUBLIC_KEY=age1xxxx...
-```
-
-### Running Without Container
-
-If running BlobForge directly (not in Docker), you can use Litestream manually:
-
-```bash
-# Install Litestream: https://litestream.io/install/
-
-# Run with Litestream supervision
-litestream replicate -config server/litestream.yml
-```
-
-Or run BlobForge without Litestream (set S3 env vars for file storage):
-
-```bash
-./blobforge  # Runs without automatic backup
-```
+See [docker-compose.yml](docker-compose.yml) for configuration.
 
 ## Priority System
 
-Jobs have a priority from 1-5:
-
 | Priority | Name | Use Case |
 |----------|------|----------|
-| 1 | Critical | User-requested, needs immediate processing |
+| 1 | Critical | User-requested, immediate processing |
 | 2 | High | Important batch processing |
 | 3 | Normal | Default priority |
 | 4 | Low | Background processing |
-| 5 | Background | Lowest priority, processed when idle |
-
-Workers claim jobs in priority order (lowest number first), then by creation time.
-
-## API Endpoints
-
-### Authentication
-
-- `GET /auth/login` - Initiate OIDC login
-- `GET /auth/callback` - OIDC callback
-- `POST /auth/logout` - Logout
-
-### Workers
-
-- `POST /api/workers/register` - Register a worker
-- `POST /api/workers/{id}/heartbeat` - Send heartbeat
-- `POST /api/workers/{id}/unregister` - Unregister worker
-- `POST /api/workers/{id}/drain` - Set worker to draining (admin)
-- `DELETE /api/workers/{id}` - Remove worker (admin)
-- `GET /api/workers` - List all workers
-
-### Jobs
-
-- `POST /api/jobs` - Create a new job
-- `GET /api/jobs` - List jobs (with filters)
-- `GET /api/jobs/{id}` - Get job details
-- `POST /api/jobs/claim` - Claim next available job
-- `POST /api/jobs/{id}/complete` - Mark job complete
-- `POST /api/jobs/{id}/fail` - Mark job failed
-- `POST /api/jobs/{id}/retry` - Retry a failed job
-- `POST /api/jobs/{id}/cancel` - Cancel a pending job
-- `PATCH /api/jobs/{id}/priority` - Update job priority
-
-### Files
-
-- `GET /api/files/{job_id}/{type}/url` - Get presigned download URL
-- `POST /api/files/upload-url` - Get presigned upload URL
-
-### Admin (requires admin access)
-
-- `GET /api/admin/tokens` - List API tokens
-- `POST /api/admin/tokens` - Create API token
-- `DELETE /api/admin/tokens/{id}` - Delete API token
-- `GET /api/admin/users` - List users
-
-### Stats & Health
-
-- `GET /api/stats` - Get queue statistics
-- `GET /api/health` - Health check
-- `GET /api/events` - SSE stream for live updates
-
-## Live Dashboard Updates
-
-The dashboard uses Server-Sent Events (SSE) for real-time updates:
-
-- Job created/updated/completed/failed
-- Worker online/offline
-- Stats updates
-
-No page refresh needed - changes appear instantly.
-
-## GPU Acceleration
-
-PDF workers using marker-pdf support GPU acceleration for faster processing:
-
-```bash
-# Install with GPU support
-pip install marker-pdf[gpu]
-
-# Configure NVIDIA runtime
-export BLOBFORGE_USE_GPU=true
-export CUDA_VISIBLE_DEVICES=0
-```
-
-For Docker, use the NVIDIA runtime:
-
-```bash
-docker run --gpus all -e BLOBFORGE_USE_GPU=true blobforge-pdf-worker
-```
-
-## Docker Deployment
-
-```bash
-# Build images
-docker build -t blobforge-server -f server/Containerfile server/
-docker build -t blobforge-pdf-worker -f workers/pdf/Containerfile workers/pdf/
-
-# Run with docker-compose
-docker-compose up
-```
+| 5 | Background | Lowest, processed when idle |
 
 ## Development
 
 ```bash
 # Server (with hot reload)
-cd server
-go run github.com/air-verse/air@latest
+cd server && go run github.com/air-verse/air@latest
 
-# Run tests
-cd server
-go test ./...
+# Tests
+cd server && go test ./...
 
 # PDF Worker
-cd workers/pdf
-python worker.py
+cd workers/pdf && python worker.py
 ```
 
 ## License

@@ -31,7 +31,7 @@
                 <td class="actions">
                     {{if eq .Status "online"}}
                     <button class="btn btn-warning btn-sm" 
-                            hx-post="/api/workers/{{.ID}}/drain"
+                            hx-post="/actions/workers/{{.ID}}/drain"
                             hx-swap="none"
                             hx-confirm="Drain this worker? It will stop accepting new jobs.">
                         Drain
@@ -41,7 +41,7 @@
                     {{end}}
                     {{if ne .Status "online"}}
                     <button class="btn btn-danger btn-sm"
-                            hx-delete="/api/workers/{{.ID}}"
+                            hx-delete="/actions/workers/{{.ID}}"
                             hx-swap="none"
                             hx-confirm="Remove this worker? This cannot be undone.">
                         Remove
