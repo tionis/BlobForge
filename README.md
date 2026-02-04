@@ -71,6 +71,11 @@ podman run -d \
   blobforge worker
 ```
 
+# Or if you want to store the config secrets in a file and pass a stable and meaningful id
+```
+podman run --rm -it -e "BLOBFORGE_WORKER_ID=$(hostname)" -v blobforge-cache:/root/.cache --env-file ~/.blobforge.env ghcr.io/tionis/blobforge:latest blobforge worker
+```
+
 **Important notes:**
 - **Model Cache:** Mount `/root/.cache` as a volume to persist the ~3GB marker/torch models across container restarts. Without this, models are re-downloaded on every container start.
 - **Worker ID:** Always set `BLOBFORGE_WORKER_ID` for containerized workers. Without it, the worker ID changes on every restart, leaving orphaned locks that the janitor must clean up.
