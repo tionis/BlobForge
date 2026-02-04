@@ -13,7 +13,7 @@
 <div class="card">
     <div class="card-body" id="workers-table" 
          hx-get="/partials/workers" 
-         hx-trigger="every 5s, sse:worker_online, sse:worker_offline" 
+         hx-trigger="every 5s, sse:worker_online, sse:worker_offline, workersUpdated from:body" 
          hx-swap="innerHTML">
         {{template "workers_table.html" .}}
     </div>

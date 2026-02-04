@@ -123,6 +123,13 @@ var Migrations = []Migration{
 		ALTER TABLE jobs ADD COLUMN output_path TEXT;
 		`,
 	},
+	{
+		Version:     4,
+		Description: "Add worker name column",
+		Up: `
+		ALTER TABLE workers ADD COLUMN name TEXT;
+		`,
+	},
 }
 
 // GetSchemaVersion returns the current schema version using user_version pragma

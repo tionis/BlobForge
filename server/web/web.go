@@ -687,9 +687,10 @@ func (h *Handler) RegisterWorkerAction(w http.ResponseWriter, r *http.Request) {
 		workerType = "general"
 	}
 
-	// Use the name as the ID
+	// Use the name as the ID and also set the Name field
 	worker := &db.Worker{
 		ID:   name,
+		Name: &name,
 		Type: workerType,
 	}
 
@@ -702,6 +703,7 @@ func (h *Handler) RegisterWorkerAction(w http.ResponseWriter, r *http.Request) {
 
 	log.Info().Str("worker_id", name).Str("type", workerType).Msg("worker registered via web UI")
 
-	// Return success message
-	w.Write([]byte(`<div class="alert alert-success">Worker registered successfully! Refresh the page to see it.</div>`))
+	// Return success message and refresh the workers table
+	w.Header().Set("HX-Trigger", "workersUpdated")
+	w.Write([]byte(`<div class="alert alert-success">Worker registered successfully!</div>`))
 }

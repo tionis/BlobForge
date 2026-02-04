@@ -53,6 +53,7 @@ const (
 
 type Worker struct {
 	ID            string          `json:"id"`
+	Name          *string         `json:"name,omitempty"`
 	Type          string          `json:"type"`
 	Status        string          `json:"status"`
 	LastHeartbeat *time.Time      `json:"last_heartbeat,omitempty"`
@@ -169,14 +170,15 @@ func (db *DB) Close() error {
 
 func (db *DB) CreateWorker(w *Worker) error {
 	_, err := db.conn.Exec(`
-		INSERT INTO workers (id, type, status, metadata, created_at, updated_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		INSERT INTO workers (id, name, type, status, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
+			name = COALESCE(excluded.name, workers.name),
 			type = excluded.type,
 			status = 'online',
 			metadata = excluded.metadata,
 			updated_at = CURRENT_TIMESTAMP
-	`, w.ID, w.Type, WorkerStatusOnline, w.Metadata)
+	`, w.ID, w.Name, w.Type, WorkerStatusOnline, w.Metadata)
 	return err
 }
 
@@ -209,9 +211,9 @@ func (db *DB) GetWorker(id string) (*Worker, error) {
 	var w Worker
 	var metadata nullableJSON
 	err := db.conn.QueryRow(`
-		SELECT id, type, status, last_heartbeat, current_job_id, metadata, created_at, updated_at
+		SELECT id, name, type, status, last_heartbeat, current_job_id, metadata, created_at, updated_at
 		FROM workers WHERE id = ?
-	`, id).Scan(&w.ID, &w.Type, &w.Status, &w.LastHeartbeat, &w.CurrentJobID, &metadata, &w.CreatedAt, &w.UpdatedAt)
+	`, id).Scan(&w.ID, &w.Name, &w.Type, &w.Status, &w.LastHeartbeat, &w.CurrentJobID, &metadata, &w.CreatedAt, &w.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -221,7 +223,7 @@ func (db *DB) GetWorker(id string) (*Worker, error) {
 
 func (db *DB) ListWorkers() ([]Worker, error) {
 	rows, err := db.conn.Query(`
-		SELECT id, type, status, last_heartbeat, current_job_id, metadata, created_at, updated_at
+		SELECT id, name, type, status, last_heartbeat, current_job_id, metadata, created_at, updated_at
 		FROM workers ORDER BY status, id
 	`)
 	if err != nil {
@@ -233,7 +235,7 @@ func (db *DB) ListWorkers() ([]Worker, error) {
 	for rows.Next() {
 		var w Worker
 		var metadata nullableJSON
-		if err := rows.Scan(&w.ID, &w.Type, &w.Status, &w.LastHeartbeat, &w.CurrentJobID, &metadata, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Type, &w.Status, &w.LastHeartbeat, &w.CurrentJobID, &metadata, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		w.Metadata = json.RawMessage(metadata)
@@ -245,7 +247,7 @@ func (db *DB) ListWorkers() ([]Worker, error) {
 func (db *DB) GetStaleWorkers(timeout time.Duration) ([]Worker, error) {
 	cutoff := time.Now().UTC().Add(-timeout)
 	rows, err := db.conn.Query(`
-		SELECT id, type, status, last_heartbeat, current_job_id, metadata, created_at, updated_at
+		SELECT id, name, type, status, last_heartbeat, current_job_id, metadata, created_at, updated_at
 		FROM workers 
 		WHERE status = 'online' AND (last_heartbeat IS NULL OR last_heartbeat < ?)
 	`, cutoff)
@@ -258,7 +260,7 @@ func (db *DB) GetStaleWorkers(timeout time.Duration) ([]Worker, error) {
 	for rows.Next() {
 		var w Worker
 		var metadata nullableJSON
-		if err := rows.Scan(&w.ID, &w.Type, &w.Status, &w.LastHeartbeat, &w.CurrentJobID, &metadata, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Type, &w.Status, &w.LastHeartbeat, &w.CurrentJobID, &metadata, &w.CreatedAt, &w.UpdatedAt); err != nil {
 			return nil, err
 		}
 		w.Metadata = json.RawMessage(metadata)

@@ -9,7 +9,7 @@
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body hx-boost="true">
     <nav class="navbar">
         <div class="navbar-container">
             <a href="/" class="navbar-brand">
@@ -21,10 +21,8 @@
                 <a href="/" class="nav-link {{if eq .ActivePage "dashboard"}}active{{end}}">Dashboard</a>
                 <a href="/jobs" class="nav-link {{if eq .ActivePage "jobs"}}active{{end}}">Jobs</a>
                 <a href="/workers" class="nav-link {{if eq .ActivePage "workers"}}active{{end}}">Workers</a>
-                {{if .User}}
-                {{if .User.IsAdmin}}
+                {{if or (not .AuthEnabled) (and .User .User.IsAdmin)}}
                 <a href="/admin" class="nav-link {{if eq .ActivePage "admin"}}active{{end}}">Admin</a>
-                {{end}}
                 {{end}}
             </div>
             <div class="navbar-right">

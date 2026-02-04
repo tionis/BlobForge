@@ -202,8 +202,9 @@ func main() {
 
 	// Start server
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: r,
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Graceful shutdown
@@ -220,10 +221,17 @@ func main() {
 	<-done
 	log.Info().Msg("Shutting down...")
 
+	// Stop accepting new requests first
 	cleanupCancel() // Stop background tasks
+
+	// Close SSE hub to disconnect all streaming clients
 	sseHub.Close()
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Give SSE connections a moment to close gracefully
+	time.Sleep(100 * time.Millisecond)
+
+	// Shutdown HTTP server with short timeout since we've already closed SSE
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
