@@ -293,6 +293,96 @@ def cmd_retry(args):
     return 0
 
 
+def cmd_convert(args):
+    """Convert a PDF file locally (offline)."""
+    import shutil
+    import time
+    from datetime import datetime
+    
+    input_path = args.path
+    output_dir = args.output
+    
+    if not os.path.exists(input_path):
+        print(f"Error: File '{input_path}' not found.")
+        return 1
+    
+    if not output_dir:
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        output_dir = os.path.join(os.getcwd(), base_name)
+    
+    os.makedirs(output_dir, exist_ok=True)
+    assets_dir = os.path.join(output_dir, "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+    
+    print(f"Converting '{input_path}'...")
+    print(f"Output directory: {output_dir}")
+    
+    try:
+        from marker.models import create_model_dict
+        from marker.converters.pdf import PdfConverter
+        from marker.output import text_from_rendered
+    except ImportError:
+        print("Error: marker-pdf not installed. Install with: pip install marker-pdf")
+        return 1
+    
+    start_time = time.time()
+    
+    print("Loading models...")
+    model_dict = create_model_dict()
+    converter = PdfConverter(
+        artifact_dict=model_dict,
+        config={}
+    )
+    
+    print("Processing PDF...")
+    rendered = converter(input_path)
+    text, _, images = text_from_rendered(rendered)
+    
+    # Update image paths in markdown
+    for img_name in images.keys():
+        text = text.replace(f"({img_name})", f"(assets/{img_name})")
+    
+    # Save markdown
+    md_path = os.path.join(output_dir, "content.md")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    
+    # Save images
+    for img_name, img in images.items():
+        img_path = os.path.join(assets_dir, img_name)
+        if hasattr(img, 'mode') and img.mode != "RGB":
+            img = img.convert("RGB")
+        img.save(img_path)
+    
+    # Save metadata
+    meta = {
+        "converted_at": datetime.now().isoformat() + "Z",
+        "original_filename": os.path.basename(input_path),
+        "processing_time_seconds": round(time.time() - start_time, 2),
+    }
+    
+    # Extract marker metadata
+    if hasattr(rendered, 'metadata') and rendered.metadata:
+        try:
+            if hasattr(rendered.metadata, 'model_dump'):
+                meta['marker_meta'] = rendered.metadata.model_dump()
+            elif hasattr(rendered.metadata, 'dict'):
+                meta['marker_meta'] = rendered.metadata.dict()
+            elif isinstance(rendered.metadata, dict):
+                meta['marker_meta'] = rendered.metadata
+        except Exception:
+            pass
+            
+    with open(os.path.join(output_dir, "info.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+    
+    print(f"Conversion complete in {meta['processing_time_seconds']}s.")
+    print(f"Markdown: {md_path}")
+    print(f"Images: {len(images)} saved to {assets_dir}")
+    
+    return 0
+
+
 def cmd_janitor(args):
     """Run the janitor to recover stale jobs."""
     janitor_module.run_janitor(dry_run=args.dry_run, verbose=args.verbose)
@@ -1446,6 +1536,12 @@ def main():
                           help="Queue priority for new jobs")
     p_ingest.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_ingest.set_defaults(func=cmd_ingest)
+    
+    # Convert (local)
+    p_convert = subparsers.add_parser("convert", help="Convert a PDF file locally (offline)")
+    p_convert.add_argument("path", help="Path to the PDF file")
+    p_convert.add_argument("--output", "-o", help="Output directory (default: current_dir/filename)")
+    p_convert.set_defaults(func=cmd_convert)
     
     # Status (single job)
     p_status = subparsers.add_parser("status", help="Check status of a specific job")

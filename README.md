@@ -279,6 +279,18 @@ blobforge workers --active
 blobforge workers -v
 ```
 
+### 10. Offline Conversion
+
+Convert a PDF locally without using the distributed queue. Useful for testing or single-file processing.
+
+```bash
+# Convert a file (outputs to ./filename/)
+blobforge convert document.pdf
+
+# Convert to specific directory
+blobforge convert document.pdf --output ./results/
+```
+
 ## ⚙️ Configuration
 
 Configuration is split into two categories:
