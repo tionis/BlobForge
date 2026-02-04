@@ -223,13 +223,15 @@ func NewHandler(database *db.DB, authenticator *auth.Auth) (*Handler, error) {
 		// Create a new template for each page
 		tmpl := template.New("").Funcs(funcs)
 
-		// Parse shared templates first
+		// Parse shared templates first, giving each its filename as the template name
 		for _, shared := range sharedFiles {
 			content, err := templateFS.ReadFile(shared)
 			if err != nil {
 				return nil, err
 			}
-			_, err = tmpl.Parse(string(content))
+			// Create a named template for each shared file
+			sharedName := shared[len("templates/"):]
+			_, err = tmpl.New(sharedName).Parse(string(content))
 			if err != nil {
 				return nil, err
 			}
@@ -260,7 +262,9 @@ func NewHandler(database *db.DB, authenticator *auth.Auth) (*Handler, error) {
 			if err != nil {
 				return nil, err
 			}
-			_, err = tmpl.Parse(string(content))
+			// Create a named template for each shared file
+			sharedName := shared[len("templates/"):]
+			_, err = tmpl.New(sharedName).Parse(string(content))
 			if err != nil {
 				return nil, err
 			}
