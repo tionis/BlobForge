@@ -604,11 +604,22 @@ def cmd_config(args):
                 print(f"Error: Invalid format '{kv}'. Use key=value")
                 return 1
             key, value = kv.split('=', 1)
-            # Try to convert to int if it looks like a number
-            try:
-                value = int(value)
-            except ValueError:
-                pass
+            # Try to convert to appropriate type
+            # Boolean
+            if value.lower() in ('true', 'yes', '1'):
+                value = True
+            elif value.lower() in ('false', 'no', '0'):
+                value = False
+            else:
+                # Try int
+                try:
+                    value = int(value)
+                except ValueError:
+                    # Try float
+                    try:
+                        value = float(value)
+                    except ValueError:
+                        pass  # Keep as string
             updates[key] = value
         
         # Get current config and merge
@@ -619,7 +630,8 @@ def cmd_config(args):
         if save_remote_config(config):
             print("Configuration updated:")
             for key, value in updates.items():
-                print(f"  {key} = {value}")
+                value_type = type(value).__name__
+                print(f"  {key} = {value} ({value_type})")
             return 0
         else:
             print("Error: Failed to save configuration")

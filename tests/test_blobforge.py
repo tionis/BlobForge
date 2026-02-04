@@ -204,7 +204,8 @@ class TestLockingLogic(unittest.TestCase):
         self.client.s3 = MagicMock()
         self.client.ClientError = botocore.exceptions.ClientError
     
-    def test_acquire_lock_success(self):
+    @patch('blobforge.s3_client.get_s3_supports_conditional_writes', return_value=True)
+    def test_acquire_lock_success(self, mock_cond):
         """Should return True when lock acquired."""
         self.client.s3.put_object.return_value = {}
         
@@ -215,7 +216,8 @@ class TestLockingLogic(unittest.TestCase):
         call_kwargs = self.client.s3.put_object.call_args[1]
         self.assertEqual(call_kwargs['IfNoneMatch'], '*')
     
-    def test_acquire_lock_fails_on_precondition(self):
+    @patch('blobforge.s3_client.get_s3_supports_conditional_writes', return_value=True)
+    def test_acquire_lock_fails_on_precondition(self, mock_cond):
         """Should return False when lock already exists (412)."""
         error_response = {'Error': {'Code': 'PreconditionFailed'}}
         self.client.s3.put_object.side_effect = self.botocore.exceptions.ClientError(
@@ -225,7 +227,8 @@ class TestLockingLogic(unittest.TestCase):
         result = self.client.acquire_lock("abc123", "worker-1", "3_normal")
         self.assertFalse(result)
     
-    def test_lock_content_format(self):
+    @patch('blobforge.s3_client.get_s3_supports_conditional_writes', return_value=True)
+    def test_lock_content_format(self, mock_cond):
         """Lock file should contain required fields."""
         self.client.s3.put_object.return_value = {}
         self.client.acquire_lock("abc123", "worker-1", "3_normal")

@@ -250,7 +250,15 @@ def get_conversion_timeout() -> int:
     return _remote_config.get("conversion_timeout")
 
 def get_s3_supports_conditional_writes() -> bool:
-    return _remote_config.get("s3_supports_conditional_writes")
+    """
+    Check if the S3 provider supports conditional writes.
+    Handles string values for backward compatibility with incorrectly saved configs.
+    """
+    value = _remote_config.get("s3_supports_conditional_writes")
+    # Handle string "False"/"True" from bad config saves
+    if isinstance(value, str):
+        return value.lower() not in ('false', 'no', '0', '')
+    return bool(value)
 
 def get_remote_config() -> Dict[str, Any]:
     return _remote_config.get_all()
