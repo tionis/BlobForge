@@ -36,3 +36,20 @@ All LLM agents operating in this repository MUST adhere to the following protoco
     - Web UI updated with worker creation modal, secret display, enable/disable/regenerate buttons
     - Worker secrets use `bfw_` prefix (vs `bf_` for API tokens)
     - Tests added for all new functionality
+- **2026-02-04:** Fixed server shutdown timeout issue.
+    - SSE hub Run() goroutine exited but clients blocked on unregister channel
+    - Added `done` channel to Hub struct for clean shutdown signaling
+    - Made unregister non-blocking when hub is closing
+- **2026-02-04:** Enhanced Go CLI ingest command with Git LFS support.
+    - Detects LFS pointer files via regex (`oid sha256:...`)
+    - Auto-materializes LFS files before upload, reverts after
+    - Derives tags from file path structure
+    - New flags: --lfs (default true), --tags (default true)
+- **2026-02-04:** Added migration 6 with covering index for efficient job claims.
+    - `idx_jobs_claim ON jobs(status, type, priority, created_at)`
+    - Handles 50k+ jobs with priority ordering efficiently
+- **2026-02-04:** Updated GitHub CI pipeline for multi-image builds.
+    - Builds server and pdf-worker images separately
+    - Images: `ghcr.io/{owner}/blobforge/server`, `ghcr.io/{owner}/blobforge/pdf-worker`
+    - Triggers on both main and webserver branches
+- **2026-02-04:** Updated PDF worker to use worker auth headers (X-Worker-ID, X-Worker-Secret).

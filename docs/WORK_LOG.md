@@ -1,5 +1,33 @@
 # Work Log
 
+## 2026-02-04 (Shutdown Fix, LFS Ingest, Priority Index, CI Pipeline)
+- **Objective:** Fix various issues and improve tooling
+- **Features Implemented:**
+    1. **Server Shutdown Fix** (`server/sse/sse.go`)
+        - Fixed SSE hub blocking on shutdown - Run() goroutine exited but clients still tried to unregister
+        - Added `done` channel to Hub struct for clean shutdown signaling
+        - Made unregister non-blocking in ServeHTTP when hub is closing
+    2. **LFS Support in Go CLI** (`server/cmd/blobforge/main.go`)
+        - Enhanced ingest command with Git LFS pointer detection
+        - Regex-based LFS hash extraction from pointer files
+        - Auto-materialize LFS files before upload, revert after
+        - Derive tags from file path (books/sci-fi/dune.pdf -> ["books", "sci-fi", "dune"])
+        - New flags: --lfs (default true), --tags (default true)
+    3. **Job Claim Index** (`server/db/migrations.go`)
+        - Migration 6: Added covering index for efficient job claiming
+        - `idx_jobs_claim ON jobs(status, type, priority, created_at)`
+        - Optimizes 50k+ jobs with priority ordering
+    4. **GitHub CI Pipeline** (`.github/workflows/container.yml`)
+        - Updated to build separate images for server and pdf-worker
+        - Images: `ghcr.io/tionis/blobforge/server`, `ghcr.io/tionis/blobforge/pdf-worker`
+        - Added webserver branch to trigger builds
+        - Parallel builds with separate cache scopes
+    5. **Worker Auth Update** (`workers/pdf/worker.py`, `workers/pdf/README.md`)
+        - Updated PDF worker to use X-Worker-ID and X-Worker-Secret headers
+        - Added BLOBFORGE_WORKER_ID and BLOBFORGE_WORKER_SECRET config
+        - Updated documentation with new worker credential flow
+- **Status:** Complete. All tests pass.
+
 ## 2026-02-03 (CLI, Migrations, Tests, Dark Mode)
 - **Objective:** Add Go admin CLI, migration system, comprehensive tests, and dark mode UI
 - **Features Implemented:**

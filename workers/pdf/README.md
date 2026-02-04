@@ -10,7 +10,8 @@ pip install httpx marker-pdf
 
 # Configure
 export BLOBFORGE_SERVER_URL=http://localhost:8080
-export BLOBFORGE_API_TOKEN=bf_your_token_here  # Get from Admin UI
+export BLOBFORGE_WORKER_ID=my-pdf-worker      # Created in Admin UI
+export BLOBFORGE_WORKER_SECRET=bfw_xxx...      # Shown once when creating worker
 
 # Run the worker
 python worker.py
@@ -39,18 +40,23 @@ blobforge-pdf-worker
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BLOBFORGE_SERVER_URL` | `http://localhost:8080` | BlobForge server URL |
-| `BLOBFORGE_API_TOKEN` | - | **Required** API token from server admin |
+| `BLOBFORGE_WORKER_ID` | auto-generated | Worker ID (from Admin UI) |
+| `BLOBFORGE_WORKER_SECRET` | - | **Required** Worker secret from server admin |
 | `BLOBFORGE_POLL_INTERVAL` | `5` | Seconds between job polls |
 | `BLOBFORGE_HEARTBEAT_INTERVAL` | `30` | Seconds between heartbeats |
 | `BLOBFORGE_USE_GPU` | `false` | Enable GPU acceleration |
 | `BLOBFORGE_MAX_BATCH_PAGES` | `4` | Max pages per batch for conversion |
 
-### Getting an API Token
+### Creating Worker Credentials
 
 1. Open BlobForge dashboard
-2. Go to **Admin** → **API Tokens**
-3. Click **Create Token**
-4. Copy the token (shown only once!)
+2. Go to **Workers** page
+3. Click **Create Worker** (admins only)
+4. Enter a worker ID/name
+5. Copy the secret (shown only once!)
+6. Set `BLOBFORGE_WORKER_ID` and `BLOBFORGE_WORKER_SECRET` environment variables
+
+Workers can be enabled/disabled and have secrets regenerated from the dashboard.
 
 ## GPU Acceleration
 
@@ -76,7 +82,8 @@ docker build -t blobforge-pdf-worker -f Containerfile .
 
 docker run -d \
   -e BLOBFORGE_SERVER_URL=http://server:8080 \
-  -e BLOBFORGE_API_TOKEN=bf_your_token_here \
+  -e BLOBFORGE_WORKER_ID=my-pdf-worker \
+  -e BLOBFORGE_WORKER_SECRET=bfw_xxx... \
   blobforge-pdf-worker
 ```
 
@@ -85,7 +92,8 @@ docker run -d \
 ```bash
 docker run -d --gpus all \
   -e BLOBFORGE_SERVER_URL=http://server:8080 \
-  -e BLOBFORGE_API_TOKEN=bf_your_token_here \
+  -e BLOBFORGE_WORKER_ID=my-pdf-worker \
+  -e BLOBFORGE_WORKER_SECRET=bfw_xxx... \
   -e BLOBFORGE_USE_GPU=true \
   -v $HOME/.cache:/root/.cache \
   blobforge-pdf-worker
@@ -93,7 +101,7 @@ docker run -d --gpus all \
 
 ## How It Works
 
-1. Worker registers with BlobForge server
+1. Worker registers with BlobForge server (using worker credentials)
 2. Polls for `pdf-convert` jobs
 3. Downloads PDF via presigned URL
 4. Converts to Markdown using marker-pdf

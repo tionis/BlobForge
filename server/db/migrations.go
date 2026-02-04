@@ -139,6 +139,15 @@ var Migrations = []Migration{
 		CREATE INDEX IF NOT EXISTS idx_workers_enabled ON workers(enabled);
 		`,
 	},
+	{
+		Version:     6,
+		Description: "Add optimized job claim index",
+		Up: `
+		-- Covering index for efficient job claiming with priority ordering
+		-- Handles: WHERE status = 'pending' AND type = ? ORDER BY priority ASC, created_at ASC
+		CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, type, priority, created_at);
+		`,
+	},
 }
 
 // GetSchemaVersion returns the current schema version using user_version pragma

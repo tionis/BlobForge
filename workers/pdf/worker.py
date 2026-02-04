@@ -39,7 +39,8 @@ class Config:
         self.poll_interval = int(os.environ.get("BLOBFORGE_POLL_INTERVAL", "5"))
         self.heartbeat_interval = int(os.environ.get("BLOBFORGE_HEARTBEAT_INTERVAL", "30"))
         self.max_batch_pages = int(os.environ.get("BLOBFORGE_MAX_BATCH_PAGES", "4"))
-        self.worker_id = self._generate_worker_id()
+        self.worker_id = os.environ.get("BLOBFORGE_WORKER_ID") or self._generate_worker_id()
+        self.worker_secret = os.environ.get("BLOBFORGE_WORKER_SECRET", "")
 
     def _generate_worker_id(self) -> str:
         """Generate a stable worker ID based on machine fingerprint."""
@@ -64,7 +65,13 @@ class BlobForgeClient:
 
     def __init__(self, config: Config):
         self.config = config
-        self.client = httpx.Client(base_url=config.server_url, timeout=30)
+        # Build headers with worker authentication
+        headers = {}
+        if config.worker_id:
+            headers["X-Worker-ID"] = config.worker_id
+        if config.worker_secret:
+            headers["X-Worker-Secret"] = config.worker_secret
+        self.client = httpx.Client(base_url=config.server_url, timeout=30, headers=headers)
 
     def register(self) -> bool:
         """Register this worker with the server."""

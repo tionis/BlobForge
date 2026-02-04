@@ -42,6 +42,7 @@ type Hub struct {
 	broadcast  chan *Event
 	register   chan *Client
 	unregister chan *Client
+	done       chan struct{} // Signals Run() goroutine to stop
 	mu         sync.RWMutex
 	closed     bool
 }
@@ -53,6 +54,7 @@ func NewHub() *Hub {
 		broadcast:  make(chan *Event, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		done:       make(chan struct{}),
 	}
 }
 
@@ -60,11 +62,26 @@ func NewHub() *Hub {
 func (h *Hub) Run() {
 	for {
 		select {
+		case <-h.done:
+			// Hub is closing - drain channels and close all clients
+			h.mu.Lock()
+			for client := range h.clients {
+				close(client.Channel)
+				delete(h.clients, client)
+			}
+			h.mu.Unlock()
+			return
+
 		case client := <-h.register:
 			h.mu.Lock()
-			h.clients[client] = true
-			h.mu.Unlock()
-			log.Debug().Str("client_id", client.ID).Int("total_clients", len(h.clients)).Msg("SSE client connected")
+			if !h.closed {
+				h.clients[client] = true
+				h.mu.Unlock()
+				log.Debug().Str("client_id", client.ID).Int("total_clients", len(h.clients)).Msg("SSE client connected")
+			} else {
+				h.mu.Unlock()
+				close(client.Channel)
+			}
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -75,18 +92,7 @@ func (h *Hub) Run() {
 			h.mu.Unlock()
 			log.Debug().Str("client_id", client.ID).Int("total_clients", len(h.clients)).Msg("SSE client disconnected")
 
-		case event, ok := <-h.broadcast:
-			if !ok {
-				// Hub is closing
-				h.mu.Lock()
-				for client := range h.clients {
-					close(client.Channel)
-					delete(h.clients, client)
-				}
-				h.mu.Unlock()
-				return
-			}
-
+		case event := <-h.broadcast:
 			h.mu.RLock()
 			for client := range h.clients {
 				select {
@@ -110,7 +116,8 @@ func (h *Hub) Close() {
 		for client := range h.clients {
 			close(client.done)
 		}
-		close(h.broadcast)
+		// Signal Run() goroutine to stop
+		close(h.done)
 	}
 	h.mu.Unlock()
 }
@@ -232,9 +239,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Register client
 	h.register <- client
 
-	// Unregister on disconnect
+	// Unregister on disconnect (non-blocking in case hub is closing)
 	defer func() {
-		h.unregister <- client
+		select {
+		case h.unregister <- client:
+		case <-h.done:
+			// Hub is closing, no need to unregister
+		}
 	}()
 
 	// Send initial ping

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -8,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -190,11 +193,27 @@ func submitFile(path string, jobType string, priority int, maxAttempts int, tags
 	defer f.Close()
 
 	hash := sha256.New()
-	size, err := io.Copy(hash, f)
+	_, err = io.Copy(hash, f)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", path, err)
 	}
 	hashStr := hex.EncodeToString(hash.Sum(nil))
+
+	return submitFileWithHash(path, jobType, hashStr, priority, maxAttempts, tags)
+}
+
+func submitFileWithHash(path string, jobType string, hashStr string, priority int, maxAttempts int, tags []string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("cannot open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("cannot stat %s: %w", path, err)
+	}
+	size := stat.Size()
 
 	// Create job
 	req := map[string]interface{}{
@@ -253,19 +272,88 @@ func submitFile(path string, jobType string, priority int, maxAttempts int, tags
 // Ingest command (batch PDF ingestion)
 // ============================================
 
+// lfsPointerRegex matches Git LFS pointer files
+var lfsPointerRegex = regexp.MustCompile(`oid sha256:([a-f0-9]{64})`)
+
+// getLFSHash extracts SHA256 hash from a Git LFS pointer file
+func getLFSHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// Read first 200 bytes to check for LFS pointer
+	scanner := bufio.NewScanner(f)
+	var content strings.Builder
+	for scanner.Scan() && content.Len() < 300 {
+		content.WriteString(scanner.Text())
+		content.WriteString("\n")
+	}
+
+	match := lfsPointerRegex.FindStringSubmatch(content.String())
+	if match != nil {
+		return match[1], nil
+	}
+	return "", nil
+}
+
+// isLFSPointer checks if a file is a Git LFS pointer
+func isLFSPointer(path string) bool {
+	hash, err := getLFSHash(path)
+	return err == nil && hash != ""
+}
+
+// materializeLFS pulls a Git LFS file to get the actual content
+func materializeLFS(repoPath, relPath string) error {
+	cmd := exec.Command("git", "lfs", "pull", "--include", relPath)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+// revertLFS reverts an LFS file back to pointer state
+func revertLFS(repoPath, relPath string) error {
+	cmd := exec.Command("git", "checkout", relPath)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+// getTagsFromPath derives tags from a file path
+// Example: ./books/comics/obelix.pdf -> ["books", "comics", "obelix"]
+func getTagsFromPath(relPath string) []string {
+	parts := strings.Split(filepath.ToSlash(relPath), "/")
+	var tags []string
+	for i, p := range parts {
+		if p == "" || p == "." {
+			continue
+		}
+		// Last part is filename - strip extension
+		if i == len(parts)-1 {
+			p = strings.TrimSuffix(p, filepath.Ext(p))
+		}
+		tags = append(tags, p)
+	}
+	return tags
+}
+
 func ingestCmd() *cobra.Command {
 	var (
-		priority    int
-		maxAttempts int
-		dryRun      bool
-		recursive   bool
+		priority     int
+		maxAttempts  int
+		dryRun       bool
+		recursive    bool
+		handleLFS    bool
+		deriveTags   bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "ingest <directory>",
 		Short: "Ingest PDFs from a directory for processing",
 		Long: `Recursively scan a directory for PDF files and submit them for processing.
-This is optimized for bulk ingestion with progress reporting.`,
+This is optimized for bulk ingestion with progress reporting.
+
+Supports Git LFS pointer files - will automatically detect LFS pointers,
+materialize the files for upload, then revert back to pointers.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := args[0]
@@ -277,17 +365,42 @@ This is optimized for bulk ingestion with progress reporting.`,
 				return fmt.Errorf("%s is not a directory", dir)
 			}
 
+			// Convert to absolute path for LFS operations
+			absDir, err := filepath.Abs(dir)
+			if err != nil {
+				return fmt.Errorf("cannot get absolute path: %w", err)
+			}
+
 			// Count files first
-			var files []string
-			err = filepath.Walk(dir, func(path string, fi os.FileInfo, err error) error {
+			type fileInfo struct {
+				path      string
+				relPath   string
+				isLFS     bool
+				lfsHash   string
+			}
+			var files []fileInfo
+
+			err = filepath.Walk(absDir, func(path string, fi os.FileInfo, err error) error {
 				if err != nil {
 					return err
 				}
 				if !fi.IsDir() && strings.ToLower(filepath.Ext(path)) == ".pdf" {
-					if !recursive && filepath.Dir(path) != dir {
+					relPath, _ := filepath.Rel(absDir, path)
+					if !recursive && filepath.Dir(relPath) != "." {
 						return nil
 					}
-					files = append(files, path)
+
+					f := fileInfo{path: path, relPath: relPath}
+					
+					if handleLFS {
+						// Check if it's an LFS pointer
+						if lfsHash, _ := getLFSHash(path); lfsHash != "" {
+							f.isLFS = true
+							f.lfsHash = lfsHash
+						}
+					}
+					
+					files = append(files, f)
 				}
 				return nil
 			})
@@ -295,10 +408,30 @@ This is optimized for bulk ingestion with progress reporting.`,
 				return err
 			}
 
-			fmt.Printf("Found %d PDF files\n", len(files))
+			lfsCount := 0
+			for _, f := range files {
+				if f.isLFS {
+					lfsCount++
+				}
+			}
+
+			fmt.Printf("Found %d PDF files", len(files))
+			if lfsCount > 0 {
+				fmt.Printf(" (%d LFS pointers)", lfsCount)
+			}
+			fmt.Println()
+
 			if dryRun {
 				for _, f := range files {
-					fmt.Printf("  %s\n", f)
+					lfsMarker := ""
+					if f.isLFS {
+						lfsMarker = " [LFS:" + f.lfsHash[:8] + "...]"
+					}
+					tags := ""
+					if deriveTags {
+						tags = " tags:" + strings.Join(getTagsFromPath(f.relPath), ",")
+					}
+					fmt.Printf("  %s%s%s\n", f.relPath, lfsMarker, tags)
 				}
 				return nil
 			}
@@ -308,13 +441,40 @@ This is optimized for bulk ingestion with progress reporting.`,
 			skipped := 0
 			failed := 0
 
-			for i, path := range files {
-				err := submitFile(path, "pdf", priority, maxAttempts, nil)
+			for i, f := range files {
+				var err error
+				var tags []string
+				if deriveTags {
+					tags = getTagsFromPath(f.relPath)
+				}
+
+				if f.isLFS {
+					// Materialize LFS file
+					fmt.Printf("📦 Materializing LFS: %s\n", f.relPath)
+					if err := materializeLFS(absDir, f.relPath); err != nil {
+						fmt.Printf("❌ Failed to materialize LFS: %s - %v\n", f.relPath, err)
+						failed++
+						continue
+					}
+					
+					// Submit with pre-computed LFS hash
+					err = submitFileWithHash(f.path, "pdf", f.lfsHash, priority, maxAttempts, tags)
+					
+					// Revert to pointer
+					if revertErr := revertLFS(absDir, f.relPath); revertErr != nil {
+						fmt.Printf("⚠️  Warning: failed to revert LFS file: %s\n", f.relPath)
+					}
+				} else {
+					err = submitFile(f.path, "pdf", priority, maxAttempts, tags)
+				}
+
 				if err != nil {
-					fmt.Printf("❌ Failed: %s - %v\n", path, err)
-					failed++
-				} else if strings.Contains(fmt.Sprint(err), "exists") {
-					skipped++
+					if strings.Contains(err.Error(), "409") || strings.Contains(err.Error(), "already exists") {
+						skipped++
+					} else {
+						fmt.Printf("❌ Failed: %s - %v\n", f.relPath, err)
+						failed++
+					}
 				} else {
 					submitted++
 				}
@@ -335,6 +495,8 @@ This is optimized for bulk ingestion with progress reporting.`,
 	cmd.Flags().IntVarP(&maxAttempts, "max-attempts", "m", 3, "Maximum retry attempts")
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "List files without submitting")
 	cmd.Flags().BoolVarP(&recursive, "recursive", "r", true, "Recursively scan subdirectories")
+	cmd.Flags().BoolVar(&handleLFS, "lfs", true, "Handle Git LFS pointer files")
+	cmd.Flags().BoolVar(&deriveTags, "tags", true, "Derive tags from file path")
 
 	return cmd
 }
