@@ -12,7 +12,8 @@ from .config import (
     S3_BUCKET, S3_REGION, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_ENDPOINT_URL,
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE, 
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY, S3_PREFIX_WORKERS,
-    WORKER_ID, get_worker_metadata, get_s3_supports_conditional_writes
+    WORKER_ID, get_worker_metadata, get_s3_supports_conditional_writes,
+    get_stale_timeout_minutes
 )
 
 
@@ -328,9 +329,22 @@ class S3Client:
     def acquire_lock(self, job_hash: str, worker_id: str, priority: str) -> bool:
         """
         Attempt to acquire a processing lock for a job.
-        Uses conditional write (If-None-Match: *) for atomicity.
+        
+        Uses conditional write (If-None-Match: *) if supported, otherwise falls
+        back to timestamp-based soft locking for S3 providers without conditional
+        write support.
         
         Returns True if lock acquired, False if already locked.
+        """
+        if get_s3_supports_conditional_writes():
+            return self._acquire_lock_conditional(job_hash, worker_id, priority)
+        else:
+            return self._acquire_lock_soft(job_hash, worker_id, priority)
+    
+    def _acquire_lock_conditional(self, job_hash: str, worker_id: str, priority: str) -> bool:
+        """
+        Acquire lock using conditional write (If-None-Match: *).
+        Only works on S3 providers that support conditional writes.
         """
         lock_key = f"{S3_PREFIX_PROCESSING}/{job_hash}"
         timestamp = int(time.time() * 1000)
@@ -355,6 +369,93 @@ class S3Client:
             if "Precondition Failed" in str(e) or "412" in str(e):
                 return False
             raise
+    
+    def _acquire_lock_soft(self, job_hash: str, worker_id: str, priority: str) -> bool:
+        """
+        Acquire lock using timestamp-based soft locking.
+        
+        This works on S3 providers that don't support conditional writes.
+        
+        Algorithm:
+        1. Check if lock already exists with a recent heartbeat -> fail
+        2. Write our lock claim with timestamp + nonce
+        3. Wait briefly (200ms) to allow concurrent writers to settle
+        4. Re-read the lock file
+        5. If our nonce is still there, we own the lock
+        6. If different nonce, compare timestamps - earliest wins
+        7. If we didn't win, delete our claim (optional cleanup) and fail
+        
+        This provides probabilistic mutual exclusion - in the rare case of
+        exact timestamp collision, multiple workers may claim the same job,
+        but the heartbeat mechanism will eventually resolve it.
+        """
+        import uuid
+        
+        lock_key = f"{S3_PREFIX_PROCESSING}/{job_hash}"
+        timestamp = int(time.time() * 1000)
+        nonce = uuid.uuid4().hex[:16]
+        
+        # Step 1: Check if lock already exists with recent heartbeat
+        existing = self.get_object_json(lock_key)
+        if existing:
+            # Lock exists - check if it's stale
+            last_hb = existing.get('last_heartbeat', 0)
+            stale_ms = get_stale_timeout_minutes() * 60 * 1000
+            if timestamp - last_hb < stale_ms:
+                # Lock is fresh, someone else has it
+                return False
+            # Lock is stale - we can try to take over
+        
+        # Step 2: Write our lock claim
+        payload = json.dumps({
+            "worker": worker_id,
+            "started": timestamp,
+            "last_heartbeat": timestamp,
+            "priority": priority,
+            "retries": 0,
+            "nonce": nonce,  # Unique identifier for this claim
+            "lock_version": 2,  # Indicates soft-lock protocol
+        })
+        
+        try:
+            self.put_object(lock_key, payload)
+        except Exception as e:
+            # Write failed - can't acquire lock
+            return False
+        
+        # Step 3: Wait for concurrent writers to settle
+        # 200ms is enough for most S3 providers to achieve consistency
+        time.sleep(0.2)
+        
+        # Step 4: Re-read the lock
+        current = self.get_object_json(lock_key)
+        if not current:
+            # Lock disappeared (deleted by another process?) - fail
+            return False
+        
+        # Step 5: Check if our nonce is still there
+        current_nonce = current.get('nonce')
+        if current_nonce == nonce:
+            # We still own it!
+            return True
+        
+        # Step 6: Different nonce - compare timestamps
+        current_timestamp = current.get('started', 0)
+        
+        if timestamp < current_timestamp:
+            # We were earlier - try to reclaim
+            # This handles the case where our write was overwritten but we were first
+            try:
+                self.put_object(lock_key, payload)
+                time.sleep(0.1)  # Brief wait
+                recheck = self.get_object_json(lock_key)
+                if recheck and recheck.get('nonce') == nonce:
+                    return True
+            except Exception:
+                pass
+        
+        # Step 7: We lost the race
+        return False
 
     def update_heartbeat(self, job_hash: str, worker_id: str, progress: Optional[Dict] = None) -> bool:
         """

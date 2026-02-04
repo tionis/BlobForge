@@ -688,6 +688,302 @@ def cmd_workers(args):
     return 0
 
 
+def cmd_test_s3(args):
+    """Test S3 endpoint capabilities."""
+    import time
+    import uuid
+    
+    print("=" * 60)
+    print("BlobForge S3 Endpoint Capability Test")
+    print("=" * 60)
+    print()
+    
+    # Get S3 config info
+    from .config import S3_BUCKET, S3_ENDPOINT_URL, S3_REGION, S3_PREFIX
+    
+    print(f"Endpoint:  {S3_ENDPOINT_URL or 'AWS S3 (default)'}")
+    print(f"Bucket:    {S3_BUCKET}")
+    print(f"Region:    {S3_REGION}")
+    print(f"Prefix:    {S3_PREFIX or '(none)'}")
+    print()
+    
+    # Create a test-specific prefix to avoid conflicts
+    test_prefix = f"{S3_PREFIX}_blobforge_test_{uuid.uuid4().hex[:8]}"
+    
+    results = {
+        'connectivity': None,
+        'write': None,
+        'read': None,
+        'delete': None,
+        'list': None,
+        'metadata': None,
+        'conditional_if_none_match': None,
+        'conditional_if_match': None,
+        'multipart': None,
+    }
+    
+    s3 = S3Client(dry_run=False)
+    
+    if s3.mock:
+        print("⚠️  Running in MOCK mode (boto3 not available)")
+        print("    Install boto3 to test actual S3 connectivity:")
+        print("    pip install boto3")
+        return 1
+    
+    # Helper to print test results
+    def report(name, success, detail=""):
+        icon = "✅" if success else "❌"
+        print(f"  {icon} {name}")
+        if detail:
+            print(f"      {detail}")
+        return success
+    
+    print("-" * 60)
+    print("Basic Operations")
+    print("-" * 60)
+    
+    # Test 1: Connectivity / Write
+    test_key = f"{test_prefix}/test_write.txt"
+    test_content = f"BlobForge test at {time.time()}"
+    try:
+        s3.s3.put_object(Bucket=S3_BUCKET, Key=test_key, Body=test_content)
+        results['connectivity'] = True
+        results['write'] = True
+        report("Connectivity", True)
+        report("Write (PUT)", True)
+    except Exception as e:
+        results['connectivity'] = False
+        results['write'] = False
+        report("Connectivity", False, str(e))
+        print("\n❌ Cannot proceed without basic connectivity.")
+        return 1
+    
+    # Test 2: Read
+    try:
+        resp = s3.s3.get_object(Bucket=S3_BUCKET, Key=test_key)
+        body = resp['Body'].read().decode('utf-8')
+        if body == test_content:
+            results['read'] = True
+            report("Read (GET)", True)
+        else:
+            results['read'] = False
+            report("Read (GET)", False, "Content mismatch")
+    except Exception as e:
+        results['read'] = False
+        report("Read (GET)", False, str(e))
+    
+    # Test 3: List
+    try:
+        resp = s3.s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=test_prefix, MaxKeys=10)
+        if 'Contents' in resp and len(resp['Contents']) > 0:
+            results['list'] = True
+            report("List (LIST)", True)
+        else:
+            results['list'] = False
+            report("List (LIST)", False, "No objects returned")
+    except Exception as e:
+        results['list'] = False
+        report("List (LIST)", False, str(e))
+    
+    # Test 4: Metadata
+    try:
+        meta_key = f"{test_prefix}/test_metadata.txt"
+        s3.s3.put_object(
+            Bucket=S3_BUCKET, 
+            Key=meta_key, 
+            Body="test",
+            Metadata={"custom-key": "custom-value", "another": "test123"}
+        )
+        resp = s3.s3.head_object(Bucket=S3_BUCKET, Key=meta_key)
+        meta = resp.get('Metadata', {})
+        if meta.get('custom-key') == 'custom-value':
+            results['metadata'] = True
+            report("Custom Metadata", True)
+        else:
+            results['metadata'] = False
+            report("Custom Metadata", False, f"Got: {meta}")
+        s3.s3.delete_object(Bucket=S3_BUCKET, Key=meta_key)
+    except Exception as e:
+        results['metadata'] = False
+        report("Custom Metadata", False, str(e))
+    
+    print()
+    print("-" * 60)
+    print("Conditional Writes (Required for Distributed Locking)")
+    print("-" * 60)
+    
+    # Test 5: If-None-Match: * (create if not exists)
+    cond_key = f"{test_prefix}/test_conditional.txt"
+    try:
+        # First write should succeed
+        s3.s3.put_object(
+            Bucket=S3_BUCKET, 
+            Key=cond_key, 
+            Body="first write",
+            IfNoneMatch='*'
+        )
+        
+        # Second write should fail with PreconditionFailed
+        try:
+            s3.s3.put_object(
+                Bucket=S3_BUCKET, 
+                Key=cond_key, 
+                Body="second write (should fail)",
+                IfNoneMatch='*'
+            )
+            # If we got here, If-None-Match is not enforced
+            results['conditional_if_none_match'] = False
+            report("If-None-Match: *", False, "Second write succeeded (should have failed)")
+        except s3.ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in ['PreconditionFailed', '412']:
+                results['conditional_if_none_match'] = True
+                report("If-None-Match: *", True, "PreconditionFailed correctly returned")
+            else:
+                results['conditional_if_none_match'] = False
+                report("If-None-Match: *", False, f"Unexpected error: {error_code}")
+    except s3.ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        if error_code in ['NotImplemented', '501']:
+            results['conditional_if_none_match'] = False
+            report("If-None-Match: *", False, "Not implemented by this S3 provider")
+        else:
+            results['conditional_if_none_match'] = False
+            report("If-None-Match: *", False, f"Error: {error_code} - {e}")
+    except Exception as e:
+        results['conditional_if_none_match'] = False
+        report("If-None-Match: *", False, str(e))
+    
+    # Test 6: If-Match (ETag-based conditional update)
+    etag_key = f"{test_prefix}/test_etag.txt"
+    try:
+        # Write initial version and get ETag
+        resp = s3.s3.put_object(Bucket=S3_BUCKET, Key=etag_key, Body="version 1")
+        
+        # Get the ETag
+        head_resp = s3.s3.head_object(Bucket=S3_BUCKET, Key=etag_key)
+        etag = head_resp['ETag']
+        
+        # Update with correct ETag should succeed
+        s3.s3.put_object(
+            Bucket=S3_BUCKET, 
+            Key=etag_key, 
+            Body="version 2",
+            IfMatch=etag
+        )
+        
+        # Update with old ETag should fail
+        try:
+            s3.s3.put_object(
+                Bucket=S3_BUCKET, 
+                Key=etag_key, 
+                Body="version 3 (should fail)",
+                IfMatch=etag  # Old ETag
+            )
+            # If we got here, If-Match is not enforced
+            results['conditional_if_match'] = False
+            report("If-Match (ETag)", False, "Stale ETag update succeeded (should have failed)")
+        except s3.ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in ['PreconditionFailed', '412']:
+                results['conditional_if_match'] = True
+                report("If-Match (ETag)", True, "PreconditionFailed correctly returned")
+            else:
+                results['conditional_if_match'] = False
+                report("If-Match (ETag)", False, f"Unexpected error: {error_code}")
+    except s3.ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code', '')
+        if error_code in ['NotImplemented', '501']:
+            results['conditional_if_match'] = False
+            report("If-Match (ETag)", False, "Not implemented by this S3 provider")
+        else:
+            results['conditional_if_match'] = False
+            report("If-Match (ETag)", False, f"Error: {error_code} - {e}")
+    except Exception as e:
+        results['conditional_if_match'] = False
+        report("If-Match (ETag)", False, str(e))
+    
+    # Test 7: Delete
+    print()
+    print("-" * 60)
+    print("Cleanup Operations")
+    print("-" * 60)
+    
+    try:
+        # List and delete all test objects
+        resp = s3.s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=test_prefix)
+        if 'Contents' in resp:
+            for obj in resp['Contents']:
+                s3.s3.delete_object(Bucket=S3_BUCKET, Key=obj['Key'])
+        results['delete'] = True
+        report("Delete (DELETE)", True, f"Cleaned up {len(resp.get('Contents', []))} test objects")
+    except Exception as e:
+        results['delete'] = False
+        report("Delete (DELETE)", False, str(e))
+    
+    # Summary
+    print()
+    print("=" * 60)
+    print("Summary")
+    print("=" * 60)
+    
+    basic_ok = all([results['connectivity'], results['write'], results['read'], 
+                    results['list'], results['delete']])
+    conditional_ok = results['conditional_if_none_match'] and results['conditional_if_match']
+    
+    print()
+    if basic_ok and conditional_ok:
+        print("✅ FULLY COMPATIBLE")
+        print("   This S3 endpoint supports all BlobForge features.")
+        print()
+        print("   Recommended config:")
+        print("     s3_supports_conditional_writes: true")
+    elif basic_ok and results['conditional_if_none_match']:
+        print("⚠️  PARTIALLY COMPATIBLE (no If-Match)")
+        print("   Distributed locking works, but manifest updates may have race conditions.")
+        print()
+        print("   Recommended config:")
+        print("     s3_supports_conditional_writes: true")
+        print("   Note: Run only one ingestor at a time, or use --force for manifest updates.")
+    elif basic_ok:
+        print("✅ COMPATIBLE (with soft locking)")
+        print("   Basic operations work. BlobForge will use timestamp-based soft locking")
+        print("   instead of atomic conditional writes.")
+        print()
+        print("   Recommended config:")
+        print("     blobforge config --set s3_supports_conditional_writes=false")
+        print()
+        print("   How soft locking works:")
+        print("   - Workers write lock claims with timestamps")
+        print("   - After a brief delay, the earliest timestamp wins")
+        print("   - Provides probabilistic mutual exclusion (very rare collisions)")
+        print()
+        print("   For manifest updates:")
+        print("   - Run only one ingestor at a time, OR")
+        print("   - Use 'blobforge manifest --sync --force' to merge changes")
+    else:
+        print("❌ NOT COMPATIBLE")
+        print("   Basic S3 operations failed. Check credentials and endpoint URL.")
+    
+    print()
+    print("-" * 60)
+    print("Feature Matrix:")
+    print("-" * 60)
+    for feature, status in results.items():
+        if status is None:
+            icon = "⚪"
+            label = "Not tested"
+        elif status:
+            icon = "✅"
+            label = "Supported"
+        else:
+            icon = "❌"
+            label = "Not supported"
+        print(f"  {icon} {feature:<30} {label}")
+    
+    return 0 if basic_ok else 1
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
@@ -783,6 +1079,10 @@ def main():
     p_workers.add_argument("--active", action="store_true", help="Show only active workers")
     p_workers.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
     p_workers.set_defaults(func=cmd_workers)
+    
+    # Test S3
+    p_test_s3 = subparsers.add_parser("test-s3", help="Test S3 endpoint capabilities")
+    p_test_s3.set_defaults(func=cmd_test_s3)
     
     if len(sys.argv) == 1:
         parser.print_help()

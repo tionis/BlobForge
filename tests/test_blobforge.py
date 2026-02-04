@@ -239,6 +239,93 @@ class TestLockingLogic(unittest.TestCase):
         self.assertIn('last_heartbeat', body)
 
 
+class TestSoftLocking(unittest.TestCase):
+    """Test timestamp-based soft locking for S3 providers without conditional writes."""
+    
+    def setUp(self):
+        """Set up S3 client for soft locking tests."""
+        self.client = S3Client(dry_run=False)
+        self.client.mock = False
+        self.client.s3 = MagicMock()
+    
+    @patch('blobforge.s3_client.get_s3_supports_conditional_writes', return_value=False)
+    @patch('blobforge.s3_client.get_stale_timeout_minutes', return_value=15)
+    def test_soft_lock_succeeds_when_no_existing_lock(self, mock_stale, mock_cond):
+        """Soft lock should succeed when no lock exists."""
+        # First read returns None (no existing lock)
+        # Second read (after write) returns our lock
+        our_lock = None
+        def mock_get_object(Bucket, Key):
+            nonlocal our_lock
+            if our_lock:
+                mock_body = MagicMock()
+                mock_body.read.return_value = our_lock.encode()
+                return {'Body': mock_body}
+            raise Exception("NoSuchKey")
+        
+        def mock_put_object(**kwargs):
+            nonlocal our_lock
+            our_lock = kwargs['Body']
+        
+        self.client.s3.get_object.side_effect = mock_get_object
+        self.client.s3.put_object.side_effect = mock_put_object
+        
+        result = self.client.acquire_lock("abc123", "worker-1", "3_normal")
+        self.assertTrue(result)
+    
+    @patch('blobforge.s3_client.get_s3_supports_conditional_writes', return_value=False)
+    @patch('blobforge.s3_client.get_stale_timeout_minutes', return_value=15)
+    def test_soft_lock_fails_when_fresh_lock_exists(self, mock_stale, mock_cond):
+        """Soft lock should fail when a fresh lock exists from another worker."""
+        import time
+        existing_lock = json.dumps({
+            "worker": "other-worker",
+            "started": int(time.time() * 1000),  # Recent
+            "last_heartbeat": int(time.time() * 1000),
+            "priority": "3_normal",
+            "nonce": "existing-nonce"
+        })
+        mock_body = MagicMock()
+        mock_body.read.return_value = existing_lock.encode()
+        self.client.s3.get_object.return_value = {'Body': mock_body}
+        
+        result = self.client.acquire_lock("abc123", "worker-1", "3_normal")
+        self.assertFalse(result)
+        # Should not have tried to write
+        self.client.s3.put_object.assert_not_called()
+    
+    @patch('blobforge.s3_client.get_s3_supports_conditional_writes', return_value=False)  
+    @patch('blobforge.s3_client.get_stale_timeout_minutes', return_value=15)
+    def test_soft_lock_includes_nonce(self, mock_stale, mock_cond):
+        """Soft lock should include a nonce for conflict resolution."""
+        captured_body = None
+        def mock_put_object(**kwargs):
+            nonlocal captured_body
+            captured_body = kwargs['Body']
+        
+        # No existing lock, our lock persists
+        call_count = [0]
+        def mock_get_object(Bucket, Key):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise Exception("NoSuchKey")
+            # Return the captured body on subsequent reads
+            mock_body = MagicMock()
+            mock_body.read.return_value = captured_body.encode() if captured_body else b'{}'
+            return {'Body': mock_body}
+        
+        self.client.s3.get_object.side_effect = mock_get_object
+        self.client.s3.put_object.side_effect = mock_put_object
+        
+        self.client.acquire_lock("abc123", "worker-1", "3_normal")
+        
+        self.assertIsNotNone(captured_body)
+        lock_data = json.loads(captured_body)
+        self.assertIn('nonce', lock_data)
+        self.assertEqual(len(lock_data['nonce']), 16)  # 16 hex chars
+        self.assertEqual(lock_data.get('lock_version'), 2)
+
+
 class TestHeartbeatLogic(unittest.TestCase):
     """Test heartbeat update behavior."""
     
