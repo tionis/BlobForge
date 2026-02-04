@@ -77,8 +77,8 @@ def show_status(verbose: bool = False):
     print(f"  Stale (>{stale_timeout}m): {stale_count} {'⚠️  (run janitor to recover)' if stale_count else '✓'}")
     
     if active_jobs:
-        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage':<25} {'Details'}")
-        print(f"  {'-' * 8} {'-' * 18} {'-' * 25} {'-' * 14} {'-' * 10} {'-' * 25} {'-' * 20}")
+        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage ETA':<10} {'Stage':<25} {'Details'}")
+        print(f"  {'-' * 8} {'-' * 18} {'-' * 25} {'-' * 14} {'-' * 10} {'-' * 10} {'-' * 25} {'-' * 20}")
         
         for job in sorted(active_jobs, key=lambda x: x.get('age', timedelta(0)), reverse=True):
             status = "🔴 STALE" if job.get('stale') else "🟢 OK"
@@ -96,11 +96,13 @@ def show_status(verbose: bool = False):
             
             # Check for marker/tqdm progress (rich stage info)
             marker_progress = progress.get('marker', {})
+            eta_str = ""
             if marker_progress:
                 tqdm_stage = marker_progress.get('tqdm_stage', '')
                 tqdm_current = marker_progress.get('tqdm_current', 0)
                 tqdm_total = marker_progress.get('tqdm_total', 0)
                 tqdm_percent = marker_progress.get('tqdm_percent', 0)
+                tqdm_eta = marker_progress.get('tqdm_eta')  # ETA in seconds
                 
                 if tqdm_stage and tqdm_total:
                     # Show detailed marker stage: "Recognizing Text: 5/12 (42%)"
@@ -109,6 +111,17 @@ def show_status(verbose: bool = False):
                         stage = stage[:20] + "..."
                 elif tqdm_stage:
                     stage = tqdm_stage[:23] if len(tqdm_stage) > 23 else tqdm_stage
+                
+                # Format ETA for current stage
+                if tqdm_eta is not None and tqdm_eta > 0:
+                    if tqdm_eta < 60:
+                        eta_str = f"~{int(tqdm_eta)}s"
+                    elif tqdm_eta < 3600:
+                        eta_str = f"~{int(tqdm_eta // 60)}m{int(tqdm_eta % 60)}s"
+                    else:
+                        hours = int(tqdm_eta // 3600)
+                        mins = int((tqdm_eta % 3600) // 60)
+                        eta_str = f"~{hours}h{mins}m"
             
             # Build details string with available info
             details_parts = []
@@ -136,7 +149,7 @@ def show_status(verbose: bool = False):
             
             details_str = " | ".join(details_parts) if details_parts else "-"
             
-            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {stage:<25} {details_str}")
+            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {eta_str:<10} {stage:<25} {details_str}")
     
     # -------------------------------------------------------------------------
     # 3. Results

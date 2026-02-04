@@ -118,3 +118,22 @@
        - Added `[all]` extra for full install
     
 - **Status:** All QoL improvements complete. CLI tested and working.
+## 2026-02-05 (Progress Tracking & ETA Display)
+- **Objective:** Add rich progress tracking for marker PDF conversion stages and ETA display.
+- **Actions:**
+    1. **tqdm Progress Interception:**
+       - Implemented monkey-patch for `tqdm.tqdm` class to intercept progress bars
+       - Captures stage name, current/total items, rate, elapsed time, and ETA
+       - Rate-limited callbacks (2s interval) to avoid overhead
+       - Progress stored in HeartbeatThread memory, included in scheduled heartbeats
+       - Heartbeat frequency unchanged (follows `get_heartbeat_interval()` config)
+    
+    2. **Dashboard ETA Column:**
+       - Added ETA column to processing jobs display
+       - Shows estimated time remaining for current stage (e.g., "~45s", "~2m30s")
+       - Stage column shows marker progress: "Recognizing Text: 5/12"
+    
+    3. **Containerfile Update:**
+       - Changed to install `.[all]` to include psutil for system metrics
+    
+- **Status:** Progress tracking and ETA display complete. Tests passing.
