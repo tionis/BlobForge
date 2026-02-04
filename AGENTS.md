@@ -7,6 +7,35 @@ All LLM agents operating in this repository MUST adhere to the following protoco
 - **Activity Logging:** Log all actions, tool executions, and progress in `docs/WORK_LOG.md`.
 - **Knowledge Sharing:** Note all significant findings, codebase insights, or updated protocols directly in this file (`AGENTS.md`) under the "Findings" section.
 
+## Development Environment
+
+This project uses **uv** as the Python package manager. Always use `uv` commands instead of `pip` or `python -m pip`:
+
+```bash
+# Install the project in development mode
+uv pip install -e .
+
+# Install with optional dependencies
+uv pip install -e ".[metrics]"      # For psutil system metrics
+uv pip install -e ".[convert]"      # For marker-pdf conversion
+uv pip install -e ".[all]"          # All optional dependencies
+
+# Install as a CLI tool
+uv tool install .
+
+# Run commands in the virtual environment
+uv run blobforge --help
+uv run python -m pytest tests/
+
+# Add a new dependency
+uv add <package>
+
+# Sync dependencies
+uv sync
+```
+
+The virtual environment is located at `.venv/` and should be activated automatically by uv or can be activated manually with `source .venv/bin/activate`.
+
 ## Findings
 
 - **2026-02-03:** Added `S3_PREFIX` support to `config.py` to allow namespacing in the S3 bucket. All queue and storage paths now respect this prefix.
@@ -25,3 +54,8 @@ All LLM agents operating in this repository MUST adhere to the following protoco
 - **2026-02-04:** Optimized worker job polling: replaced random shard scanning (5 priorities × 256 shards = 1280 potential requests) with broad priority scans (max 5 LIST requests). Added adaptive exponential backoff with jitter when queue is empty. Added priority cache to skip empty queues for 30s.
 - **2026-02-04:** Added `blobforge test-s3` CLI command to test S3 endpoint capabilities (conditional writes, metadata, etc.).
 - **2026-02-04:** Implemented timestamp-based soft locking for S3 providers without conditional write support (e.g., Hetzner Object Storage). Set `s3_supports_conditional_writes: false` in remote config to use this mode.
+- **2026-02-04:** Enhanced heartbeat metadata: now tracks CPU/RAM usage (via psutil), elapsed time, file size, original filename. Install psutil for full metrics: `pip install psutil` or `pip install blobforge[metrics]`.
+- **2026-02-04:** Added job throughput metrics: workers track jobs_completed, jobs_failed, bytes_processed, avg_processing_time, jobs_per_hour. Metrics stored in worker registry and displayed in `blobforge workers` command.
+- **2026-02-04:** Improved status dashboard: shows detailed processing job info including filename, elapsed time, stage, CPU/RAM usage. Progress bar for overall completion.
+- **2026-02-04:** Added job logging: errors now saved to `{prefix}registry/logs/{hash}/error.json` with full traceback and context. View with `blobforge logs <hash>`.
+- **2026-02-04:** New CLI commands: `blobforge logs` (view job logs), `blobforge watch` (auto-refresh dashboard), `blobforge download` (get results), `blobforge preview` (peek at output), `blobforge retry-all` (bulk retry), `blobforge clear-dead` (purge dead-letter), `blobforge search-queue` (find by filename), `blobforge cancel` (cancel running job).

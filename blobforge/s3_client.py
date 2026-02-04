@@ -534,6 +534,104 @@ class S3Client:
         # Clean up failed marker if exists
         self.delete_object(f"{S3_PREFIX_FAILED}/{job_hash}")
 
+    # -------------------------------------------------------------------------
+    # Job Logs
+    # -------------------------------------------------------------------------
+    
+    def save_job_log(self, job_hash: str, log_content: str, log_type: str = "conversion") -> bool:
+        """
+        Save job log to S3.
+        
+        Args:
+            job_hash: The job hash
+            log_content: Log content to save
+            log_type: Type of log (conversion, error, etc.)
+            
+        Returns:
+            True if successful
+        """
+        if self.dry_run or self.mock:
+            print(f"[DRY-RUN/MOCK] Would save {log_type} log for {job_hash}")
+            return True
+        
+        key = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/{log_type}.log"
+        try:
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=log_content,
+                ContentType="text/plain"
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to save job log: {e}")
+            return False
+    
+    def get_job_log(self, job_hash: str, log_type: str = "conversion") -> Optional[str]:
+        """
+        Get job log from S3.
+        
+        Args:
+            job_hash: The job hash
+            log_type: Type of log to retrieve
+            
+        Returns:
+            Log content or None if not found
+        """
+        key = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/{log_type}.log"
+        return self.get_object(key)
+    
+    def list_job_logs(self, job_hash: str) -> List[str]:
+        """
+        List all logs for a job.
+        
+        Returns:
+            List of log type names
+        """
+        prefix = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/"
+        keys = self.list_keys(prefix)
+        return [k.split('/')[-1].replace('.log', '') for k in keys if k.endswith('.log')]
+    
+    def save_job_error_detail(self, job_hash: str, error: str, traceback: str = None, 
+                              context: Dict[str, Any] = None) -> bool:
+        """
+        Save detailed error information for a failed job.
+        
+        Args:
+            job_hash: The job hash
+            error: Error message
+            traceback: Full traceback string
+            context: Additional context (stage, file info, etc.)
+        """
+        error_data = {
+            "error": error,
+            "timestamp": datetime.now().isoformat() + "Z",
+            "traceback": traceback,
+            "context": context or {}
+        }
+        
+        if self.dry_run or self.mock:
+            print(f"[DRY-RUN/MOCK] Would save error detail for {job_hash}")
+            return True
+        
+        key = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/error.json"
+        try:
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(error_data, indent=2),
+                ContentType="application/json"
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to save error detail: {e}")
+            return False
+    
+    def get_job_error_detail(self, job_hash: str) -> Optional[Dict[str, Any]]:
+        """Get detailed error information for a job."""
+        key = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/error.json"
+        return self.get_object_json(key)
+
     def get_retry_count(self, job_hash: str) -> int:
         """
         Get the retry count for a job from the failed queue.
@@ -1020,12 +1118,14 @@ class S3Client:
             print(f"Failed to register worker: {e}")
             return False
     
-    def update_worker_heartbeat(self, current_job: Optional[str] = None) -> bool:
+    def update_worker_heartbeat(self, current_job: Optional[str] = None,
+                                 system_metrics: Optional[Dict[str, Any]] = None) -> bool:
         """
-        Update worker heartbeat and optionally current job.
+        Update worker heartbeat and optionally current job and system metrics.
         
         Args:
             current_job: Hash of job currently being processed
+            system_metrics: System metrics (CPU, RAM, etc.)
             
         Returns:
             True if update succeeded
@@ -1044,6 +1144,10 @@ class S3Client:
                 existing["current_job"] = current_job
             elif "current_job" in existing:
                 del existing["current_job"]
+            
+            # Add system metrics if provided
+            if system_metrics:
+                existing["system"] = system_metrics
             
             self.s3.put_object(
                 Bucket=S3_BUCKET,
@@ -1086,6 +1190,37 @@ class S3Client:
             return True
         except Exception as e:
             print(f"Failed to deregister worker: {e}")
+            return False
+    
+    def update_worker_metrics(self, metrics: Dict[str, Any]) -> bool:
+        """
+        Update worker throughput metrics in S3.
+        
+        Args:
+            metrics: Throughput metrics dict
+            
+        Returns:
+            True if update succeeded
+        """
+        key = f"{S3_PREFIX_WORKERS}/{WORKER_ID}.json"
+        
+        if self.dry_run or self.mock:
+            return True
+        
+        try:
+            existing = self.get_object_json(key) or get_worker_metadata()
+            existing["metrics"] = metrics
+            existing["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+            
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(existing, indent=2),
+                ContentType="application/json"
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to update worker metrics: {e}")
             return False
     
     def list_workers(self) -> List[Dict[str, Any]]:

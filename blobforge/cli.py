@@ -658,7 +658,9 @@ def cmd_workers(args):
         workers = s3.list_workers()
         title = "All Registered Workers"
     
-    print(f"--- {title} ---")
+    print(f"{'=' * 70}")
+    print(f"  {title}")
+    print(f"{'=' * 70}")
     print()
     
     if not workers:
@@ -669,33 +671,68 @@ def cmd_workers(args):
     from datetime import datetime
     workers.sort(key=lambda w: w.get('last_heartbeat', ''), reverse=True)
     
+    # Aggregate metrics
+    total_completed = 0
+    total_failed = 0
+    total_bytes = 0
+    
     for w in workers:
         worker_id = w.get('worker_id', '?')[:12]
         hostname = w.get('hostname', '?')
         status = w.get('status', '?')
         last_hb = w.get('last_heartbeat', '?')
         current_job = w.get('current_job')
+        metrics = w.get('metrics', {})
+        system = w.get('system', {})
         
         status_icon = "🟢" if status == "active" or status == "processing" else "🔴" if status == "stopped" else "⚪"
         
+        # Get metrics
+        jobs_completed = metrics.get('jobs_completed', 0)
+        jobs_failed = metrics.get('jobs_failed', 0)
+        jobs_per_hour = metrics.get('jobs_per_hour', 0)
+        bytes_processed = metrics.get('bytes_processed', 0)
+        avg_time = metrics.get('avg_processing_time_formatted', '-')
+        
+        total_completed += jobs_completed
+        total_failed += jobs_failed
+        total_bytes += bytes_processed
+        
+        # System metrics
+        cpu = system.get('cpu_percent', '-')
+        mem = system.get('memory_percent', '-')
+        load = system.get('load_avg_1m', '-')
+        
+        print(f"  {status_icon} {worker_id} ({hostname})")
+        
         if current_job:
-            print(f"  {status_icon} {worker_id} ({hostname}) [{status}] - Processing: {current_job[:12]}...")
+            print(f"      Status: {status} - Processing: {current_job[:16]}...")
         else:
-            print(f"  {status_icon} {worker_id} ({hostname}) [{status}]")
+            print(f"      Status: {status}")
+        
+        if jobs_completed > 0 or args.verbose:
+            print(f"      Jobs: {jobs_completed} completed, {jobs_failed} failed | {jobs_per_hour:.1f}/hr | Avg: {avg_time}")
+        
+        if cpu != '-':
+            print(f"      System: CPU {cpu}%, MEM {mem}%, Load {load}")
         
         if args.verbose:
             print(f"      Platform: {w.get('platform', '?')} {w.get('platform_release', '')}")
             print(f"      Python: {w.get('python_version', '?')}")
             print(f"      CPUs: {w.get('cpu_count', '?')}, Memory: {w.get('memory_gb', '?')} GB")
             print(f"      Last heartbeat: {last_hb}")
-            print()
+        
+        print()
     
-    print()
-    print(f"Total: {len(workers)} worker(s)")
+    print(f"{'─' * 70}")
+    print(f"  Total: {len(workers)} worker(s)")
+    
+    if total_completed > 0:
+        size_str = f"{total_bytes / (1024**3):.2f} GB" if total_bytes > 1024**3 else f"{total_bytes / (1024**2):.1f} MB"
+        print(f"  Aggregate: {total_completed} completed, {total_failed} failed, {size_str} processed")
     
     if args.active:
-        # Show this worker's ID
-        print(f"\nThis machine's worker ID: {WORKER_ID}")
+        print(f"\n  This machine's worker ID: {WORKER_ID}")
     
     return 0
 
@@ -996,6 +1033,405 @@ def cmd_test_s3(args):
     return 0 if basic_ok else 1
 
 
+# =============================================================================
+# New CLI Commands: Logs, Watch, Download, Preview, Queue Management
+# =============================================================================
+
+def cmd_logs(args):
+    """View logs for a job."""
+    s3 = S3Client()
+    job_hash = args.hash
+    
+    # List available logs
+    logs = s3.list_job_logs(job_hash)
+    
+    if not logs:
+        print(f"No logs found for job {job_hash}")
+        
+        # Check if job exists
+        if s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
+            print("(Job completed successfully - no error logs)")
+        elif s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
+            # Show dead-letter info
+            data = s3.get_object_json(f"{S3_PREFIX_DEAD}/{job_hash}")
+            if data:
+                print(f"\nDead-letter info:")
+                print(f"  Error: {data.get('error', 'Unknown')}")
+                print(f"  Retries: {data.get('total_retries', '?')}")
+        elif s3.exists(f"{S3_PREFIX_FAILED}/{job_hash}"):
+            data = s3.get_object_json(f"{S3_PREFIX_FAILED}/{job_hash}")
+            if data:
+                print(f"\nFailed job info:")
+                print(f"  Error: {data.get('error', 'Unknown')}")
+                print(f"  Retries: {data.get('retries', 0)}")
+        return 1
+    
+    print(f"Available logs for {job_hash}:")
+    for log_type in logs:
+        print(f"  - {log_type}")
+    
+    # Show specific log or error.json by default
+    log_type = args.type or ("error" if "error" in logs else logs[0])
+    
+    print(f"\n--- {log_type} log ---")
+    
+    if log_type == "error":
+        # Show structured error
+        error_data = s3.get_job_error_detail(job_hash)
+        if error_data:
+            print(f"Timestamp: {error_data.get('timestamp', '?')}")
+            print(f"Error: {error_data.get('error', '?')}")
+            
+            context = error_data.get('context', {})
+            if context:
+                print(f"\nContext:")
+                for k, v in context.items():
+                    print(f"  {k}: {v}")
+            
+            traceback_str = error_data.get('traceback')
+            if traceback_str and traceback_str != 'NoneType: None\n':
+                print(f"\nTraceback:")
+                print(traceback_str)
+        else:
+            # Fall back to text log
+            content = s3.get_job_log(job_hash, log_type)
+            if content:
+                print(content)
+    else:
+        content = s3.get_job_log(job_hash, log_type)
+        if content:
+            print(content)
+        else:
+            print(f"Log '{log_type}' not found")
+    
+    return 0
+
+
+def cmd_watch(args):
+    """Watch system status in real-time (simple refresh mode)."""
+    import time
+    import subprocess
+    
+    interval = args.interval
+    
+    print(f"Watching BlobForge status (refresh every {interval}s, Ctrl+C to stop)...")
+    print()
+    
+    try:
+        while True:
+            # Clear screen
+            subprocess.run(['clear'], check=False)
+            
+            # Show status
+            status_module.show_status(verbose=args.verbose)
+            
+            print(f"\n[Refreshing in {interval}s... Press Ctrl+C to stop]")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\nStopped watching.")
+    
+    return 0
+
+
+def cmd_download(args):
+    """Download completed job results."""
+    import tempfile
+    
+    s3 = S3Client()
+    job_hash = args.hash
+    output_path = args.output
+    
+    # Check if job is done
+    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
+    if not s3.exists(done_key):
+        print(f"Error: Job {job_hash} is not completed.")
+        
+        # Provide status hint
+        if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
+            print("Job is currently being processed.")
+        elif s3.exists(f"{S3_PREFIX_FAILED}/{job_hash}"):
+            print("Job is in failed state (pending retry).")
+        elif s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
+            print("Job is in dead-letter queue.")
+        else:
+            # Check todo
+            for p in PRIORITIES:
+                if s3.exists(f"{S3_PREFIX_TODO}/{p}/{job_hash}"):
+                    print(f"Job is queued (priority: {p}).")
+                    break
+        return 1
+    
+    # Determine output path
+    if output_path is None:
+        output_path = f"{job_hash}.zip"
+    
+    print(f"Downloading {job_hash}.zip to {output_path}...")
+    
+    try:
+        s3.download_file(done_key, output_path)
+        print(f"Downloaded: {output_path}")
+        
+        # Show file size
+        import os
+        size = os.path.getsize(output_path)
+        print(f"Size: {size:,} bytes")
+        
+        return 0
+    except Exception as e:
+        print(f"Error downloading: {e}")
+        return 1
+
+
+def cmd_preview(args):
+    """Preview the content of a completed job."""
+    import tempfile
+    import zipfile
+    
+    s3 = S3Client()
+    job_hash = args.hash
+    
+    # Check if job is done
+    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
+    if not s3.exists(done_key):
+        print(f"Error: Job {job_hash} is not completed.")
+        return 1
+    
+    # Download to temp file
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp_path = tmp.name
+    
+    try:
+        print(f"Fetching {job_hash}...")
+        s3.download_file(done_key, tmp_path)
+        
+        with zipfile.ZipFile(tmp_path, 'r') as zf:
+            # List contents
+            files = zf.namelist()
+            print(f"\nContents:")
+            for f in files:
+                info = zf.getinfo(f)
+                print(f"  {f} ({info.file_size:,} bytes)")
+            
+            # Show info.json if present
+            if 'info.json' in files:
+                print(f"\n--- info.json ---")
+                with zf.open('info.json') as f:
+                    info_data = json.loads(f.read().decode('utf-8'))
+                    for k, v in info_data.items():
+                        if k == 'marker_meta':
+                            print(f"  {k}: <...>")
+                        else:
+                            print(f"  {k}: {v}")
+            
+            # Show markdown preview
+            if 'content.md' in files:
+                print(f"\n--- content.md (first {args.lines} lines) ---")
+                with zf.open('content.md') as f:
+                    content = f.read().decode('utf-8')
+                    lines = content.split('\n')[:args.lines]
+                    print('\n'.join(lines))
+                    if len(content.split('\n')) > args.lines:
+                        print(f"\n... ({len(content.split(chr(10)))} total lines)")
+        
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+    finally:
+        import os
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
+
+
+def cmd_retry_all(args):
+    """Retry all failed or dead-letter jobs."""
+    s3 = S3Client()
+    
+    count = 0
+    
+    if args.failed or not args.dead:
+        # Retry failed jobs
+        failed_jobs = s3.list_failed()
+        for job in failed_jobs:
+            key = job['Key']
+            if key.endswith("/"):
+                continue
+            job_hash = key.split('/')[-1]
+            
+            if args.dry_run:
+                print(f"[DRY-RUN] Would retry failed job: {job_hash}")
+            else:
+                # Move back to todo
+                data = s3.get_object_json(key)
+                retry_count = data.get('retries', 0) if data else 0
+                if not args.reset_retries:
+                    retry_count += 1
+                
+                marker = json.dumps({"retries": retry_count, "queued_at": int(__import__('time').time() * 1000)})
+                s3.put_object(f"{S3_PREFIX_TODO}/{args.priority}/{job_hash}", marker)
+                s3.delete_object(key)
+                print(f"Retried: {job_hash}")
+            count += 1
+    
+    if args.dead:
+        # Retry dead-letter jobs
+        dead_jobs = s3.list_dead()
+        for job in dead_jobs:
+            key = job['Key']
+            if key.endswith("/"):
+                continue
+            job_hash = key.split('/')[-1]
+            
+            if args.dry_run:
+                print(f"[DRY-RUN] Would retry dead job: {job_hash}")
+            else:
+                retry_count = 0 if args.reset_retries else 0  # Dead jobs always reset
+                marker = json.dumps({"retries": retry_count, "queued_at": int(__import__('time').time() * 1000)})
+                s3.put_object(f"{S3_PREFIX_TODO}/{args.priority}/{job_hash}", marker)
+                s3.delete_object(key)
+                print(f"Retried (from dead): {job_hash}")
+            count += 1
+    
+    if args.dry_run:
+        print(f"\n[DRY-RUN] Would retry {count} jobs")
+    else:
+        print(f"\nRetried {count} jobs")
+    
+    return 0
+
+
+def cmd_clear_dead(args):
+    """Clear the dead-letter queue."""
+    s3 = S3Client()
+    
+    dead_jobs = s3.list_dead()
+    dead_jobs = [j for j in dead_jobs if not j['Key'].endswith("/")]
+    
+    if not dead_jobs:
+        print("Dead-letter queue is empty.")
+        return 0
+    
+    print(f"Found {len(dead_jobs)} jobs in dead-letter queue.")
+    
+    if not args.force:
+        confirm = input("Delete all? This cannot be undone. [y/N] ").strip().lower()
+        if confirm != 'y':
+            print("Aborted.")
+            return 1
+    
+    for job in dead_jobs:
+        key = job['Key']
+        job_hash = key.split('/')[-1]
+        
+        if args.dry_run:
+            print(f"[DRY-RUN] Would delete: {job_hash}")
+        else:
+            s3.delete_object(key)
+            print(f"Deleted: {job_hash}")
+    
+    if not args.dry_run:
+        print(f"\nCleared {len(dead_jobs)} jobs from dead-letter queue.")
+    
+    return 0
+
+
+def cmd_search_queue(args):
+    """Search queue by filename pattern."""
+    s3 = S3Client()
+    query = args.query.lower()
+    
+    results = []
+    
+    # Search todo queues
+    for prio in PRIORITIES:
+        keys = s3.list_keys(f"{S3_PREFIX_TODO}/{prio}/")
+        for key in keys:
+            job_hash = key.split('/')[-1]
+            # Get manifest entry to find filename
+            entry = s3.lookup_by_hash(job_hash)
+            if entry:
+                paths = entry.get('paths', [])
+                for path in paths:
+                    if query in path.lower():
+                        results.append({
+                            'hash': job_hash,
+                            'path': path,
+                            'status': 'queued',
+                            'priority': prio
+                        })
+                        break
+    
+    # Search processing
+    for job in s3.list_processing():
+        key = job['Key']
+        if key.endswith("/"):
+            continue
+        job_hash = key.split('/')[-1]
+        entry = s3.lookup_by_hash(job_hash)
+        if entry:
+            paths = entry.get('paths', [])
+            for path in paths:
+                if query in path.lower():
+                    results.append({
+                        'hash': job_hash,
+                        'path': path,
+                        'status': 'processing'
+                    })
+                    break
+    
+    if not results:
+        print(f"No jobs found matching '{args.query}'")
+        return 1
+    
+    print(f"Found {len(results)} jobs matching '{args.query}':\n")
+    for r in results[:args.limit]:
+        status = r.get('status', '?')
+        prio = r.get('priority', '')
+        prio_str = f" [{prio}]" if prio else ""
+        print(f"  [{status.upper()}{prio_str}] {r['hash'][:16]}... - {r['path']}")
+    
+    if len(results) > args.limit:
+        print(f"\n... and {len(results) - args.limit} more")
+    
+    return 0
+
+
+def cmd_cancel(args):
+    """Cancel a running job (move back to queue)."""
+    s3 = S3Client()
+    job_hash = args.hash
+    
+    # Check if job is processing
+    if not s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
+        print(f"Error: Job {job_hash} is not currently processing.")
+        return 1
+    
+    lock_data = s3.get_lock_info(job_hash)
+    priority = lock_data.get('priority', DEFAULT_PRIORITY) if lock_data else DEFAULT_PRIORITY
+    
+    if args.priority:
+        priority = args.priority
+    
+    print(f"Cancelling job {job_hash}...")
+    print(f"  Current worker: {lock_data.get('worker', '?') if lock_data else '?'}")
+    print(f"  Moving to: {priority}")
+    
+    if args.dry_run:
+        print("[DRY-RUN] Would cancel job")
+        return 0
+    
+    # Move back to todo
+    s3.move_to_todo(job_hash, priority, increment_retry=False)
+    s3.release_lock(job_hash)
+    
+    print("Job cancelled and re-queued.")
+    print("Note: The worker may still be processing. It will fail on completion.")
+    
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
@@ -1095,6 +1531,63 @@ def main():
     # Test S3
     p_test_s3 = subparsers.add_parser("test-s3", help="Test S3 endpoint capabilities")
     p_test_s3.set_defaults(func=cmd_test_s3)
+    
+    # =========================================================================
+    # New Commands: Logs, Watch, Download, Preview, Queue Management
+    # =========================================================================
+    
+    # Logs
+    p_logs = subparsers.add_parser("logs", help="View logs for a job")
+    p_logs.add_argument("hash", help="SHA256 hash of the PDF")
+    p_logs.add_argument("--type", "-t", help="Log type to view (default: error)")
+    p_logs.set_defaults(func=cmd_logs)
+    
+    # Watch
+    p_watch = subparsers.add_parser("watch", help="Watch system status in real-time")
+    p_watch.add_argument("--interval", "-i", type=int, default=10, help="Refresh interval in seconds")
+    p_watch.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
+    p_watch.set_defaults(func=cmd_watch)
+    
+    # Download
+    p_download = subparsers.add_parser("download", help="Download completed job results")
+    p_download.add_argument("hash", help="SHA256 hash of the PDF")
+    p_download.add_argument("--output", "-o", help="Output path (default: <hash>.zip)")
+    p_download.set_defaults(func=cmd_download)
+    
+    # Preview
+    p_preview = subparsers.add_parser("preview", help="Preview completed job content")
+    p_preview.add_argument("hash", help="SHA256 hash of the PDF")
+    p_preview.add_argument("--lines", "-n", type=int, default=50, help="Lines of markdown to show")
+    p_preview.set_defaults(func=cmd_preview)
+    
+    # Retry-all
+    p_retry_all = subparsers.add_parser("retry-all", help="Retry all failed/dead jobs")
+    p_retry_all.add_argument("--failed", action="store_true", help="Retry failed jobs only")
+    p_retry_all.add_argument("--dead", action="store_true", help="Retry dead-letter jobs only")
+    p_retry_all.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
+                             help="Queue priority for retried jobs")
+    p_retry_all.add_argument("--reset-retries", action="store_true", help="Reset retry counters")
+    p_retry_all.add_argument("--dry-run", action="store_true", help="Don't make changes")
+    p_retry_all.set_defaults(func=cmd_retry_all)
+    
+    # Clear-dead
+    p_clear_dead = subparsers.add_parser("clear-dead", help="Clear the dead-letter queue")
+    p_clear_dead.add_argument("--force", action="store_true", help="Skip confirmation")
+    p_clear_dead.add_argument("--dry-run", action="store_true", help="Don't make changes")
+    p_clear_dead.set_defaults(func=cmd_clear_dead)
+    
+    # Search-queue
+    p_search_queue = subparsers.add_parser("search-queue", help="Search queue by filename")
+    p_search_queue.add_argument("query", help="Filename pattern to search")
+    p_search_queue.add_argument("--limit", type=int, default=20, help="Max results to show")
+    p_search_queue.set_defaults(func=cmd_search_queue)
+    
+    # Cancel
+    p_cancel = subparsers.add_parser("cancel", help="Cancel a running job")
+    p_cancel.add_argument("hash", help="SHA256 hash of the PDF")
+    p_cancel.add_argument("--priority", choices=PRIORITIES, help="Priority when re-queued")
+    p_cancel.add_argument("--dry-run", action="store_true", help="Don't make changes")
+    p_cancel.set_defaults(func=cmd_cancel)
     
     if len(sys.argv) == 1:
         parser.print_help()

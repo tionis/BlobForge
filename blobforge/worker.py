@@ -21,7 +21,14 @@ import tempfile
 import threading
 import logging
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, Dict
+
+# Optional psutil for system metrics
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
 
 from .config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
@@ -33,6 +40,45 @@ from .s3_client import S3Client
 logger = logging.getLogger(__name__)
 
 
+def get_system_metrics() -> Dict[str, Any]:
+    """Get current system metrics (CPU, RAM, disk)."""
+    metrics = {}
+    
+    if HAS_PSUTIL:
+        try:
+            # CPU usage (non-blocking, uses previous sample)
+            metrics['cpu_percent'] = psutil.cpu_percent(interval=None)
+            
+            # Memory usage
+            mem = psutil.virtual_memory()
+            metrics['memory_percent'] = mem.percent
+            metrics['memory_used_gb'] = round(mem.used / (1024**3), 2)
+            metrics['memory_available_gb'] = round(mem.available / (1024**3), 2)
+            
+            # Disk usage (root partition)
+            try:
+                disk = psutil.disk_usage('/')
+                metrics['disk_percent'] = disk.percent
+                metrics['disk_free_gb'] = round(disk.free / (1024**3), 2)
+            except Exception:
+                pass
+            
+            # Load average (Unix only)
+            try:
+                load1, load5, load15 = os.getloadavg()
+                metrics['load_avg_1m'] = round(load1, 2)
+                metrics['load_avg_5m'] = round(load5, 2)
+            except (AttributeError, OSError):
+                pass
+                
+        except Exception as e:
+            metrics['error'] = str(e)
+    else:
+        metrics['psutil_available'] = False
+    
+    return metrics
+
+
 class HeartbeatThread(threading.Thread):
     """Background thread that periodically updates the heartbeat for active jobs."""
     
@@ -42,23 +88,86 @@ class HeartbeatThread(threading.Thread):
         self.worker_id = worker_id
         self.current_job: Optional[str] = None
         self.progress: Optional[dict] = None
+        self.job_start_time: Optional[float] = None
+        self.original_filename: Optional[str] = None
+        self.file_size: Optional[int] = None
         self.running = True
         self._lock = threading.Lock()
+        
+        # Initialize CPU percent measurement
+        if HAS_PSUTIL:
+            psutil.cpu_percent(interval=None)
     
-    def set_job(self, job_hash: Optional[str], progress: Optional[dict] = None):
+    def set_job(self, job_hash: Optional[str], progress: Optional[dict] = None,
+                original_filename: Optional[str] = None, file_size: Optional[int] = None):
         """Set the current job being processed."""
         with self._lock:
             self.current_job = job_hash
             self.progress = progress
+            self.job_start_time = time.time() if job_hash else None
+            self.original_filename = original_filename
+            self.file_size = file_size
     
     def update_progress(self, progress: dict):
         """Update progress information for current job."""
         with self._lock:
-            self.progress = progress
+            if self.progress:
+                self.progress.update(progress)
+            else:
+                self.progress = progress
     
     def stop(self):
         """Stop the heartbeat thread."""
         self.running = False
+    
+    def _build_progress_data(self) -> dict:
+        """Build comprehensive progress data for heartbeat."""
+        data = {}
+        
+        # Copy current progress
+        if self.progress:
+            data.update(self.progress)
+        
+        # Add timing info
+        if self.job_start_time:
+            elapsed = time.time() - self.job_start_time
+            data['elapsed_seconds'] = round(elapsed, 1)
+            data['elapsed_formatted'] = self._format_duration(elapsed)
+        
+        # Add file info
+        if self.original_filename:
+            data['original_filename'] = self.original_filename
+        if self.file_size:
+            data['file_size_bytes'] = self.file_size
+            data['file_size_formatted'] = self._format_size(self.file_size)
+        
+        # Add system metrics
+        data['system'] = get_system_metrics()
+        
+        return data
+    
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format seconds as human-readable duration."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            mins = int(seconds // 60)
+            secs = int(seconds % 60)
+            return f"{mins}m {secs}s"
+        else:
+            hours = int(seconds // 3600)
+            mins = int((seconds % 3600) // 60)
+            return f"{hours}h {mins}m"
+    
+    @staticmethod
+    def _format_size(size_bytes: int) -> str:
+        """Format bytes as human-readable size."""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size_bytes < 1024:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} TB"
     
     def run(self):
         """Main heartbeat loop."""
@@ -68,15 +177,15 @@ class HeartbeatThread(threading.Thread):
             
             with self._lock:
                 job = self.current_job
-                progress = self.progress
+                progress_data = self._build_progress_data() if job else None
             
             if job:
-                success = self.s3.update_heartbeat(job, self.worker_id, progress)
+                success = self.s3.update_heartbeat(job, self.worker_id, progress_data)
                 if not success:
                     logger.warning(f"Failed to update heartbeat for {job}")
             
-            # Also update worker heartbeat
-            self.s3.update_worker_heartbeat(current_job=job)
+            # Also update worker heartbeat with system metrics
+            self.s3.update_worker_heartbeat(current_job=job, system_metrics=get_system_metrics())
 
 
 class Worker:
@@ -90,6 +199,7 @@ class Worker:
     4. Tracks retries and respects MAX_RETRIES limit
     5. Uses marker Python API directly (models stay in memory)
     6. Optimized polling: broad scan first, sharding only for contention
+    7. Tracks throughput metrics (jobs completed, bytes processed, avg time)
     """
     
     # Lazy-loaded marker models (shared across all jobs)
@@ -110,6 +220,13 @@ class Worker:
         self._empty_poll_count = 0  # Track consecutive empty polls for backoff
         self._priority_cache: dict = {}  # Cache of {priority: (has_jobs, timestamp)}
         self._cache_ttl = 120  # Seconds before priority cache expires (2 min)
+        
+        # Throughput metrics (for this session)
+        self._session_start = time.time()
+        self._jobs_completed = 0
+        self._jobs_failed = 0
+        self._bytes_processed = 0
+        self._total_processing_time = 0.0
         
         # Register worker in S3
         logger.info(f"Registering worker {self.id}...")
@@ -289,8 +406,10 @@ class Worker:
         3. Create info.json with enriched metadata
         4. Zip results and upload
         5. Clean up (delete todo marker and lock)
+        6. Update throughput metrics
         """
         logger.info(f"Processing Job: {job_hash}")
+        job_start_time = time.time()
         
         # Get current retry count
         lock_info = self.s3.get_lock_info(job_hash)
@@ -306,9 +425,28 @@ class Worker:
             try:
                 self.s3.download_file(raw_key, pdf_path)
                 s3_meta = self.s3.get_object_metadata(raw_key)
+                
+                # Get file info for heartbeat
+                original_filename = s3_meta.get("original-name", "unknown.pdf")
+                try:
+                    file_size = int(s3_meta.get("size", 0)) or os.path.getsize(pdf_path)
+                except (ValueError, OSError):
+                    file_size = 0
+                
+                # Update heartbeat with file info
+                self.heartbeat.set_job(
+                    job_hash, 
+                    progress={"stage": "downloading"},
+                    original_filename=original_filename,
+                    file_size=file_size
+                )
+                
             except Exception as e:
                 logger.error(f"Download/Meta failed: {e}")
-                self._handle_failure(job_hash, f"Download failed: {e}", retry_count)
+                self._handle_failure(
+                    job_hash, f"Download failed: {e}", retry_count,
+                    context={"stage": "download", "raw_key": raw_key}
+                )
                 return
             
             # 2. Convert using marker Python API
@@ -327,7 +465,14 @@ class Worker:
                     logger.info(f"Marker conversion completed: {len(md_text)} chars, {len(images)} images")
             except Exception as e:
                 logger.error(f"Marker failed: {type(e).__name__}: {e}")
-                self._handle_failure(job_hash, str(e), retry_count)
+                self._handle_failure(
+                    job_hash, str(e), retry_count,
+                    context={
+                        "stage": "conversion", 
+                        "original_filename": original_filename,
+                        "file_size": file_size
+                    }
+                )
                 return
             
             self.heartbeat.update_progress({"stage": "packaging"})
@@ -377,17 +522,29 @@ class Worker:
             self.heartbeat.update_progress({"stage": "uploading"})
             self.s3.upload_file(zip_path, f"{S3_PREFIX_DONE}/{job_hash}.zip")
             
+            # Calculate processing time
+            processing_time = time.time() - job_start_time
+            
             # 5. Finalize - NOW we delete the todo marker (atomic completion)
-            self._complete_job(job_hash)
-            logger.info(f"Job {job_hash} Complete.")
+            self._complete_job(job_hash, file_size, processing_time)
+            logger.info(f"Job {job_hash} Complete in {self.heartbeat._format_duration(processing_time)}.")
     
-    def _complete_job(self, job_hash: str):
+    def _complete_job(self, job_hash: str, file_size: int = 0, processing_time: float = 0):
         """
         Mark job as complete:
         - Delete todo marker (NOW it's safe to do so)
         - Delete processing lock
         - Clean up any failed marker
+        - Update throughput metrics
         """
+        # Update throughput metrics
+        self._jobs_completed += 1
+        self._bytes_processed += file_size
+        self._total_processing_time += processing_time
+        
+        # Update worker metrics in S3
+        self._update_worker_metrics()
+        
         # Delete todo marker from all priorities (it should only be in one)
         for priority in PRIORITIES:
             self.s3.delete_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}")
@@ -403,14 +560,63 @@ class Worker:
         self.current_job = None
         self.current_priority = None
     
-    def _handle_failure(self, job_hash: str, reason: str, retry_count: int):
+    def _update_worker_metrics(self):
+        """Update worker metrics in S3 registry."""
+        metrics = self.get_throughput_metrics()
+        self.s3.update_worker_metrics(metrics)
+    
+    def get_throughput_metrics(self) -> dict:
+        """Get throughput metrics for this worker session."""
+        session_duration = time.time() - self._session_start
+        avg_time = self._total_processing_time / self._jobs_completed if self._jobs_completed > 0 else 0
+        
+        return {
+            "session_start": datetime.fromtimestamp(self._session_start).isoformat() + "Z",
+            "session_duration_seconds": round(session_duration, 1),
+            "jobs_completed": self._jobs_completed,
+            "jobs_failed": self._jobs_failed,
+            "bytes_processed": self._bytes_processed,
+            "bytes_processed_formatted": self.heartbeat._format_size(self._bytes_processed),
+            "total_processing_time": round(self._total_processing_time, 1),
+            "avg_processing_time": round(avg_time, 1),
+            "avg_processing_time_formatted": self.heartbeat._format_duration(avg_time) if avg_time > 0 else "N/A",
+            "jobs_per_hour": round(self._jobs_completed / (session_duration / 3600), 2) if session_duration > 0 else 0,
+        }
+    
+    def _handle_failure(self, job_hash: str, reason: str, retry_count: int,
+                        traceback_str: str = None, context: dict = None):
         """
         Handle a job failure:
         - If retries < max_retries: Mark as failed (janitor will retry)
         - If retries >= max_retries: Move to dead-letter queue
+        - Track failed job count
+        - Save detailed error log
         """
+        import traceback
+        
         max_retries = get_max_retries()
         logger.warning(f"Job {job_hash} FAILED (retry {retry_count}/{max_retries}): {reason}")
+        
+        # Track failure metric
+        self._jobs_failed += 1
+        self._update_worker_metrics()
+        
+        # Save detailed error information
+        error_context = context or {}
+        error_context['worker_id'] = self.id
+        error_context['retry_count'] = retry_count
+        error_context['max_retries'] = max_retries
+        
+        # Get traceback if not provided
+        if traceback_str is None:
+            traceback_str = traceback.format_exc()
+        
+        self.s3.save_job_error_detail(
+            job_hash, 
+            error=reason, 
+            traceback=traceback_str,
+            context=error_context
+        )
         
         if retry_count >= max_retries:
             logger.error(f"Job {job_hash} exceeded max retries. Moving to dead-letter queue.")

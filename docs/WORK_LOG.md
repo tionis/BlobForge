@@ -73,3 +73,48 @@
     - Fixed `datetime.utcnow()` deprecation warnings
 - **Status:** All improvements complete. 35 tests pass.
 
+## 2026-02-04 (Quality of Life Improvements)
+- **Objective:** Implement comprehensive QoL improvements for monitoring and management.
+- **Actions:**
+    1. **Enhanced Heartbeat Metadata:**
+       - Added CPU/RAM/disk usage tracking via psutil (optional dependency)
+       - Track elapsed time, file size, original filename per job
+       - System metrics included in heartbeat updates
+    
+    2. **Richer Status Dashboard:**
+       - Redesigned `blobforge dashboard` with visual progress bars
+       - Shows filename, elapsed time, stage, CPU/RAM for processing jobs
+       - Added worker summary section with aggregate metrics
+       - Visual indicators (emojis) for job status
+    
+    3. **Job Throughput Metrics:**
+       - Workers now track: jobs_completed, jobs_failed, bytes_processed
+       - Calculate avg_processing_time and jobs_per_hour
+       - Metrics persisted in worker registry JSON
+       - `blobforge workers` command shows aggregate metrics
+    
+    4. **Job Logs / Error Details:**
+       - Errors saved to `registry/logs/{hash}/error.json`
+       - Includes full traceback and context (stage, filename, etc.)
+       - New `blobforge logs <hash>` command to view logs
+    
+    5. **New CLI Commands:**
+       - `blobforge logs <hash>` - View error details and logs
+       - `blobforge watch` - Auto-refreshing dashboard
+       - `blobforge download <hash>` - Download completed results
+       - `blobforge preview <hash>` - Preview markdown output
+       - `blobforge retry-all` - Bulk retry failed/dead jobs
+       - `blobforge clear-dead` - Purge dead-letter queue
+       - `blobforge search-queue <query>` - Find jobs by filename
+       - `blobforge cancel <hash>` - Cancel running job
+    
+    6. **Worker Management:**
+       - Enhanced `blobforge workers` output with metrics display
+       - Shows CPU/RAM, jobs completed, throughput rate
+       - Aggregate statistics across all workers
+    
+    7. **Dependencies:**
+       - Added psutil as optional dependency: `pip install blobforge[metrics]`
+       - Added `[all]` extra for full install
+    
+- **Status:** All QoL improvements complete. CLI tested and working.
