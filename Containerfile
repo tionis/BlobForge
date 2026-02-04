@@ -15,16 +15,15 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install Python Dependencies
-# 1. marker-pdf (and its torch deps)
-# 2. boto3 (for our scripts)
-RUN pip install --no-cache-dir marker-pdf boto3
+# boto3 for S3 operations (marker-pdf will be installed via package extras)
+RUN pip install --no-cache-dir boto3
 
 # Copy Package
 COPY pyproject.toml README.md ./
 COPY blobforge/ ./blobforge/
 
-# Install the package
-RUN pip install --no-cache-dir .
+# Install the package with all optional dependencies (metrics, convert)
+RUN pip install --no-cache-dir ".[all]"
 
 # Environment Variables (Override these at runtime)
 ENV BLOBFORGE_S3_BUCKET=my-pdf-bucket

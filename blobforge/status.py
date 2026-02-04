@@ -77,7 +77,7 @@ def show_status(verbose: bool = False):
     print(f"  Stale (>{stale_timeout}m): {stale_count} {'⚠️  (run janitor to recover)' if stale_count else '✓'}")
     
     if active_jobs:
-        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage':<12} {'Progress'}")
+        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage':<12} {'Details'}")
         print(f"  {'-' * 8} {'-' * 18} {'-' * 25} {'-' * 14} {'-' * 10} {'-' * 12} {'-' * 20}")
         
         for job in sorted(active_jobs, key=lambda x: x.get('age', timedelta(0)), reverse=True):
@@ -94,16 +94,34 @@ def show_status(verbose: bool = False):
             if len(filename) > 23:
                 filename = filename[:20] + "..."
             
-            # System metrics
+            # Build details string with available info
+            details_parts = []
+            
+            # Page count
+            page_count = progress.get('page_count')
+            if page_count:
+                details_parts.append(f"{page_count}pg")
+            
+            # File size
+            file_size = progress.get('file_size_formatted', '')
+            if file_size:
+                details_parts.append(file_size)
+            
+            # Image count (after conversion)
+            image_count = progress.get('image_count')
+            if image_count is not None:
+                details_parts.append(f"{image_count}img")
+            
+            # System metrics (CPU/MEM if available)
             system = progress.get('system', {})
-            cpu = system.get('cpu_percent', '-')
-            mem = system.get('memory_percent', '-')
+            cpu = system.get('cpu_percent')
+            mem = system.get('memory_percent')
+            if cpu is not None:
+                details_parts.append(f"CPU:{cpu}%")
             
-            progress_str = ""
-            if cpu != '-':
-                progress_str = f"CPU:{cpu}% MEM:{mem}%"
+            details_str = " | ".join(details_parts) if details_parts else "-"
             
-            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {stage:<12} {progress_str}")
+            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {stage:<12} {details_str}")
     
     # -------------------------------------------------------------------------
     # 3. Results
@@ -122,11 +140,14 @@ def show_status(verbose: bool = False):
     # -------------------------------------------------------------------------
     # 4. Progress Summary
     # -------------------------------------------------------------------------
-    total_jobs = total_todo + len(active_jobs) + done_count + failed_count + dead_count
+    # Note: Jobs in processing still have todo markers (by design, to prevent race conditions)
+    # So we need to subtract active_jobs from total_todo to avoid double-counting
+    unique_todo = max(0, total_todo - len(active_jobs))
+    total_jobs = unique_todo + len(active_jobs) + done_count + failed_count + dead_count
     if total_jobs > 0:
         completed_pct = (done_count / total_jobs) * 100
         failed_pct = ((failed_count + dead_count) / total_jobs) * 100
-        remaining = total_todo + len(active_jobs)
+        remaining = unique_todo + len(active_jobs)
         
         print(f"\n{'─' * 60}")
         print("[PROGRESS]")

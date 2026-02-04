@@ -40,6 +40,39 @@ from .s3_client import S3Client
 logger = logging.getLogger(__name__)
 
 
+def get_pdf_page_count(pdf_path: str) -> Optional[int]:
+    """Get page count from a PDF file."""
+    try:
+        # Try pypdf first (commonly available)
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(pdf_path)
+            return len(reader.pages)
+        except ImportError:
+            pass
+        
+        # Try PyPDF2 as fallback
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(pdf_path)
+            return len(reader.pages)
+        except ImportError:
+            pass
+        
+        # Try pdfplumber (marker dependency)
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_path) as pdf:
+                return len(pdf.pages)
+        except ImportError:
+            pass
+        
+        return None
+    except Exception as e:
+        logger.warning(f"Could not get page count: {e}")
+        return None
+
+
 def get_system_metrics() -> Dict[str, Any]:
     """Get current system metrics (CPU, RAM, disk)."""
     metrics = {}
@@ -433,10 +466,15 @@ class Worker:
                 except (ValueError, OSError):
                     file_size = 0
                 
+                # Get page count
+                page_count = get_pdf_page_count(pdf_path)
+                if page_count:
+                    logger.info(f"PDF has {page_count} pages")
+                
                 # Update heartbeat with file info
                 self.heartbeat.set_job(
                     job_hash, 
-                    progress={"stage": "downloading"},
+                    progress={"stage": "downloaded", "page_count": page_count},
                     original_filename=original_filename,
                     file_size=file_size
                 )
@@ -462,7 +500,10 @@ class Worker:
                     marker_meta = {"mock": True}
                 else:
                     md_text, images, marker_meta = self._run_marker_conversion(pdf_path)
-                    logger.info(f"Marker conversion completed: {len(md_text)} chars, {len(images)} images")
+                    # Extract page count from marker metadata if available
+                    if marker_meta and 'page_stats' in marker_meta:
+                        page_count = len(marker_meta['page_stats'])
+                    logger.info(f"Marker conversion completed: {len(md_text)} chars, {len(images)} images, {page_count or '?'} pages")
             except Exception as e:
                 logger.error(f"Marker failed: {type(e).__name__}: {e}")
                 self._handle_failure(
@@ -475,7 +516,12 @@ class Worker:
                 )
                 return
             
-            self.heartbeat.update_progress({"stage": "packaging"})
+            self.heartbeat.update_progress({
+                "stage": "packaging",
+                "page_count": page_count,
+                "image_count": len(images),
+                "output_chars": len(md_text)
+            })
             
             # Save markdown
             md_path = os.path.join(out_dir, "content.md")
