@@ -77,12 +77,12 @@ def show_status(verbose: bool = False):
     print(f"  Stale (>{stale_timeout}m): {stale_count} {'⚠️  (run janitor to recover)' if stale_count else '✓'}")
     
     if active_jobs:
-        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage ETA':<10} {'Stage':<25} {'Details'}")
-        print(f"  {'-' * 8} {'-' * 18} {'-' * 25} {'-' * 14} {'-' * 10} {'-' * 10} {'-' * 25} {'-' * 20}")
+        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<50} {'Worker':<14} {'Elapsed':<10} {'Stage ETA':<10} {'Stage':<40} {'Details'}")
+        print(f"  {'-' * 8} {'-' * 18} {'-' * 50} {'-' * 14} {'-' * 10} {'-' * 10} {'-' * 40} {'-' * 20}")
         
         for job in sorted(active_jobs, key=lambda x: x.get('age', timedelta(0)), reverse=True):
             status = "🔴 STALE" if job.get('stale') else "🟢 OK"
-            job_hash = job['hash'][:16] + "..."
+            job_hash = job['hash'][:14] + "..."
             worker = (job.get('worker', '?')[:12] + "...") if len(job.get('worker', '?')) > 12 else job.get('worker', '?')
             
             progress = job.get('progress', {}) or {}
@@ -91,8 +91,8 @@ def show_status(verbose: bool = False):
             # Enhanced progress info
             elapsed = progress.get('elapsed_formatted', format_duration(job.get('age', timedelta(0))))
             filename = progress.get('original_filename', '-')
-            if len(filename) > 23:
-                filename = filename[:20] + "..."
+            if len(filename) > 48:
+                filename = filename[:45] + "..."
             
             # Check for marker/tqdm progress (rich stage info)
             marker_progress = progress.get('marker', {})
@@ -107,10 +107,10 @@ def show_status(verbose: bool = False):
                 if tqdm_stage and tqdm_total:
                     # Show detailed marker stage: "Recognizing Text: 5/12 (42%)"
                     stage = f"{tqdm_stage}: {tqdm_current}/{tqdm_total}"
-                    if len(stage) > 23:
-                        stage = stage[:20] + "..."
+                    if len(stage) > 38:
+                        stage = stage[:35] + "..."
                 elif tqdm_stage:
-                    stage = tqdm_stage[:23] if len(tqdm_stage) > 23 else tqdm_stage
+                    stage = tqdm_stage[:38] if len(tqdm_stage) > 38 else tqdm_stage
                 
                 # Format ETA for current stage
                 if tqdm_eta is not None and tqdm_eta > 0:
@@ -149,7 +149,7 @@ def show_status(verbose: bool = False):
             
             details_str = " | ".join(details_parts) if details_parts else "-"
             
-            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {eta_str:<10} {stage:<25} {details_str}")
+            print(f"  {status:<7} {job_hash:<18} {filename:<50} {worker:<14} {elapsed:<10} {eta_str:<10} {stage:<40} {details_str}")
     
     # -------------------------------------------------------------------------
     # 3. Results
