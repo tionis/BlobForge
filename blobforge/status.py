@@ -77,8 +77,8 @@ def show_status(verbose: bool = False):
     print(f"  Stale (>{stale_timeout}m): {stale_count} {'⚠️  (run janitor to recover)' if stale_count else '✓'}")
     
     if active_jobs:
-        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage':<12} {'Details'}")
-        print(f"  {'-' * 8} {'-' * 18} {'-' * 25} {'-' * 14} {'-' * 10} {'-' * 12} {'-' * 20}")
+        print(f"\n  {'Status':<8} {'Hash':<18} {'File':<25} {'Worker':<14} {'Elapsed':<10} {'Stage':<25} {'Details'}")
+        print(f"  {'-' * 8} {'-' * 18} {'-' * 25} {'-' * 14} {'-' * 10} {'-' * 25} {'-' * 20}")
         
         for job in sorted(active_jobs, key=lambda x: x.get('age', timedelta(0)), reverse=True):
             status = "🔴 STALE" if job.get('stale') else "🟢 OK"
@@ -93,6 +93,22 @@ def show_status(verbose: bool = False):
             filename = progress.get('original_filename', '-')
             if len(filename) > 23:
                 filename = filename[:20] + "..."
+            
+            # Check for marker/tqdm progress (rich stage info)
+            marker_progress = progress.get('marker', {})
+            if marker_progress:
+                tqdm_stage = marker_progress.get('tqdm_stage', '')
+                tqdm_current = marker_progress.get('tqdm_current', 0)
+                tqdm_total = marker_progress.get('tqdm_total', 0)
+                tqdm_percent = marker_progress.get('tqdm_percent', 0)
+                
+                if tqdm_stage and tqdm_total:
+                    # Show detailed marker stage: "Recognizing Text: 5/12 (42%)"
+                    stage = f"{tqdm_stage}: {tqdm_current}/{tqdm_total}"
+                    if len(stage) > 23:
+                        stage = stage[:20] + "..."
+                elif tqdm_stage:
+                    stage = tqdm_stage[:23] if len(tqdm_stage) > 23 else tqdm_stage
             
             # Build details string with available info
             details_parts = []
@@ -115,13 +131,12 @@ def show_status(verbose: bool = False):
             # System metrics (CPU/MEM if available)
             system = progress.get('system', {})
             cpu = system.get('cpu_percent')
-            mem = system.get('memory_percent')
             if cpu is not None:
                 details_parts.append(f"CPU:{cpu}%")
             
             details_str = " | ".join(details_parts) if details_parts else "-"
             
-            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {stage:<12} {details_str}")
+            print(f"  {status:<8} {job_hash:<18} {filename:<25} {worker:<14} {elapsed:<10} {stage:<25} {details_str}")
     
     # -------------------------------------------------------------------------
     # 3. Results

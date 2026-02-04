@@ -8,6 +8,7 @@ Features:
 - Improved sharding (2-char prefix = 256 shards)
 - Race-condition-free job acquisition (todo marker kept until completion)
 - Direct marker Python API (models stay loaded in memory)
+- Rich progress tracking via tqdm interception
 """
 import os
 import sys
@@ -21,7 +22,7 @@ import tempfile
 import threading
 import logging
 from datetime import datetime
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, Callable
 
 # Optional psutil for system metrics
 try:
@@ -38,6 +39,105 @@ from .config import (
 from .s3_client import S3Client
 
 logger = logging.getLogger(__name__)
+
+# Global progress callback for tqdm interception
+_tqdm_progress_callback: Optional[Callable[[dict], None]] = None
+
+
+def set_tqdm_progress_callback(callback: Optional[Callable[[dict], None]]):
+    """Set a callback function to receive tqdm progress updates."""
+    global _tqdm_progress_callback
+    _tqdm_progress_callback = callback
+
+
+def _install_tqdm_hook():
+    """
+    Install a hook to intercept tqdm progress updates.
+    This patches tqdm.tqdm to call our callback on each update.
+    """
+    try:
+        import tqdm
+        import tqdm.auto
+        
+        # Store original tqdm class
+        OriginalTqdm = tqdm.tqdm
+        
+        class ProgressTrackingTqdm(OriginalTqdm):
+            """Custom tqdm that reports progress to our callback."""
+            
+            def __init__(self, *args, **kwargs):
+                # Initialize our attributes BEFORE calling super().__init__
+                # because super().__init__ may call refresh()
+                self._last_callback_time = 0
+                self._callback_interval = 2.0  # Update callback at most every 2 seconds
+                super().__init__(*args, **kwargs)
+            
+            def update(self, n=1):
+                result = super().update(n)
+                self._report_progress()
+                return result
+            
+            def refresh(self, *args, **kwargs):
+                result = super().refresh(*args, **kwargs)
+                self._report_progress()
+                return result
+            
+            def _report_progress(self):
+                """Report progress to callback if set."""
+                global _tqdm_progress_callback
+                if _tqdm_progress_callback is None:
+                    return
+                
+                # Check if we have the attribute (safety check)
+                if not hasattr(self, '_last_callback_time'):
+                    return
+                
+                # Rate limit callbacks
+                now = time.time()
+                if now - self._last_callback_time < self._callback_interval:
+                    return
+                self._last_callback_time = now
+                
+                try:
+                    # Extract progress info
+                    progress_data = {
+                        'tqdm_stage': str(self.desc) if self.desc else 'Processing',
+                        'tqdm_current': self.n,
+                        'tqdm_total': self.total,
+                        'tqdm_percent': round(100 * self.n / self.total, 1) if self.total else 0,
+                        'tqdm_rate': round(self.format_dict.get('rate', 0) or 0, 2),
+                        'tqdm_elapsed': round(self.format_dict.get('elapsed', 0) or 0, 1),
+                    }
+                    # Add ETA if available
+                    if self.total and self.n < self.total and progress_data['tqdm_rate'] > 0:
+                        remaining = (self.total - self.n) / progress_data['tqdm_rate']
+                        progress_data['tqdm_eta'] = round(remaining, 1)
+                    
+                    _tqdm_progress_callback(progress_data)
+                except Exception as e:
+                    # Don't let callback errors break tqdm
+                    pass
+        
+        # Monkey-patch tqdm
+        tqdm.tqdm = ProgressTrackingTqdm
+        tqdm.auto.tqdm = ProgressTrackingTqdm
+        
+        # Also patch tqdm.std if it exists
+        if hasattr(tqdm, 'std'):
+            tqdm.std.tqdm = ProgressTrackingTqdm
+        
+        logger.debug("Installed tqdm progress hook")
+        return True
+    except ImportError:
+        logger.debug("tqdm not available, progress tracking disabled")
+        return False
+    except Exception as e:
+        logger.warning(f"Failed to install tqdm hook: {e}")
+        return False
+
+
+# Install the hook early, before marker imports tqdm
+_tqdm_hook_installed = _install_tqdm_hook()
 
 
 def get_pdf_page_count(pdf_path: str) -> Optional[int]:
@@ -126,6 +226,7 @@ class HeartbeatThread(threading.Thread):
         self.file_size: Optional[int] = None
         self.running = True
         self._lock = threading.Lock()
+        self._tqdm_progress: Optional[dict] = None  # Latest tqdm progress
         
         # Initialize CPU percent measurement
         if HAS_PSUTIL:
@@ -140,6 +241,7 @@ class HeartbeatThread(threading.Thread):
             self.job_start_time = time.time() if job_hash else None
             self.original_filename = original_filename
             self.file_size = file_size
+            self._tqdm_progress = None  # Reset tqdm progress for new job
     
     def update_progress(self, progress: dict):
         """Update progress information for current job."""
@@ -148,6 +250,11 @@ class HeartbeatThread(threading.Thread):
                 self.progress.update(progress)
             else:
                 self.progress = progress
+    
+    def update_tqdm_progress(self, tqdm_data: dict):
+        """Update tqdm progress (called from tqdm hook)."""
+        with self._lock:
+            self._tqdm_progress = tqdm_data
     
     def stop(self):
         """Stop the heartbeat thread."""
@@ -173,6 +280,10 @@ class HeartbeatThread(threading.Thread):
         if self.file_size:
             data['file_size_bytes'] = self.file_size
             data['file_size_formatted'] = self._format_size(self.file_size)
+        
+        # Add tqdm progress (marker stages)
+        if self._tqdm_progress:
+            data['marker'] = self._tqdm_progress
         
         # Add system metrics
         data['system'] = get_system_metrics()
@@ -268,6 +379,9 @@ class Worker:
         # Start heartbeat thread
         self.heartbeat = HeartbeatThread(s3_client, self.id)
         self.heartbeat.start()
+        
+        # Set up tqdm progress callback to route to heartbeat
+        set_tqdm_progress_callback(self.heartbeat.update_tqdm_progress)
         
         logger.info(f"Worker {self.id} initialized.")
         self.cleanup_previous_session()
