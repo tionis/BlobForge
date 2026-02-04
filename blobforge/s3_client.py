@@ -230,6 +230,38 @@ class S3Client:
             print(f"Error listing todo: {e}")
             return []
 
+    def list_todo_batch(self, priority: str, max_keys: int = 50) -> List[str]:
+        """
+        List job hashes in a todo queue tier (batch/broad scan).
+        
+        Optimized for finding any available jobs quickly without shard filtering.
+        Used by workers for efficient job discovery.
+        
+        Args:
+            priority: Priority tier (e.g., "1_critical")
+            max_keys: Maximum number of jobs to return (default 50)
+        
+        Returns:
+            List of job hashes available in this priority queue
+        """
+        full_prefix = f"{S3_PREFIX_TODO}/{priority}/"
+        
+        if self.mock:
+            return ["mock_hash_123"]
+        
+        try:
+            response = self.s3.list_objects_v2(
+                Bucket=S3_BUCKET, 
+                Prefix=full_prefix, 
+                MaxKeys=max_keys
+            )
+            if 'Contents' not in response:
+                return []
+            return [obj['Key'].split('/')[-1] for obj in response['Contents']]
+        except Exception as e:
+            print(f"Error listing todo batch: {e}")
+            return []
+
     def list_processing(self) -> List[Dict[str, Any]]:
         """List all jobs currently being processed."""
         return self.list_objects(S3_PREFIX_PROCESSING + "/")

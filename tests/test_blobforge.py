@@ -107,6 +107,31 @@ class TestS3ClientWithBoto3(unittest.TestCase):
         result = self.client.get_object_json("test/key")
         self.assertIsNone(result)
 
+    def test_list_todo_batch_returns_hashes(self):
+        """list_todo_batch should return job hashes from S3 response."""
+        self.mock_s3.list_objects_v2.return_value = {
+            'Contents': [
+                {'Key': 'pdf/queue/todo/3_normal/abc123'},
+                {'Key': 'pdf/queue/todo/3_normal/def456'},
+                {'Key': 'pdf/queue/todo/3_normal/ghi789'},
+            ]
+        }
+        
+        result = self.client.list_todo_batch("3_normal", max_keys=50)
+        self.assertEqual(result, ['abc123', 'def456', 'ghi789'])
+        
+        # Verify it was called with correct params
+        call_kwargs = self.mock_s3.list_objects_v2.call_args[1]
+        self.assertEqual(call_kwargs['MaxKeys'], 50)
+        self.assertIn('3_normal/', call_kwargs['Prefix'])
+
+    def test_list_todo_batch_returns_empty_on_no_contents(self):
+        """list_todo_batch should return empty list when no jobs."""
+        self.mock_s3.list_objects_v2.return_value = {}  # No 'Contents' key
+        
+        result = self.client.list_todo_batch("3_normal")
+        self.assertEqual(result, [])
+
 
 class TestJobStateChecks(unittest.TestCase):
     """Test job state checking logic."""

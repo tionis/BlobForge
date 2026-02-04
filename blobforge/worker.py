@@ -89,17 +89,27 @@ class Worker:
     3. Implements heartbeat mechanism for faster stale detection
     4. Tracks retries and respects MAX_RETRIES limit
     5. Uses marker Python API directly (models stay in memory)
+    6. Optimized polling: broad scan first, sharding only for contention
     """
     
     # Lazy-loaded marker models (shared across all jobs)
     _marker_models: Optional[Any] = None
     _marker_converter: Optional[Any] = None
     
+    # Polling optimization constants
+    POLL_BATCH_SIZE = 50  # Max jobs to fetch per priority in broad scan
+    MAX_LOCK_ATTEMPTS = 5  # Max attempts to lock before moving to next priority
+    
     def __init__(self, s3_client: S3Client):
         self.s3 = s3_client
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
         self.current_priority: Optional[str] = None
+        
+        # Polling optimization state
+        self._empty_poll_count = 0  # Track consecutive empty polls for backoff
+        self._priority_cache: dict = {}  # Cache of {priority: (has_jobs, timestamp)}
+        self._cache_ttl = 120  # Seconds before priority cache expires (2 min)
         
         # Register worker in S3
         logger.info(f"Registering worker {self.id}...")
@@ -149,27 +159,47 @@ class Worker:
         """
         Attempt to acquire a job from the queue.
         
-        Uses 2-character prefix sharding (256 shards) for better distribution
-        and reduced contention compared to single-character sharding.
+        Optimized polling strategy:
+        1. Do a broad scan (no shard filter) to find available jobs quickly
+        2. Shuffle candidates to distribute load across workers
+        3. Only use sharding implicitly via hash distribution
+        
+        This reduces S3 requests from 5*256 worst case to just 5 LIST calls
+        when jobs are scarce, while still providing good distribution.
         
         Returns the job hash if acquired, None otherwise.
         """
-        # Generate random 2-char hex prefix for sharding
-        hex_chars = "0123456789abcdef"
-        shard_prefix = random.choice(hex_chars) + random.choice(hex_chars)
+        import time as _time
         
         for priority in PRIORITIES:
-            todos = self.s3.list_todo(priority, prefix_filter=shard_prefix)
-            if not todos:
+            # Check priority cache to skip empty queues
+            if self._is_priority_cached_empty(priority):
                 continue
             
+            # Broad scan: list jobs without shard filter (much faster)
+            todos = self.s3.list_todo_batch(priority, max_keys=self.POLL_BATCH_SIZE)
+            
+            if not todos:
+                # Cache that this priority is empty
+                self._cache_priority_empty(priority)
+                continue
+            
+            # Shuffle to distribute work across workers
+            random.shuffle(todos)
+            
+            # Try to acquire a job (with limited attempts to avoid blocking)
+            attempts = 0
             for job_hash in todos:
+                if attempts >= self.MAX_LOCK_ATTEMPTS:
+                    break
+                
                 # Check if job exceeds retry limit (in dead-letter queue)
                 if self.s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
                     logger.debug(f"Skipping {job_hash}: In dead-letter queue")
                     continue
                 
                 logger.debug(f"Attempting to lock {job_hash} ({priority})...")
+                attempts += 1
                 
                 # Try to acquire lock atomically
                 if self.s3.acquire_lock(job_hash, self.id, priority):
@@ -202,12 +232,52 @@ class Worker:
                     self.current_priority = priority
                     self.heartbeat.set_job(job_hash)
                     
+                    # Reset empty poll counter on success
+                    self._empty_poll_count = 0
+                    
                     return job_hash
                 else:
                     # Lock already held by another worker
                     continue
         
+        # No jobs found - track for backoff
+        self._empty_poll_count += 1
         return None
+    
+    def _is_priority_cached_empty(self, priority: str) -> bool:
+        """Check if a priority queue is cached as empty."""
+        import time as _time
+        if priority not in self._priority_cache:
+            return False
+        has_jobs, cached_at = self._priority_cache[priority]
+        if _time.time() - cached_at > self._cache_ttl:
+            # Cache expired
+            del self._priority_cache[priority]
+            return False
+        return not has_jobs
+    
+    def _cache_priority_empty(self, priority: str):
+        """Cache that a priority queue is empty."""
+        import time as _time
+        self._priority_cache[priority] = (False, _time.time())
+    
+    def get_poll_backoff(self) -> float:
+        """
+        Get adaptive backoff delay based on consecutive empty polls.
+        
+        Returns delay in seconds with exponential backoff and jitter.
+        Tuned for long-running jobs (avg ~6 hours).
+        """
+        if self._empty_poll_count == 0:
+            return 0
+        
+        # Exponential backoff: 5s, 10s, 20s, 40s, 80s, 160s, 320s, 640s, 1280s, 2560s, max 3600s (60 min)
+        base_delay = min(3600, 5 * (2 ** min(self._empty_poll_count - 1, 9)))
+        
+        # Add jitter (±25%)
+        jitter = base_delay * 0.25 * (random.random() * 2 - 1)
+        
+        return max(5, base_delay + jitter)
     
     def process(self, job_hash: str):
         """
@@ -456,7 +526,10 @@ def main():
                 if args.run_once:
                     logger.info("No jobs found.")
                     break
-                time.sleep(10)
+                # Use adaptive backoff when no jobs found
+                backoff = worker.get_poll_backoff()
+                logger.debug(f"No jobs found, backing off for {backoff:.1f}s (empty polls: {worker._empty_poll_count})")
+                time.sleep(backoff)
     except KeyboardInterrupt:
         logger.info("Interrupted by user.")
     finally:
