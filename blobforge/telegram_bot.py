@@ -491,13 +491,14 @@ def format_dashboard_message(s3: S3Client) -> str:
             
             file_size = progress.get('file_size_formatted', '')
             if file_size:
-                details.append(escape_markdown_v2(file_size))
+                details.append(file_size)  # Don't escape here - escaped below
             
             system = progress.get('system', {})
             cpu = system.get('cpu_percent')
             if cpu is not None:
                 details.append(f"CPU:{cpu}%")
             
+            # Escape the joined string once (not individual parts)
             details_str = escape_markdown_v2(" ".join(details)) if details else ""
             
             lines.append(f"  {status_icon} `{job_hash}` {filename}")
