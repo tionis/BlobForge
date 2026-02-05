@@ -78,7 +78,7 @@ def get_tags(rel_path: str) -> List[str]:
     return tags
 
 
-def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = False):
+def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = False, original_name: Optional[str] = None):
     """
     Ingest PDF files or directories and queue them for processing.
     
@@ -87,6 +87,8 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
                Files must be PDFs. Directories are scanned recursively.
         priority: Queue priority for new jobs.
         dry_run: If True, don't make any changes to S3.
+        original_name: Optional original filename to use for metadata.
+                       Useful when ingesting renamed/temporary files.
     
     This function is state-aware and checks all queue states before adding a job:
     - Skips if already done (output exists)
@@ -144,6 +146,9 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         rel_path = os.path.relpath(full_path, base_path)
         stats["found"] += 1
         
+        # Use original_name if provided (e.g., from telegram upload), else use detected filename
+        display_name = original_name if original_name else file
+        
         # Metadata Prep
         tags = get_tags(rel_path)
         
@@ -182,7 +187,7 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
                     pull_lfs_file(base_path, rel_path)
                     size = os.path.getsize(full_path)
                     metadata = {
-                        "original-name": file,
+                        "original-name": display_name,
                         "tags": json.dumps(tags),
                         "size": str(size)
                     }
@@ -195,7 +200,7 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             else:
                 size = os.path.getsize(full_path)
                 metadata = {
-                    "original-name": file,
+                    "original-name": display_name,
                     "tags": json.dumps(tags),
                     "size": str(size)
                 }

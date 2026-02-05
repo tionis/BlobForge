@@ -15,6 +15,7 @@ from .config import (
     WORKER_ID, get_worker_metadata, get_s3_supports_conditional_writes,
     get_stale_timeout_minutes
 )
+from .utils import sanitize_metadata, decode_metadata
 
 
 class S3Client:
@@ -81,7 +82,11 @@ class S3Client:
         self.s3.download_file(S3_BUCKET, key, local_path)
 
     def upload_file(self, local_path: str, key: str, metadata: Optional[Dict[str, str]] = None) -> None:
-        """Upload a local file to S3 with optional metadata."""
+        """Upload a local file to S3 with optional metadata.
+        
+        Note: Metadata values are automatically URL-encoded to ensure ASCII compatibility
+        with S3. Use get_object_metadata() to retrieve decoded values.
+        """
         if self.dry_run or self.mock:
             meta_str = json.dumps(metadata) if metadata else "{}"
             print(f"[DRY-RUN/MOCK] Uploading {local_path} -> s3://{S3_BUCKET}/{key} (Meta: {meta_str})")
@@ -89,7 +94,8 @@ class S3Client:
         
         extra_args = {}
         if metadata:
-            extra_args['Metadata'] = metadata
+            # Sanitize metadata values to ASCII-safe strings
+            extra_args['Metadata'] = sanitize_metadata(metadata)
         
         self.s3.upload_file(local_path, S3_BUCKET, key, ExtraArgs=extra_args if extra_args else None)
 
@@ -144,12 +150,18 @@ class S3Client:
         return None
 
     def get_object_metadata(self, key: str) -> Dict[str, str]:
-        """Get S3 object metadata (x-amz-meta-* headers)."""
+        """Get S3 object metadata (x-amz-meta-* headers).
+        
+        Note: Metadata values are automatically URL-decoded to restore original
+        Unicode characters that were encoded during upload.
+        """
         if self.mock:
             return {"original-name": "mock.pdf", "tags": '["mock"]', "size": "100"}
         try:
             response = self.s3.head_object(Bucket=S3_BUCKET, Key=key)
-            return response.get('Metadata', {})
+            raw_metadata = response.get('Metadata', {})
+            # Decode metadata values from ASCII-safe encoding
+            return decode_metadata(raw_metadata)
         except Exception as e:
             print(f"Error getting metadata for {key}: {e}")
             return {}

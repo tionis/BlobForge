@@ -19,6 +19,99 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from blobforge.config import PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
 from blobforge.config import S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
 from blobforge.s3_client import S3Client
+from blobforge.utils import (
+    sanitize_metadata_value, decode_metadata_value,
+    sanitize_metadata, decode_metadata, safe_filename
+)
+
+
+class TestMetadataEncoding(unittest.TestCase):
+    """Test S3 metadata encoding/decoding utilities."""
+    
+    def test_sanitize_ascii_string(self):
+        """ASCII strings should remain mostly unchanged (URL-encoded)."""
+        result = sanitize_metadata_value("hello.pdf")
+        # Simple alphanumeric + dot should be encoded
+        self.assertIsInstance(result, str)
+        decoded = decode_metadata_value(result)
+        self.assertEqual(decoded, "hello.pdf")
+    
+    def test_sanitize_unicode_apostrophe(self):
+        """Unicode curly apostrophe should be encoded."""
+        # This is the character that caused the original bug: U+2019 (')
+        original = "Anna's Archive.pdf"
+        encoded = sanitize_metadata_value(original)
+        
+        # Encoded should be ASCII-safe
+        self.assertTrue(encoded.isascii())
+        
+        # Should decode back to original
+        decoded = decode_metadata_value(encoded)
+        self.assertEqual(decoded, original)
+    
+    def test_sanitize_various_unicode(self):
+        """Various Unicode characters should be handled."""
+        test_cases = [
+            "Günter's Café.pdf",  # German umlaut and accent
+            "日本語.pdf",  # Japanese
+            "Привет.pdf",  # Cyrillic
+            "🎉 Party.pdf",  # Emoji
+            "naïve résumé.pdf",  # French accents
+        ]
+        
+        for original in test_cases:
+            with self.subTest(original=original):
+                encoded = sanitize_metadata_value(original)
+                self.assertTrue(encoded.isascii(), f"Encoded '{original}' should be ASCII")
+                decoded = decode_metadata_value(encoded)
+                self.assertEqual(decoded, original)
+    
+    def test_sanitize_empty_string(self):
+        """Empty strings should be handled gracefully."""
+        self.assertEqual(sanitize_metadata_value(""), "")
+        self.assertEqual(decode_metadata_value(""), "")
+    
+    def test_sanitize_none(self):
+        """None should be handled gracefully."""
+        self.assertIsNone(sanitize_metadata_value(None))
+        self.assertIsNone(decode_metadata_value(None))
+    
+    def test_sanitize_metadata_dict(self):
+        """Full metadata dictionary should be sanitized."""
+        original = {
+            "original-name": "Anna's Archive.pdf",
+            "tags": '["café", "naïve"]',
+            "size": "12345"
+        }
+        
+        sanitized = sanitize_metadata(original)
+        
+        # All values should be ASCII
+        for key, value in sanitized.items():
+            self.assertTrue(value.isascii(), f"Value for '{key}' should be ASCII")
+        
+        # Should decode back
+        decoded = decode_metadata(sanitized)
+        self.assertEqual(decoded["original-name"], "Anna's Archive.pdf")
+    
+    def test_sanitize_metadata_none(self):
+        """None metadata should return None."""
+        self.assertIsNone(sanitize_metadata(None))
+        self.assertIsNone(decode_metadata(None))
+    
+    def test_decode_already_decoded_string(self):
+        """Decoding an already-decoded string should be safe."""
+        original = "simple.pdf"
+        # Decoding a non-encoded string should return it unchanged
+        decoded = decode_metadata_value(original)
+        self.assertEqual(decoded, original)
+    
+    def test_safe_filename(self):
+        """Test filename sanitization."""
+        self.assertEqual(safe_filename("hello/world.pdf"), "hello_world.pdf")
+        self.assertEqual(safe_filename("file:name.pdf"), "file_name.pdf")
+        self.assertEqual(safe_filename("normal.pdf"), "normal.pdf")
+        self.assertEqual(safe_filename(""), "")
 
 
 class TestS3ClientMock(unittest.TestCase):
