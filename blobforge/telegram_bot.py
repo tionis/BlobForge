@@ -475,14 +475,13 @@ def format_dashboard_message(s3: S3Client) -> str:
                 
                 if tqdm_eta is not None and tqdm_eta > 0:
                     if tqdm_eta < 60:
-                        eta_str = f" ~{int(tqdm_eta)}s"
+                        eta_str = f" \\~{int(tqdm_eta)}s"
                     elif tqdm_eta < 3600:
-                        eta_str = f" ~{int(tqdm_eta // 60)}m"
+                        eta_str = f" \\~{int(tqdm_eta // 60)}m"
                     else:
-                        eta_str = f" ~{int(tqdm_eta // 3600)}h"
+                        eta_str = f" \\~{int(tqdm_eta // 3600)}h"
             
             stage_escaped = escape_markdown_v2(truncate(stage, 25))
-            eta_escaped = escape_markdown_v2(eta_str)
             
             # Build details (pages, size, CPU)
             details = []
@@ -499,10 +498,10 @@ def format_dashboard_message(s3: S3Client) -> str:
             if cpu is not None:
                 details.append(f"CPU:{cpu}%")
             
-            details_str = " ".join(details) if details else ""
+            details_str = escape_markdown_v2(" ".join(details)) if details else ""
             
             lines.append(f"  {status_icon} `{job_hash}` {filename}")
-            lines.append(f"      ⏱️{elapsed} │ {stage_escaped}{eta_escaped}")
+            lines.append(f"      ⏱️{elapsed} \\| {stage_escaped}{eta_str}")
             if details_str:
                 lines.append(f"      📎 {details_str}")
         
@@ -1841,7 +1840,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if not results:
             await update.message.reply_text(
-                f"🔍 No results found for: `{query}`",
+                f"🔍 No results found for: `{escape_markdown_v2(query)}`",
                 parse_mode=ParseMode.MARKDOWN_V2,
                 reply_markup=InlineKeyboardMarkup([[build_back_button()]])
             )
@@ -1849,7 +1848,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         lines = [
             f"🔍 *Search Results*",
-            f"Query: `{query}`",
+            f"Query: `{escape_markdown_v2(query)}`",
             f"Found: `{len(results)}` matches",
             f"",
         ]
@@ -1858,7 +1857,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             job_hash = entry['hash']
             paths = entry.get('paths', [])
             filename = truncate(paths[0], 35) if paths else job_hash[:12]
-            lines.append(f"• `{job_hash[:12]}...` \\- {escape_markdown_v2(filename)}")
+            lines.append(f"• `{job_hash[:12]}\\.\\.\\.` \\- {escape_markdown_v2(filename)}")
         
         # Build keyboard with job selection
         keyboard = []
