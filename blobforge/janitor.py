@@ -163,6 +163,24 @@ def run_janitor(dry_run: bool = False, verbose: bool = False):
     
     if dry_run:
         print("\n[DRY-RUN] No changes were made.")
+    
+    return stats
+
+
+def run_janitor_quiet(dry_run: bool = False) -> dict:
+    """
+    Run janitor without printing output, just return stats.
+    Useful for programmatic access (e.g., Telegram bot).
+    """
+    import io
+    import contextlib
+    
+    # Capture stdout to suppress prints
+    f = io.StringIO()
+    with contextlib.redirect_stdout(f):
+        stats = run_janitor(dry_run=dry_run, verbose=False)
+    
+    return stats
 
 
 def main():

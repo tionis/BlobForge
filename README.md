@@ -296,6 +296,38 @@ blobforge convert document.pdf
 blobforge convert document.pdf --output ./results/
 ```
 
+### 11. Telegram Bot
+
+Run an interactive Telegram bot for remote management. Supports all major operations through an inline keyboard interface.
+
+**Setup:**
+```bash
+# Install telegram dependencies
+uv pip install -e '.[telegram]'
+
+# Set required environment variables
+export BLOBFORGE_TELEGRAM_TOKEN="your-bot-token-from-botfather"
+export BLOBFORGE_TELEGRAM_ALLOWED_USERS="123456789,987654321"  # Comma-separated user IDs
+
+# Start the bot
+blobforge telegram
+```
+
+**Features:**
+- 📊 **Dashboard** - View system status, queue counts, active jobs
+- 📤 **Upload PDFs** - Send PDF files directly to the bot for ingestion
+- 📋 **Queue Stats** - Browse pending jobs by priority with pagination
+- 👷 **Workers** - View registered workers and their metrics
+- ⚙️ **Config** - View remote configuration
+- 🔍 **Search** - Find jobs by filename pattern
+- 🧹 **Janitor** - Trigger cleanup of stale jobs
+- 📦 **Manifest** - View tag statistics and counts
+- 🔄 **Retry/Cancel** - Manage individual jobs with confirmation dialogs
+- 📥 **Download** - Retrieve completed job results
+
+**Getting your Telegram User ID:**
+Message [@userinfobot](https://t.me/userinfobot) on Telegram to get your user ID.
+
 ## ⚙️ Configuration
 
 Configuration is split into two categories:

@@ -1685,6 +1685,12 @@ def main():
     p_cancel.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_cancel.set_defaults(func=cmd_cancel)
     
+    # =========================================================================
+    # Telegram Bot
+    # =========================================================================
+    p_telegram = subparsers.add_parser("telegram", help="Run the Telegram bot for remote management")
+    p_telegram.set_defaults(func=cmd_telegram)
+    
     if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(1)
@@ -1692,6 +1698,20 @@ def main():
     args = parser.parse_args()
     result = args.func(args)
     sys.exit(result if result else 0)
+
+
+def cmd_telegram(args):
+    """Run the Telegram bot for remote management."""
+    try:
+        from .telegram_bot import run_bot
+    except ImportError as e:
+        print("Error: Telegram bot dependencies not installed.")
+        print("Install with: uv pip install -e '.[telegram]'")
+        print(f"\nMissing module: {e}")
+        return 1
+    
+    run_bot()
+    return 0
 
 
 if __name__ == "__main__":

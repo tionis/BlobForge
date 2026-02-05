@@ -34,6 +34,9 @@ convert = [
 metrics = [
     "psutil>=5.9.0",
 ]
+telegram = [
+    "python-telegram-bot[job-queue]>=21.0",
+]
 dev = [
     "pytest>=7.0.0",
     "psutil>=5.9.0",
@@ -41,6 +44,7 @@ dev = [
 all = [
     "marker-pdf>=0.2.0",
     "psutil>=5.9.0",
+    "python-telegram-bot[job-queue]>=21.0",
 ]
 
 [project.scripts]
