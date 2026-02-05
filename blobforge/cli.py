@@ -16,7 +16,8 @@ import argparse
 
 from .config import (
     S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
-    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY,
+    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY,
+    PRIORITIES, DEFAULT_PRIORITY,
     get_remote_config, save_remote_config, refresh_remote_config, WORKER_ID,
     get_stale_timeout_minutes
 )
@@ -1522,6 +1523,99 @@ def cmd_cancel(args):
     return 0
 
 
+def cmd_remove(args):
+    """Remove a job from the system completely."""
+    s3 = S3Client(dry_run=args.dry_run)
+    job_hash = args.hash
+    
+    # 1. Check if currently processing - ERROR
+    if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
+        print(f"Error: Job {job_hash} is currently being processed.")
+        print("Use 'blobforge cancel' first to stop the job, then remove.")
+        return 1
+    
+    # 2. Check if already done - ERROR (unless --force)
+    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
+    if s3.exists(done_key):
+        if not args.force:
+            print(f"Error: Job {job_hash} has already been processed.")
+            print("The converted output exists in the done store.")
+            print("Use --force to remove anyway (will delete converted output too).")
+            return 1
+        print(f"Warning: Removing completed job and its output...")
+    
+    removed = []
+    not_found = []
+    
+    # 3. Remove from todo queues (all priorities)
+    for priority in PRIORITIES:
+        todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
+        if s3.exists(todo_key):
+            print(f"  Removing from todo queue ({priority})...")
+            s3.delete_object(todo_key)
+            removed.append(f"todo/{priority}")
+    
+    # 4. Remove from failed queue
+    failed_key = f"{S3_PREFIX_FAILED}/{job_hash}"
+    if s3.exists(failed_key):
+        print(f"  Removing from failed queue...")
+        s3.delete_object(failed_key)
+        removed.append("failed")
+    
+    # 5. Remove from dead-letter queue
+    dead_key = f"{S3_PREFIX_DEAD}/{job_hash}"
+    if s3.exists(dead_key):
+        print(f"  Removing from dead-letter queue...")
+        s3.delete_object(dead_key)
+        removed.append("dead")
+    
+    # 6. Remove from done (if --force)
+    if args.force and s3.exists(done_key):
+        print(f"  Removing completed output...")
+        s3.delete_object(done_key)
+        removed.append("done")
+    
+    # 7. Remove from raw store
+    raw_key = f"{S3_PREFIX_RAW}/{job_hash}.pdf"
+    if s3.exists(raw_key):
+        print(f"  Removing source PDF from raw store...")
+        s3.delete_object(raw_key)
+        removed.append("raw")
+    else:
+        not_found.append("raw")
+    
+    # 8. Remove from manifest
+    print(f"  Removing from manifest...")
+    if not s3.remove_from_manifest([job_hash]):
+        print("  Warning: Failed to update manifest. Entry may still exist.")
+    else:
+        removed.append("manifest")
+    
+    # 9. Remove logs if they exist
+    logs_prefix = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/"
+    try:
+        logs = s3.list_objects(logs_prefix)
+        if logs:
+            print(f"  Removing {len(logs)} log file(s)...")
+            for log_obj in logs:
+                s3.delete_object(log_obj['Key'])
+            removed.append("logs")
+    except Exception:
+        pass  # Logs are optional
+    
+    if not removed and not_found:
+        print(f"\nJob {job_hash} was not found in any queue or store.")
+        return 1
+    
+    print(f"\n--- Remove Summary ---")
+    print(f"  Job: {job_hash[:16]}...")
+    print(f"  Removed from: {', '.join(removed) if removed else 'nothing'}")
+    if args.dry_run:
+        print("  [DRY-RUN] No changes were made")
+    
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
@@ -1684,6 +1778,14 @@ def main():
     p_cancel.add_argument("--priority", choices=PRIORITIES, help="Priority when re-queued")
     p_cancel.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_cancel.set_defaults(func=cmd_cancel)
+    
+    # Remove
+    p_remove = subparsers.add_parser("remove", help="Remove a job from queues, raw store, and manifest")
+    p_remove.add_argument("hash", help="SHA256 hash of the PDF")
+    p_remove.add_argument("--force", action="store_true", 
+                          help="Also remove completed jobs (deletes converted output)")
+    p_remove.add_argument("--dry-run", action="store_true", help="Don't make changes")
+    p_remove.set_defaults(func=cmd_remove)
     
     # =========================================================================
     # Telegram Bot

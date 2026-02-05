@@ -1039,6 +1039,131 @@ class S3Client:
             print(f"Failed to save manifest: {e}")
             return False
     
+    def remove_from_manifest(self, file_hashes: List[str], max_retries: int = 10) -> bool:
+        """
+        Remove entries from the manifest with optimistic locking.
+        
+        Args:
+            file_hashes: List of SHA256 hashes to remove from manifest
+            max_retries: Number of retries on conflict
+            
+        Returns:
+            True if successful, False on persistent conflict
+        """
+        if self.dry_run:
+            print(f"[DRY-RUN] Would remove {len(file_hashes)} entries from manifest")
+            return True
+        
+        if not file_hashes:
+            return True
+        
+        # Check if provider supports conditional writes
+        if not get_s3_supports_conditional_writes():
+            return self.force_remove_from_manifest(file_hashes)
+        
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        hashes_to_remove = set(file_hashes)
+        
+        for attempt in range(max_retries):
+            # 1. Read current manifest + ETag
+            manifest, etag = self.get_manifest_with_etag()
+            
+            # 2. Remove entries
+            removed_count = 0
+            for h in hashes_to_remove:
+                if h in manifest.get('entries', {}):
+                    del manifest['entries'][h]
+                    removed_count += 1
+            
+            if removed_count == 0:
+                # Nothing to remove
+                return True
+            
+            manifest['updated_at'] = datetime.now().isoformat() + "Z"
+            
+            # 3. Write with conditional (If-Match)
+            try:
+                if self.mock:
+                    return True
+                
+                kwargs = {
+                    'Bucket': S3_BUCKET,
+                    'Key': key,
+                    'Body': json.dumps(manifest, indent=2),
+                    'ContentType': 'application/json'
+                }
+                
+                if etag:
+                    kwargs['IfMatch'] = etag
+                else:
+                    # Manifest doesn't exist, nothing to remove
+                    return True
+                
+                self.s3.put_object(**kwargs)
+                return True
+                
+            except self.ClientError as e:
+                error_code = e.response.get('Error', {}).get('Code', '')
+                if error_code in ['PreconditionFailed', '412']:
+                    import random
+                    delay = min(0.1 * (2 ** attempt) + random.uniform(0, 0.1), 5.0)
+                    print(f"Manifest conflict (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s...")
+                    time.sleep(delay)
+                    continue
+                raise
+        
+        print(f"Failed to update manifest after {max_retries} attempts")
+        return False
+    
+    def force_remove_from_manifest(self, file_hashes: List[str]) -> bool:
+        """
+        Remove entries from manifest without optimistic locking.
+        
+        WARNING: This can cause data loss if concurrent updates are happening.
+        
+        Returns:
+            True if successful
+        """
+        if self.dry_run:
+            print(f"[DRY-RUN] Would force remove {len(file_hashes)} entries from manifest")
+            return True
+        
+        if not file_hashes:
+            return True
+        
+        key = f"{S3_PREFIX_REGISTRY}/manifest.json"
+        hashes_to_remove = set(file_hashes)
+        
+        # Read current manifest
+        manifest = self.get_manifest()
+        
+        # Remove entries
+        removed_count = 0
+        for h in hashes_to_remove:
+            if h in manifest.get('entries', {}):
+                del manifest['entries'][h]
+                removed_count += 1
+        
+        if removed_count == 0:
+            return True
+        
+        manifest['updated_at'] = datetime.now().isoformat() + "Z"
+        
+        try:
+            if self.mock:
+                return True
+            
+            self.s3.put_object(
+                Bucket=S3_BUCKET,
+                Key=key,
+                Body=json.dumps(manifest, indent=2),
+                ContentType='application/json'
+            )
+            return True
+        except Exception as e:
+            print(f"Failed to remove from manifest: {e}")
+            return False
+
     def lookup_by_path(self, path: str) -> Optional[str]:
         """
         Look up a file hash by its path.

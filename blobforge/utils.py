@@ -3,10 +3,24 @@ BlobForge Utilities - Common helper functions.
 
 Provides:
 - S3 metadata encoding/decoding (ASCII-safe)
+- File hash caching via extended attributes (xattrs)
 - Other shared utilities
 """
+import os
+import hashlib
 import urllib.parse
 from typing import Dict, Optional
+
+# xattr support is optional - works on Linux/macOS with ext4, btrfs, xfs, zfs, etc.
+try:
+    import xattr
+    XATTR_AVAILABLE = True
+except ImportError:
+    XATTR_AVAILABLE = False
+
+# Extended attribute keys following the specification in docs/file_hashing_via_xattrs.md
+XATTR_HASH_KEY = "user.checksum.sha256"
+XATTR_MTIME_KEY = "user.checksum.mtime"
 
 
 def sanitize_metadata_value(value: str) -> str:
@@ -128,3 +142,139 @@ def safe_filename(filename: str) -> str:
         result = result.replace(char, replacement)
     
     return result
+
+
+def get_cached_hash(filepath: str, algorithm: str = "sha256") -> Optional[str]:
+    """
+    Retrieve a cached file hash from extended attributes if available and valid.
+    
+    Follows the specification in docs/file_hashing_via_xattrs.md:
+    1. Get current file mtime
+    2. Read cached mtime and hash from xattrs
+    3. Validate cached mtime matches current mtime
+    4. Return hash on cache hit, None on cache miss
+    
+    Args:
+        filepath: Path to the file to check
+        algorithm: Hash algorithm (currently only 'sha256' supported)
+        
+    Returns:
+        Cached hash if valid, None if cache miss or unavailable
+    """
+    if not XATTR_AVAILABLE:
+        return None
+    
+    if algorithm != "sha256":
+        return None
+    
+    try:
+        # 1. Get current file state
+        current_stat = os.stat(filepath)
+        current_mtime = str(int(current_stat.st_mtime))
+        
+        # 2. Fetch cached attributes
+        cached_mtime = xattr.getxattr(filepath, XATTR_MTIME_KEY).decode('utf-8')
+        cached_hash = xattr.getxattr(filepath, XATTR_HASH_KEY).decode('utf-8')
+        
+        # 3. Validate cache
+        if cached_mtime == current_mtime:
+            # Cache hit - validate hash format (lowercase hex, 64 chars for sha256)
+            if len(cached_hash) == 64 and all(c in '0123456789abcdef' for c in cached_hash):
+                return cached_hash
+        
+        # Cache miss - mtime mismatch means file changed since hash was computed
+        return None
+        
+    except (OSError, IOError, KeyError):
+        # Attribute missing, permission denied, or FS doesn't support xattr
+        return None
+
+
+def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256") -> bool:
+    """
+    Store a computed file hash in extended attributes for future caching.
+    
+    Follows the specification in docs/file_hashing_via_xattrs.md:
+    - Only stores if the file wasn't modified during hash computation
+    - Fails silently if xattrs not supported or permission denied
+    
+    Args:
+        filepath: Path to the file
+        file_hash: The computed hash value (lowercase hex)
+        algorithm: Hash algorithm (currently only 'sha256' supported)
+        
+    Returns:
+        True if successfully cached, False otherwise
+    """
+    if not XATTR_AVAILABLE:
+        return False
+    
+    if algorithm != "sha256":
+        return False
+    
+    try:
+        # Get current mtime to store alongside the hash
+        current_stat = os.stat(filepath)
+        current_mtime = str(int(current_stat.st_mtime))
+        
+        # Write both attributes
+        xattr.setxattr(filepath, XATTR_HASH_KEY, file_hash.encode('utf-8'))
+        xattr.setxattr(filepath, XATTR_MTIME_KEY, current_mtime.encode('utf-8'))
+        
+        return True
+        
+    except (OSError, IOError):
+        # Permission denied (EPERM/EACCES) or FS doesn't support xattr (EOPNOTSUPP)
+        # Fail silently as per specification
+        return False
+
+
+def compute_sha256_with_cache(filepath: str) -> str:
+    """
+    Compute SHA256 hash of a file, using xattr cache when available.
+    
+    This is the main entry point for hash computation that implements
+    the full caching logic from docs/file_hashing_via_xattrs.md:
+    
+    1. Check for valid cached hash (via get_cached_hash)
+    2. On cache miss, compute hash with atomicity checks
+    3. Store computed hash in cache (via set_cached_hash)
+    
+    Args:
+        filepath: Path to the file to hash
+        
+    Returns:
+        SHA256 hash as lowercase hexadecimal string
+    """
+    # 1. Try cache lookup first
+    cached = get_cached_hash(filepath)
+    if cached:
+        return cached
+    
+    # 2. Cache miss - compute hash with atomicity check
+    # Record mtime before reading to ensure file wasn't modified during computation
+    try:
+        pre_stat = os.stat(filepath)
+        pre_mtime = pre_stat.st_mtime
+    except OSError:
+        pre_mtime = None
+    
+    # Compute the hash
+    sha256_hash = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for byte_block in iter(lambda: f.read(65536), b""):  # 64KB blocks
+            sha256_hash.update(byte_block)
+    computed_hash = sha256_hash.hexdigest()
+    
+    # 3. Post-calculation check and cache write
+    try:
+        post_stat = os.stat(filepath)
+        post_mtime = post_stat.st_mtime
+        
+        # Only cache if file wasn't modified during read (atomicity check)
+        if pre_mtime is not None and pre_mtime == post_mtime:
+            set_cached_hash(filepath, computed_hash)
+    except OSError:
+        pass  # Can't verify atomicity, skip caching
+    
+    return computed_hash

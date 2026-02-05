@@ -37,14 +37,19 @@ metrics = [
 telegram = [
     "python-telegram-bot[job-queue]>=21.0",
 ]
+xattr = [
+    "xattr>=1.0.0",
+]
 dev = [
     "pytest>=7.0.0",
     "psutil>=5.9.0",
+    "xattr>=1.0.0",
 ]
 all = [
     "marker-pdf>=0.2.0",
     "psutil>=5.9.0",
     "python-telegram-bot[job-queue]>=21.0",
+    "xattr>=1.0.0",
 ]
 
 [project.scripts]

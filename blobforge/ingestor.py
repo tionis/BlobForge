@@ -3,7 +3,7 @@ BlobForge Ingestor - Scans directories for PDFs and queues them for processing.
 
 Supports:
 - Git LFS pointer files (extracts SHA256 without downloading)
-- Regular PDF files (computes SHA256 hash)
+- Regular PDF files (computes SHA256 hash with xattr caching)
 - State-aware queueing (checks all queue states before adding)
 """
 import os
@@ -20,6 +20,7 @@ from .config import (
     S3_PREFIX_PROCESSING, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
 )
 from .s3_client import S3Client
+from .utils import compute_sha256_with_cache
 
 # Regex for Git LFS pointer file
 LFS_POINTER_REGEX = re.compile(r"oid sha256:([a-f0-9]{64})")
@@ -39,12 +40,17 @@ def get_lfs_hash(filepath: str) -> Optional[str]:
 
 
 def compute_sha256(filepath: str) -> str:
-    """Compute SHA256 hash of a file."""
-    sha256_hash = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
+    """
+    Compute SHA256 hash of a file with xattr caching support.
+    
+    Uses the caching mechanism defined in docs/file_hashing_via_xattrs.md:
+    - Checks for cached hash in user.checksum.sha256 xattr
+    - Validates cache using file mtime stored in user.checksum.mtime
+    - On cache miss, computes hash and stores it for future use
+    
+    This significantly speeds up re-ingestion of unchanged files.
+    """
+    return compute_sha256_with_cache(filepath)
 
 
 def pull_lfs_file(repo_path: str, filepath: str):
