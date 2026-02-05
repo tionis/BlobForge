@@ -264,6 +264,74 @@ def get_status_emoji(status: str) -> str:
     return status_map.get(status.lower(), "❓")
 
 
+# Maximum hash length for callback data (Telegram limit is 64 bytes)
+# "job:status:" = 11 chars, so we have 53 chars for hash, use 16 for safety
+CALLBACK_HASH_LEN = 16
+
+
+def resolve_hash(s3: S3Client, partial_hash: str) -> Optional[str]:
+    """
+    Resolve a partial hash to a full hash by searching S3 locations.
+    
+    Searches in order: done, processing, todo queues, failed, dead, raw.
+    Returns the first matching full hash or None if not found.
+    """
+    # If it's already a full hash, return it
+    if len(partial_hash) == 64:
+        return partial_hash
+    
+    # Search done
+    for key in s3.list_keys(f"{S3_PREFIX_DONE}/"):
+        if key.endswith('.zip'):
+            full_hash = key.replace(f"{S3_PREFIX_DONE}/", "").replace(".zip", "")
+            if full_hash.startswith(partial_hash):
+                return full_hash
+    
+    # Search processing
+    for key in s3.list_keys(f"{S3_PREFIX_PROCESSING}/"):
+        if not key.endswith('/'):
+            full_hash = key.replace(f"{S3_PREFIX_PROCESSING}/", "")
+            if full_hash.startswith(partial_hash):
+                return full_hash
+    
+    # Search todo queues
+    for prio in PRIORITIES:
+        for key in s3.list_keys(f"{S3_PREFIX_TODO}/{prio}/"):
+            if not key.endswith('/'):
+                full_hash = key.replace(f"{S3_PREFIX_TODO}/{prio}/", "")
+                if full_hash.startswith(partial_hash):
+                    return full_hash
+    
+    # Search failed
+    for key in s3.list_keys(f"{S3_PREFIX_FAILED}/"):
+        if not key.endswith('/'):
+            full_hash = key.replace(f"{S3_PREFIX_FAILED}/", "")
+            if full_hash.startswith(partial_hash):
+                return full_hash
+    
+    # Search dead
+    for key in s3.list_keys(f"{S3_PREFIX_DEAD}/"):
+        if not key.endswith('/'):
+            full_hash = key.replace(f"{S3_PREFIX_DEAD}/", "")
+            if full_hash.startswith(partial_hash):
+                return full_hash
+    
+    # Search raw
+    for key in s3.list_keys(f"{S3_PREFIX_RAW}/"):
+        if key.endswith('.pdf'):
+            full_hash = key.replace(f"{S3_PREFIX_RAW}/", "").replace(".pdf", "")
+            if full_hash.startswith(partial_hash):
+                return full_hash
+    
+    # Search manifest
+    manifest = s3.get_manifest()
+    for full_hash in manifest.get('entries', {}).keys():
+        if full_hash.startswith(partial_hash):
+            return full_hash
+    
+    return None
+
+
 # =============================================================================
 # Keyboard Builders
 # =============================================================================
@@ -337,38 +405,39 @@ def build_pagination_keyboard(
 def build_job_actions_keyboard(job_hash: str, status: str, priority: str = None) -> InlineKeyboardMarkup:
     """Build action keyboard for a specific job."""
     keyboard = []
+    h = job_hash[:CALLBACK_HASH_LEN]  # Shortened hash for callback data
     
     if status == "done" or status == "completed":
         keyboard.append([
-            InlineKeyboardButton(f"{EMOJI['download']} Download", callback_data=f"{CB_DOWNLOAD}:{job_hash}"),
-            InlineKeyboardButton(f"{EMOJI['preview']} Preview", callback_data=f"{CB_PREVIEW}:{job_hash}"),
+            InlineKeyboardButton(f"{EMOJI['download']} Download", callback_data=f"{CB_DOWNLOAD}:{h}"),
+            InlineKeyboardButton(f"{EMOJI['preview']} Preview", callback_data=f"{CB_PREVIEW}:{h}"),
         ])
     elif status == "queued":
         keyboard.append([
-            InlineKeyboardButton(f"📊 Change Priority", callback_data=f"{CB_PRIORITY}:select:{job_hash}"),
+            InlineKeyboardButton(f"📊 Change Priority", callback_data=f"{CB_PRIORITY}:select:{h}"),
         ])
     elif status == "processing":
         keyboard.append([
-            InlineKeyboardButton(f"{EMOJI['cancel']} Cancel Job", callback_data=f"{CB_CANCEL}:confirm:{job_hash}"),
+            InlineKeyboardButton(f"{EMOJI['cancel']} Cancel Job", callback_data=f"{CB_CANCEL}:confirm:{h}"),
         ])
     elif status == "failed":
         keyboard.append([
-            InlineKeyboardButton(f"{EMOJI['retry']} Retry Now", callback_data=f"{CB_RETRY}:job:{job_hash}"),
+            InlineKeyboardButton(f"{EMOJI['retry']} Retry Now", callback_data=f"{CB_RETRY}:job:{h}"),
         ])
     elif status == "dead":
         keyboard.append([
-            InlineKeyboardButton(f"{EMOJI['retry']} Retry", callback_data=f"{CB_RETRY}:dead:{job_hash}"),
+            InlineKeyboardButton(f"{EMOJI['retry']} Retry", callback_data=f"{CB_RETRY}:dead:{h}"),
         ])
     
     # Always show logs button
     keyboard.append([
-        InlineKeyboardButton(f"{EMOJI['logs']} View Logs", callback_data=f"{CB_LOGS}:{job_hash}"),
+        InlineKeyboardButton(f"{EMOJI['logs']} View Logs", callback_data=f"{CB_LOGS}:{h}"),
     ])
     
     # Back and refresh
     keyboard.append([
         build_back_button(),
-        build_refresh_button(f"{CB_JOB}:status:{job_hash}"),
+        build_refresh_button(f"{CB_JOB}:status:{h}"),
     ])
     
     return InlineKeyboardMarkup(keyboard)
@@ -377,15 +446,16 @@ def build_job_actions_keyboard(job_hash: str, status: str, priority: str = None)
 def build_priority_keyboard(job_hash: str) -> InlineKeyboardMarkup:
     """Build priority selection keyboard."""
     keyboard = []
+    h = job_hash[:CALLBACK_HASH_LEN]  # Shortened hash for callback data
     
     for prio in PRIORITIES:
         emoji = PRIORITY_EMOJI.get(prio, "⚪")
         label = prio.split("_")[1].capitalize()
         keyboard.append([
-            InlineKeyboardButton(f"{emoji} {label}", callback_data=f"{CB_PRIORITY}:set:{job_hash}:{prio}")
+            InlineKeyboardButton(f"{emoji} {label}", callback_data=f"{CB_PRIORITY}:set:{h}:{prio}")
         ])
     
-    keyboard.append([build_back_button(f"{CB_JOB}:status:{job_hash}")])
+    keyboard.append([build_back_button(f"{CB_JOB}:status:{h}")])
     
     return InlineKeyboardMarkup(keyboard)
 
@@ -1114,7 +1184,7 @@ async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         paths = entry.get('paths', [])
         filename = truncate(paths[0], 25) if paths else job_hash[:8]
         keyboard.append([
-            InlineKeyboardButton(f"📄 {filename}", callback_data=f"{CB_JOB}:status:{job_hash}")
+            InlineKeyboardButton(f"📄 {filename}", callback_data=f"{CB_JOB}:status:{job_hash[:CALLBACK_HASH_LEN]}")
         ])
     
     keyboard.append([build_back_button()])
@@ -1410,9 +1480,13 @@ _Send a PDF to add it for processing_
         # === Job Status ===
         elif action == CB_JOB:
             sub = parts[1] if len(parts) > 1 else "status"
-            job_hash = parts[2] if len(parts) > 2 else None
+            partial_hash = parts[2] if len(parts) > 2 else None
             
-            if sub == "status" and job_hash:
+            if sub == "status" and partial_hash:
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 message, status = format_job_status_message(s3, job_hash)
                 keyboard = build_job_actions_keyboard(job_hash, status)
                 await query.edit_message_text(
@@ -1424,17 +1498,25 @@ _Send a PDF to add it for processing_
         # === Priority Change ===
         elif action == CB_PRIORITY:
             sub = parts[1] if len(parts) > 1 else ""
-            job_hash = parts[2] if len(parts) > 2 else None
+            partial_hash = parts[2] if len(parts) > 2 else None
             
-            if sub == "select" and job_hash:
+            if sub == "select" and partial_hash:
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 await query.edit_message_text(
                     f"📊 *Change Priority*\n\nJob: `{job_hash[:16]}\\.\\.\\.`\n\nSelect new priority:",
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=build_priority_keyboard(job_hash)
                 )
             elif sub == "set" and len(parts) >= 4:
-                job_hash = parts[2]
+                partial_hash = parts[2]
                 new_prio = parts[3]
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 
                 # Find current priority
                 current_prio = None
@@ -1511,8 +1593,12 @@ _Send a PDF to add it for processing_
                 )
             
             elif sub == "job" or sub == "dead":
-                job_hash = parts[2] if len(parts) > 2 else None
-                if job_hash:
+                partial_hash = parts[2] if len(parts) > 2 else None
+                if partial_hash:
+                    job_hash = resolve_hash(s3, partial_hash)
+                    if not job_hash:
+                        await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                        return
                     if sub == "dead":
                         dead_key = f"{S3_PREFIX_DEAD}/{job_hash}"
                         if s3.exists(dead_key):
@@ -1538,22 +1624,30 @@ _Send a PDF to add it for processing_
         # === Cancel ===
         elif action == CB_CANCEL:
             sub = parts[1] if len(parts) > 1 else ""
-            job_hash = parts[2] if len(parts) > 2 else None
+            partial_hash = parts[2] if len(parts) > 2 else None
             
-            if sub == "confirm" and job_hash:
+            if sub == "confirm" and partial_hash:
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 await query.edit_message_text(
                     f"🚫 *Cancel Job?*\n\n"
                     f"Job: `{job_hash[:16]}\\.\\.\\.`\n\n"
                     f"This will move the job back to the queue\\.",
                     parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_markup=build_confirmation_keyboard("cancel_job", job_hash)
+                    reply_markup=build_confirmation_keyboard("cancel_job", job_hash[:CALLBACK_HASH_LEN])
                 )
         
         # === Logs ===
         elif action == CB_LOGS:
-            job_hash = parts[1] if len(parts) > 1 else None
+            partial_hash = parts[1] if len(parts) > 1 else None
             
-            if job_hash:
+            if partial_hash:
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 logs = s3.list_job_logs(job_hash)
                 
                 if not logs:
@@ -1581,7 +1675,7 @@ _Send a PDF to add it for processing_
                         message += f"*Error:* `{error_escaped}`\n"
                         
                         tb = error_data.get('traceback', '')
-                        if tb and tb != 'NoneType: None\n':
+                        if tb and tb != 'NoneType: None\\n':
                             tb_escaped = escape_markdown_v2(tb[:800])
                             message += f"\n*Traceback:*\n```\n{tb_escaped}\n```"
                     else:
@@ -1592,15 +1686,19 @@ _Send a PDF to add it for processing_
                     message,
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=InlineKeyboardMarkup([
-                        [build_back_button(f"{CB_JOB}:status:{job_hash}")]
+                        [build_back_button(f"{CB_JOB}:status:{job_hash[:CALLBACK_HASH_LEN]}")]
                     ])
                 )
         
         # === Download ===
         elif action == CB_DOWNLOAD:
-            job_hash = parts[1] if len(parts) > 1 else None
+            partial_hash = parts[1] if len(parts) > 1 else None
             
-            if job_hash:
+            if partial_hash:
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
                 if s3.exists(done_key):
                     await query.answer("Preparing download...")
@@ -1630,9 +1728,13 @@ _Send a PDF to add it for processing_
         
         # === Preview ===
         elif action == CB_PREVIEW:
-            job_hash = parts[1] if len(parts) > 1 else None
+            partial_hash = parts[1] if len(parts) > 1 else None
             
-            if job_hash:
+            if partial_hash:
+                job_hash = resolve_hash(s3, partial_hash)
+                if not job_hash:
+                    await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                    return
                 done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
                 if s3.exists(done_key):
                     await query.answer("Loading preview...")
@@ -1677,8 +1779,8 @@ _Send a PDF to add it for processing_
                         "\n".join(lines),
                         parse_mode=ParseMode.MARKDOWN_V2,
                         reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton(f"{EMOJI['download']} Download", callback_data=f"{CB_DOWNLOAD}:{job_hash}")],
-                            [build_back_button(f"{CB_JOB}:status:{job_hash}")]
+                            [InlineKeyboardButton(f"{EMOJI['download']} Download", callback_data=f"{CB_DOWNLOAD}:{job_hash[:CALLBACK_HASH_LEN]}")],
+                            [build_back_button(f"{CB_JOB}:status:{job_hash[:CALLBACK_HASH_LEN]}")]
                         ])
                     )
                 else:
@@ -1733,7 +1835,11 @@ _Send a PDF to add it for processing_
                     )
                 
                 elif confirm_action == "cancel_job":
-                    job_hash = confirm_data
+                    partial_hash = confirm_data
+                    job_hash = resolve_hash(s3, partial_hash)
+                    if not job_hash:
+                        await query.answer(f"Job not found: {partial_hash}", show_alert=True)
+                        return
                     if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
                         lock_data = s3.get_lock_info(job_hash)
                         priority = lock_data.get('priority', DEFAULT_PRIORITY) if lock_data else DEFAULT_PRIORITY
@@ -1867,7 +1973,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paths = entry.get('paths', [])
             filename = truncate(paths[0], 25) if paths else job_hash[:8]
             keyboard.append([
-                InlineKeyboardButton(f"📄 {filename}", callback_data=f"{CB_JOB}:status:{job_hash}")
+                InlineKeyboardButton(f"📄 {filename}", callback_data=f"{CB_JOB}:status:{job_hash[:CALLBACK_HASH_LEN]}")
             ])
         
         keyboard.append([build_back_button()])
