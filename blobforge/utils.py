@@ -190,7 +190,7 @@ def get_cached_hash(filepath: str, algorithm: str = "sha256") -> Optional[str]:
         return None
 
 
-def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256") -> bool:
+def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256", mtime: Optional[float] = None) -> bool:
     """
     Store a computed file hash in extended attributes for future caching.
     
@@ -202,6 +202,8 @@ def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256") ->
         filepath: Path to the file
         file_hash: The computed hash value (lowercase hex)
         algorithm: Hash algorithm (currently only 'sha256' supported)
+        mtime: Optional timestamp to store. If None, current file mtime is used.
+               Providing this is recommended to avoid race conditions.
         
     Returns:
         True if successfully cached, False otherwise
@@ -213,13 +215,18 @@ def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256") ->
         return False
     
     try:
-        # Get current mtime to store alongside the hash
-        current_stat = os.stat(filepath)
-        current_mtime = str(int(current_stat.st_mtime))
+        if mtime is None:
+            # Get current mtime to store alongside the hash
+            current_stat = os.stat(filepath)
+            current_mtime_val = current_stat.st_mtime
+        else:
+            current_mtime_val = mtime
+            
+        current_mtime_str = str(int(current_mtime_val))
         
         # Write both attributes
         xattr.setxattr(filepath, XATTR_HASH_KEY, file_hash.encode('utf-8'))
-        xattr.setxattr(filepath, XATTR_MTIME_KEY, current_mtime.encode('utf-8'))
+        xattr.setxattr(filepath, XATTR_MTIME_KEY, current_mtime_str.encode('utf-8'))
         
         return True
         
@@ -273,7 +280,7 @@ def compute_sha256_with_cache(filepath: str) -> str:
         
         # Only cache if file wasn't modified during read (atomicity check)
         if pre_mtime is not None and pre_mtime == post_mtime:
-            set_cached_hash(filepath, computed_hash)
+            set_cached_hash(filepath, computed_hash, mtime=post_mtime)
     except OSError:
         pass  # Can't verify atomicity, skip caching
     

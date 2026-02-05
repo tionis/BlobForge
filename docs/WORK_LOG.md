@@ -137,3 +137,44 @@
        - Changed to install `.[all]` to include psutil for system metrics
     
 - **Status:** Progress tracking and ETA display complete. Tests passing.
+    
+
+    
+## 2026-02-05 (File Hash Caching via Xattrs)
+    
+- **Objective:** Implement persistent file hash caching using filesystem extended attributes.
+    
+- **Actions:**
+    
+    1. **Specification Alignment:**
+    
+       - Reviewed `docs/file_hashing_via_xattrs.md` and Go reference implementation.
+    
+       - Implemented logic in `blobforge/utils.py` following the standard.
+    
+    2. **Xattr Cache Implementation:**
+    
+       - Added `get_cached_hash` and `set_cached_hash` with mtime validation.
+    
+       - Updated `compute_sha256_with_cache` to use atomicity checks (pre/post stat comparison).
+    
+       - Stored mtime as integer seconds string for cross-language compatibility.
+    
+    3. **Ingestor Optimization:**
+    
+       - Updated `blobforge/ingestor.py` to check xattr cache before computing hashes.
+    
+       - Optimized UI logging: "Computing hash..." is now only shown on cache miss.
+    
+       - Verified that redundant cache checks are safe and maintain correct logging.
+    
+    4. **Verification:**
+    
+       - Created `tests/test_xattr_hashing.py` to verify caching logic, mtime validation, and modification detection.
+    
+       - Created `tests/test_ingest_logging.py` to verify UI logging behavior.
+    
+       - Both tests passing with `uv run`.
+    
+- **Status:** Xattr caching implemented and verified. Ingestor performance significantly improved for large directories.
+    

@@ -20,7 +20,7 @@ from .config import (
     S3_PREFIX_PROCESSING, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
 )
 from .s3_client import S3Client
-from .utils import compute_sha256_with_cache
+from .utils import compute_sha256_with_cache, get_cached_hash
 
 # Regex for Git LFS pointer file
 LFS_POINTER_REGEX = re.compile(r"oid sha256:([a-f0-9]{64})")
@@ -172,8 +172,13 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
                         continue
             except Exception:
                 continue
-            print(f"Found non-LFS PDF: {rel_path}. Computing hash...")
-            file_hash = compute_sha256(full_path)
+            
+            cached_hash = get_cached_hash(full_path)
+            if cached_hash:
+                file_hash = cached_hash
+            else:
+                print(f"Found non-LFS PDF: {rel_path}. Computing hash...")
+                file_hash = compute_sha256(full_path)
         
         print(f"Found: {rel_path} -> {file_hash[:8]}...")
         
