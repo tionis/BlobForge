@@ -455,7 +455,7 @@ def format_dashboard_message(s3: S3Client) -> str:
                 entry = s3.lookup_by_hash(job['hash'])
                 if entry and entry.get('paths'):
                     filename = os.path.basename(entry['paths'][0])
-            filename = escape_markdown_v2(truncate(filename, 20)) if filename else "\\-"
+            filename = escape_markdown_v2(truncate(filename, 30)) if filename else "\\-"
             
             # Get stage info with marker/tqdm progress
             stage = progress.get('stage', '-')
@@ -481,7 +481,7 @@ def format_dashboard_message(s3: S3Client) -> str:
                     else:
                         eta_str = f" \\~{int(tqdm_eta // 3600)}h"
             
-            stage_escaped = escape_markdown_v2(truncate(stage, 25))
+            stage_escaped = escape_markdown_v2(truncate(stage, 35))
             
             # Build details (pages, size, CPU)
             details = []

@@ -409,7 +409,66 @@ uv run python -m unittest tests.test_blobforge -v
 python -m pytest tests/ -v
 ```
 
-## 🔮 Future Roadmap
+## � Telegram Bot Integration
+
+BlobForge includes a fully interactive Telegram bot for remote monitoring and management.
+
+### Setup
+
+1. Create a bot via [@BotFather](https://t.me/BotFather) and get your bot token
+2. Get your Telegram user ID (send `/start` to [@userinfobot](https://t.me/userinfobot))
+3. Set environment variables:
+
+```bash
+export BLOBFORGE_TELEGRAM_TOKEN="your-bot-token"
+export BLOBFORGE_TELEGRAM_ALLOWED_USERS="123456789,987654321"  # Comma-separated user IDs
+```
+
+4. Install with Telegram support and run:
+
+```bash
+uv pip install -e ".[telegram]"
+blobforge telegram
+```
+
+### Features
+
+| Feature | Description |
+| :--- | :--- |
+| **Dashboard** | Real-time system overview with queue stats, active jobs, progress |
+| **PDF Upload** | Send a PDF file to ingest it directly into the queue |
+| **Job Status** | Look up any job by hash - see stage, ETA, CPU usage |
+| **Search** | Find jobs by filename or tag |
+| **Priority** | Change job priority (critical → background) |
+| **Workers** | View active workers with throughput metrics |
+| **Config** | View and update remote configuration |
+| **Janitor** | Trigger stale job recovery |
+| **Download** | Get converted results directly in chat |
+| **Preview** | Peek at markdown output without downloading |
+| **Retry/Cancel** | Manage failed or stuck jobs |
+| **Dead Letter** | Review and retry jobs that exceeded max retries |
+
+### Commands
+
+```
+/start      - Main menu with inline keyboard navigation
+/dashboard  - System status overview
+/queue      - Detailed queue statistics
+/workers    - List active workers
+/config     - View remote configuration
+/search     - Search by filename
+/status     - Check job status by hash
+/janitor    - Run stale job recovery
+/help       - Show help
+```
+
+### Security
+
+- Only users listed in `BLOBFORGE_TELEGRAM_ALLOWED_USERS` can interact with the bot
+- Unauthorized users receive no response
+- All actions are logged with user ID
+
+## �🔮 Future Roadmap
 
 *   **Metrics/Monitoring:** Prometheus metrics export for job duration, success rate
 *   **Batching:** Support for tarball ingestion to process thousands of small files efficiently
