@@ -177,4 +177,42 @@
        - Both tests passing with `uv run`.
     
 - **Status:** Xattr caching implemented and verified. Ingestor performance significantly improved for large directories.
+
+## 2026-02-08 (Worker Startup Recovery Retry Semantics)
+- **Objective:** Prevent infinite crash/restart loops from reprocessing the same job with `retry=0`.
+- **Actions:**
+    1. Updated `blobforge/worker.py` startup recovery logic (`cleanup_previous_session`):
+       - Recovered processing locks now increment retry count from lock metadata.
+       - Recovered jobs are requeued with structured todo marker metadata (`retries`, `queued_at`, `recovered_from`).
+       - Jobs exceeding retry budget during recovery are moved directly to dead-letter queue.
+       - Added explicit cleanup of todo markers for dead-lettered recovered jobs.
+    2. Added unit tests in `tests/test_worker_recovery.py`:
+       - Verifies recovered jobs are requeued with incremented retries.
+       - Verifies over-budget recovered jobs are dead-lettered and not requeued.
+       - Verifies locks owned by other workers are ignored.
+    3. Updated architecture documentation:
+       - `DESIGN.md` section `4.2.1`
+       - `docs/worker_startup_recovery.md` design note for startup recovery retry semantics
+    4. Updated `TODO.md` completed items and added a repository finding in `AGENTS.md`.
+- **Status:** Recovery logic now treats startup-recovered locks as failed attempts, closing the observed retry reset loop.
+
+## 2026-02-08 (Signal-Aware Graceful Worker Shutdown)
+- **Objective:** Ensure worker shutdown catches normal termination signals and requeues in-flight jobs immediately.
+- **Actions:**
+    1. Updated `blobforge/worker.py`:
+       - Added catchable signal registration/restoration helpers for worker loops.
+       - Added `run_worker_loop(...)` shared runtime with signal-aware graceful exit.
+       - Added `_requeue_active_job(...)` used by shutdown to move active job back to todo and release lock.
+       - Extended `shutdown(...)` with `requeue_current_job` behavior.
+    2. Updated `blobforge/cli.py`:
+       - `cmd_worker` now delegates to `worker.run_worker_loop(...)` so CLI worker path uses the same graceful signal handling.
+    3. Added tests in `tests/test_worker_shutdown.py`:
+       - Verifies shutdown requeues active job with preserved retries and recovery metadata.
+       - Verifies no-op requeue when no current job is active.
+       - Verifies loop interruption triggers shutdown with requeue intent.
+    4. Added/updated documentation:
+       - `docs/worker_graceful_shutdown.md`
+       - `DESIGN.md` worker section (`4.2.7`) for signal-aware graceful shutdown semantics.
+       - Updated `TODO.md` and `AGENTS.md` findings.
+- **Status:** Worker shutdown now handles catchable signals and requeues active jobs without waiting for stale-lock recovery.
     

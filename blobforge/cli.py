@@ -392,32 +392,10 @@ def cmd_janitor(args):
 def cmd_worker(args):
     """Start a worker to process jobs."""
     from . import worker as worker_module
-    import time
-    import logging
-    
-    logger = logging.getLogger(__name__)
     
     client = S3Client(dry_run=args.dry_run)
     w = worker_module.Worker(client)
-    
-    logger.info(f"Worker {w.id} started. Polling for jobs...")
-    
-    try:
-        while True:
-            job = w.acquire_job()
-            if job:
-                w.process(job)
-                if args.run_once:
-                    break
-            else:
-                if args.run_once:
-                    logger.info("No jobs found.")
-                    break
-                time.sleep(10)
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user.")
-    finally:
-        w.shutdown()
+    return worker_module.run_worker_loop(w, run_once=args.run_once, idle_sleep=10)
 
 
 def cmd_dashboard(args):

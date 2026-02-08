@@ -17,6 +17,7 @@ import json
 import shutil
 import random
 import argparse
+import signal
 import zipfile
 import tempfile
 import threading
@@ -48,6 +49,42 @@ def set_tqdm_progress_callback(callback: Optional[Callable[[dict], None]]):
     """Set a callback function to receive tqdm progress updates."""
     global _tqdm_progress_callback
     _tqdm_progress_callback = callback
+
+
+def _signal_name(signum: int) -> str:
+    """Return a stable signal name for logging."""
+    try:
+        return signal.Signals(signum).name
+    except Exception:
+        return f"signal {signum}"
+
+
+def _install_shutdown_handlers(handler: Callable[[int, Any], None]) -> Dict[int, Any]:
+    """
+    Install signal handlers for graceful shutdown.
+    Returns previous handlers for restoration.
+    """
+    previous_handlers: Dict[int, Any] = {}
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            previous_handlers[sig] = signal.getsignal(sig)
+            signal.signal(sig, handler)
+        except (ValueError, OSError, RuntimeError):
+            # Non-main thread or unsupported platform/context.
+            continue
+    return previous_handlers
+
+
+def _restore_shutdown_handlers(previous_handlers: Dict[int, Any]) -> None:
+    """Restore signal handlers saved by _install_shutdown_handlers()."""
+    for sig, previous in previous_handlers.items():
+        try:
+            signal.signal(sig, previous)
+        except (ValueError, OSError, RuntimeError):
+            continue
 
 
 def _install_tqdm_hook():
@@ -393,7 +430,9 @@ class Worker:
         """
         logger.info(f"Worker {self.id}: Checking for stale locks from previous session...")
         jobs = self.s3.list_processing()
-        count = 0
+        max_retries = get_max_retries()
+        recovered_count = 0
+        dead_count = 0
         
         for job in jobs:
             key = job['Key']
@@ -407,15 +446,49 @@ class Worker:
             if data.get('worker') == self.id:
                 job_hash = key.split("/")[-1]
                 priority = data.get('priority', DEFAULT_PRIORITY)
-                logger.info(f"Recovering crashed job {job_hash} (Priority: {priority})")
+                try:
+                    previous_retries = int(data.get('retries', 0))
+                except (TypeError, ValueError):
+                    previous_retries = 0
+                retry_count = previous_retries + 1
                 
-                # Restore to todo queue (the todo marker might still exist due to our fix)
-                self.s3.move_to_todo(job_hash, priority, increment_retry=False)
+                if retry_count > max_retries:
+                    logger.warning(
+                        f"Recovered crashed job {job_hash} exceeded retries "
+                        f"({retry_count}/{max_retries}). Moving to dead-letter queue."
+                    )
+                    self.s3.mark_dead(
+                        job_hash,
+                        "Worker restarted while job was processing",
+                        retry_count
+                    )
+                    # Remove any pending todo marker for permanently failed jobs.
+                    for p in PRIORITIES:
+                        self.s3.delete_object(f"{S3_PREFIX_TODO}/{p}/{job_hash}")
+                    dead_count += 1
+                else:
+                    logger.info(
+                        f"Recovering crashed job {job_hash} "
+                        f"(Priority: {priority}, retry: {retry_count}/{max_retries})"
+                    )
+                    todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
+                    todo_data = self.s3.get_object_json(todo_key)
+                    marker_content = todo_data if isinstance(todo_data, dict) else {}
+                    marker_content.update({
+                        "retries": retry_count,
+                        "queued_at": int(time.time() * 1000),
+                        "recovered_from": "worker_restart",
+                    })
+                    self.s3.put_object(todo_key, json.dumps(marker_content))
+                    recovered_count += 1
+                
                 self.s3.release_lock(job_hash)
-                count += 1
         
-        if count > 0:
-            logger.info(f"Recovered {count} jobs.")
+        if recovered_count > 0 or dead_count > 0:
+            if recovered_count > 0:
+                logger.info(f"Recovered {recovered_count} jobs.")
+            if dead_count > 0:
+                logger.info(f"Moved {dead_count} recovered jobs to dead-letter queue.")
         else:
             logger.debug("No stale locks found.")
     
@@ -857,17 +930,132 @@ class Worker:
         
         return text, images, meta
     
-    def shutdown(self):
+    def _requeue_active_job(self, reason: str = "graceful_shutdown") -> bool:
+        """
+        Requeue the currently active job and release its processing lock.
+        
+        Used during graceful shutdown so an interrupted in-flight job can be
+        picked up quickly by another worker without waiting for stale timeout.
+        """
+        job_hash = self.current_job
+        if not job_hash:
+            return False
+        
+        lock_info = self.s3.get_lock_info(job_hash) or {}
+        priority = self.current_priority or lock_info.get('priority', DEFAULT_PRIORITY)
+        
+        try:
+            lock_retries = int(lock_info.get('retries', 0))
+        except (TypeError, ValueError):
+            lock_retries = 0
+        
+        todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
+        todo_data = self.s3.get_object_json(todo_key)
+        marker_content = todo_data if isinstance(todo_data, dict) else {}
+        
+        try:
+            marker_retries = int(marker_content.get('retries', 0))
+        except (TypeError, ValueError):
+            marker_retries = 0
+        
+        marker_content.update({
+            "retries": max(lock_retries, marker_retries),
+            "queued_at": int(time.time() * 1000),
+            "recovered_from": reason,
+        })
+        
+        requeued = False
+        try:
+            self.s3.put_object(todo_key, json.dumps(marker_content))
+            requeued = True
+        except Exception as e:
+            logger.warning(f"Could not update todo marker for {job_hash}: {e}. Falling back to move_to_todo().")
+            try:
+                self.s3.move_to_todo(job_hash, priority, increment_retry=False)
+                requeued = True
+            except Exception as fallback_error:
+                logger.error(f"Failed to requeue active job {job_hash} during shutdown: {fallback_error}")
+        
+        try:
+            self.s3.release_lock(job_hash)
+        except Exception as e:
+            logger.warning(f"Failed to release lock for {job_hash} during shutdown: {e}")
+        
+        self.heartbeat.set_job(None)
+        self.current_job = None
+        self.current_priority = None
+        
+        if requeued:
+            logger.info(f"Re-queued active job {job_hash} (priority={priority}) before shutdown.")
+        return requeued
+    
+    def shutdown(self, requeue_current_job: bool = False, reason: str = "graceful_shutdown"):
         """Clean shutdown of worker."""
         self.heartbeat.stop()
         # Wait for heartbeat thread to finish current iteration
         self.heartbeat.join(timeout=get_heartbeat_interval() + 5)
+        
+        if requeue_current_job:
+            self._requeue_active_job(reason=reason)
         
         # Deregister worker
         logger.info(f"Deregistering worker {self.id}...")
         self.s3.deregister_worker()
         
         logger.info(f"Worker {self.id} shut down.")
+
+
+def run_worker_loop(worker: Worker, run_once: bool = False, idle_sleep: Optional[float] = None) -> int:
+    """
+    Run the worker polling loop with graceful signal handling.
+    
+    Args:
+        worker: Worker instance
+        run_once: Process at most one job
+        idle_sleep: Fixed sleep when idle. If None, use adaptive backoff.
+    
+    Returns:
+        Process exit code
+    """
+    logger.info(f"Worker {worker.id} started. Polling for jobs...")
+    shutdown_requested = False
+    
+    def handle_shutdown_signal(signum, _frame):
+        nonlocal shutdown_requested
+        shutdown_requested = True
+        logger.info(f"Received {_signal_name(signum)}. Initiating graceful shutdown...")
+        raise KeyboardInterrupt
+    
+    previous_handlers = _install_shutdown_handlers(handle_shutdown_signal)
+    
+    try:
+        while True:
+            job = worker.acquire_job()
+            if job:
+                worker.process(job)
+                if run_once:
+                    break
+            else:
+                if run_once:
+                    logger.info("No jobs found.")
+                    break
+                if idle_sleep is None:
+                    backoff = worker.get_poll_backoff()
+                    logger.debug(
+                        f"No jobs found, backing off for {backoff:.1f}s "
+                        f"(empty polls: {worker._empty_poll_count})"
+                    )
+                    time.sleep(backoff)
+                else:
+                    time.sleep(idle_sleep)
+    except KeyboardInterrupt:
+        shutdown_requested = True
+        logger.info("Shutdown requested. Stopping worker.")
+    finally:
+        _restore_shutdown_handlers(previous_handlers)
+        worker.shutdown(requeue_current_job=shutdown_requested)
+    
+    return 0
 
 
 def main():
@@ -878,29 +1066,8 @@ def main():
     
     client = S3Client(dry_run=args.dry_run)
     worker = Worker(client)
-    
-    logger.info(f"Worker {worker.id} started. Polling for jobs...")
-    
-    try:
-        while True:
-            job = worker.acquire_job()
-            if job:
-                worker.process(job)
-                if args.run_once:
-                    break
-            else:
-                if args.run_once:
-                    logger.info("No jobs found.")
-                    break
-                # Use adaptive backoff when no jobs found
-                backoff = worker.get_poll_backoff()
-                logger.debug(f"No jobs found, backing off for {backoff:.1f}s (empty polls: {worker._empty_poll_count})")
-                time.sleep(backoff)
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user.")
-    finally:
-        worker.shutdown()
+    return run_worker_loop(worker, run_once=args.run_once)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

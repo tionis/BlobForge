@@ -144,7 +144,10 @@ Workers run anywhere. They only need S3 credentials.
 #### 4.2.1. Startup (Self-Cleanup)
 - Generate or use persistent `WORKER_ID` (based on machine fingerprint)
 - Scan `queue/processing/` for locks belonging to current `WORKER_ID`
-- If found, assume crash from previous run → restore to todo queue
+- If found, assume crash from previous run and count it as a failed attempt:
+  - Increment retry count from the processing lock
+  - If incremented retry count is within budget, restore to todo with updated retry metadata
+  - If incremented retry count exceeds `MAX_RETRIES`, move directly to dead-letter queue
 
 #### 4.2.2. Acquire Job (Atomic Locking with Improved Sharding)
 - Iterate through priorities: `1_critical` → `2_high` → `3_normal` → `4_low` → `5_background`
@@ -178,6 +181,15 @@ Workers run anywhere. They only need S3 credentials.
 - If retries < MAX_RETRIES: Move to `queue/failed/<HASH>` with error details
 - If retries >= MAX_RETRIES: Move to `queue/dead/<HASH>`
 - Clear heartbeat and release lock
+
+#### 4.2.7. Graceful Shutdown (Signal-Aware)
+- Worker installs handlers for catchable termination signals (`SIGINT`, `SIGTERM`, plus platform-available `SIGHUP`/`SIGQUIT`)
+- On signal, worker exits the processing loop and enters shutdown flow
+- If a job is active during shutdown:
+  - Preserve/rewrite todo marker with current retry count
+  - Stamp recovery metadata (`recovered_from: graceful_shutdown`, `queued_at`)
+  - Release processing lock immediately so another worker can continue
+- Uncatchable termination (`SIGKILL`, OOM killer hard kill) still relies on startup/janitor crash recovery
 
 ### 4.3. Janitor (Crash Recovery + Retry Management)
 

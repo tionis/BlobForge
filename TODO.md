@@ -12,6 +12,8 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Add signal-aware graceful worker shutdown that requeues the in-flight job before exiting.
+- [x] Count recovered processing locks as failed attempts during worker startup (increment retry, dead-letter when exceeded).
 - [x] Enhanced Heartbeat Metadata (CPU/RAM, page progress, elapsed time)
 - [x] Richer Dashboard / Status Display (filenames, sizes, progress)
 - [x] Job Throughput Metrics (jobs_completed, avg_time, bytes_processed)
