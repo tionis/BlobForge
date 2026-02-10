@@ -14,6 +14,8 @@ It relies entirely on an **S3-compatible object store** for coordination, state 
 *   **Heartbeat Mechanism:** Workers send periodic heartbeats (60s), enabling fast stale detection (15 min vs 2 hours).
 *   **Retry & Dead-Letter:** Failed jobs are retried up to 3 times, then moved to dead-letter queue for manual review.
 *   **Resilient:** "Janitor" process recovers jobs from crashed workers automatically.
+*   **Graceful Shutdown:** Catchable worker signals requeue active jobs immediately before exit.
+*   **Conversion Timeout:** Long conversions honor `conversion_timeout` with hard timeout support on compatible platforms.
 *   **Hash-Addressed:** Deduplication built-in. Processing is idempotent based on file content (SHA256).
 
 ## 🛠 Architecture
@@ -182,6 +184,12 @@ blobforge worker --dry-run
 
 *Run multiple instances on any number of machines to scale horizontally.*
 
+**Graceful shutdown behavior**
+- On `SIGINT`/`SIGTERM` (and platform-available `SIGHUP`/`SIGQUIT`), workers perform graceful shutdown.
+- If a job is active, the worker requeues it immediately and releases the processing lock before deregistration.
+- This avoids waiting for stale-lock timeout in normal restart/deploy workflows.
+- Uncatchable termination (`SIGKILL`, hard OOM kill) still relies on startup cleanup + janitor stale recovery.
+
 ### 3. Monitor Status
 
 View queue counts, active processing jobs, and failed jobs.
@@ -204,6 +212,8 @@ blobforge status <SHA256_HASH>
 
 The Janitor detects stale locks (no heartbeat for 15+ minutes) and failed jobs, then re-queues them.
 Jobs exceeding MAX_RETRIES are moved to the dead-letter queue.
+
+Use janitor for crash/ungraceful-stop recovery; graceful worker shutdown requeues active jobs immediately.
 
 ```bash
 # Run janitor
@@ -356,7 +366,7 @@ These settings are stored in S3 at `{prefix}registry/config.json` and cached for
 | `max_retries` | `3` | Number of failures before moving to dead-letter queue |
 | `heartbeat_interval` | `60` | Seconds between heartbeat updates |
 | `stale_timeout_minutes` | `15` | Minutes without heartbeat before job is considered stale |
-| `conversion_timeout` | `3600` | Seconds before conversion is killed (1 hour) |
+| `conversion_timeout` | `3600` | Seconds before conversion timeout (hard kill via signal timer when supported) |
 
 ```bash
 # View all remote config
@@ -365,6 +375,10 @@ blobforge config --show
 # Update settings (takes effect within 1 hour on all workers)
 blobforge config --set max_retries=5 conversion_timeout=7200
 ```
+
+**Conversion timeout notes**
+- Hard timeout enforcement uses `SIGALRM` + `ITIMER_REAL` when available.
+- If platform/runtime constraints prevent timer signals, worker logs a warning and continues conversion without hard timeout.
 
 ### S3 Provider Compatibility
 

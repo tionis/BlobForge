@@ -245,4 +245,18 @@
        - `uv run python -m pytest tests/test_worker_shutdown.py tests/test_worker_recovery.py tests/test_worker_runtime.py -q` -> `15 passed`.
        - `uv run python -m pytest tests/test_blobforge.py -q` -> `49 passed, 5 subtests passed`.
 - **Status:** All identified follow-up issues from worker robustness review have been addressed and validated.
+
+## 2026-02-10 (README Documentation Sync)
+- **Objective:** Update user-facing docs to reflect finalized worker shutdown and timeout semantics.
+- **Actions:**
+    1. Updated `README.md`:
+       - Added key-feature bullets for graceful shutdown and conversion-timeout behavior.
+       - Expanded worker section with explicit signal-handling/shutdown behavior.
+       - Clarified janitor role as recovery path for crash/ungraceful-stop scenarios.
+       - Updated `conversion_timeout` config description with platform caveats.
+       - Added conversion-timeout notes describing hard-timeout support and fallback behavior.
+    2. Updated repository tracking files:
+       - Added completed documentation item in `TODO.md`.
+       - Added findings entry in `AGENTS.md`.
+- **Status:** README now matches current worker runtime behavior and operational expectations.
     
