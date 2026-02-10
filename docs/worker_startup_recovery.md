@@ -13,16 +13,18 @@ Treat startup-recovered processing locks as failed attempts.
 When a worker starts and finds `queue/processing/<hash>` entries owned by its own `WORKER_ID`:
 
 1. Read retry count from the lock (`retries`, default `0`).
-2. Increment retry count by 1.
-3. If incremented retries are within budget (`<= max_retries`):
+2. Read retry count from existing todo marker (`retries`, default `0`).
+3. Use `max(lock_retries, todo_retries)` to avoid retry undercount from stale metadata.
+4. Increment retry count by 1.
+5. If incremented retries are within budget (`<= max_retries`):
    - Requeue job to todo with metadata:
      - `retries`
      - `queued_at`
      - `recovered_from=worker_restart`
-4. If incremented retries exceed budget (`> max_retries`):
+6. If incremented retries exceed budget (`> max_retries`):
    - Move job directly to dead-letter queue.
    - Remove stale todo markers for all priorities.
-5. Release processing lock.
+7. Release processing lock.
 
 ## Why This Works
 

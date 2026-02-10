@@ -3,7 +3,7 @@ Unit tests for graceful worker shutdown behavior.
 """
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
 from blobforge.config import S3_PREFIX_TODO
 from blobforge.worker import Worker, run_worker_loop
@@ -56,6 +56,28 @@ class TestWorkerGracefulShutdown(unittest.TestCase):
         heartbeat.join.assert_called_once()
         self.assertIsNone(worker.current_job)
         self.assertIsNone(worker.current_priority)
+    
+    def test_shutdown_requeues_before_heartbeat_join(self):
+        worker, s3, heartbeat = self._build_worker()
+        tracker = MagicMock()
+        tracker.attach_mock(heartbeat, "heartbeat")
+        tracker.attach_mock(s3, "s3")
+        
+        job_hash = "order123"
+        priority = "3_normal"
+        worker.current_job = job_hash
+        worker.current_priority = priority
+        s3.get_lock_info.return_value = {"priority": priority, "retries": 0}
+        s3.get_object_json.return_value = {}
+        
+        worker.shutdown(requeue_current_job=True)
+        
+        calls = tracker.mock_calls
+        stop_idx = calls.index(call.heartbeat.stop())
+        put_idx = next(i for i, c in enumerate(calls) if c == call.s3.put_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}", ANY))
+        join_idx = calls.index(call.heartbeat.join(timeout=ANY))
+        self.assertLess(stop_idx, put_idx)
+        self.assertLess(put_idx, join_idx)
 
     def test_shutdown_with_no_active_job_does_not_requeue(self):
         worker, s3, heartbeat = self._build_worker()
@@ -83,6 +105,26 @@ class TestWorkerRunLoop(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         worker.shutdown.assert_called_once_with(requeue_current_job=True)
+    
+    def test_run_loop_restores_handlers_after_shutdown(self):
+        worker = MagicMock()
+        worker.id = "atlantis"
+        worker.acquire_job.side_effect = KeyboardInterrupt()
+        events = []
+        
+        def mock_shutdown(*args, **kwargs):
+            events.append("shutdown")
+        
+        def mock_restore(*args, **kwargs):
+            events.append("restore")
+        
+        worker.shutdown.side_effect = mock_shutdown
+        
+        with patch("blobforge.worker._install_shutdown_handlers", return_value={}), \
+             patch("blobforge.worker._restore_shutdown_handlers", side_effect=mock_restore):
+            run_worker_loop(worker, run_once=False, idle_sleep=0)
+        
+        self.assertEqual(events, ["shutdown", "restore"])
 
     def test_run_once_without_jobs_exits_cleanly(self):
         worker = MagicMock()
@@ -96,6 +138,18 @@ class TestWorkerRunLoop(unittest.TestCase):
         self.assertEqual(rc, 0)
         worker.shutdown.assert_called_once_with(requeue_current_job=False)
         worker.process.assert_not_called()
+    
+    def test_unhandled_exception_still_attempts_graceful_shutdown(self):
+        worker = MagicMock()
+        worker.id = "atlantis"
+        worker.acquire_job.side_effect = RuntimeError("boom")
+        
+        with patch("blobforge.worker._install_shutdown_handlers", return_value={}), \
+             patch("blobforge.worker._restore_shutdown_handlers"):
+            rc = run_worker_loop(worker, run_once=False, idle_sleep=0)
+        
+        self.assertEqual(rc, 1)
+        worker.shutdown.assert_called_once_with(requeue_current_job=True)
 
 
 if __name__ == "__main__":

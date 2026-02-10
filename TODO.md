@@ -12,6 +12,11 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Keep shutdown signal handlers active until cleanup completes and route unexpected loop exceptions through graceful shutdown.
+- [x] Requeue active jobs before heartbeat join wait to release processing locks promptly on shutdown.
+- [x] Resolve startup recovery retry undercount by reconciling lock + todo retry metadata.
+- [x] Enforce conversion timeout in worker conversion path (platform-supported hard timeout with signal timers).
+- [x] Add subprocess-level SIGTERM integration test for worker loop graceful shutdown path.
 - [x] Add signal-aware graceful worker shutdown that requeues the in-flight job before exiting.
 - [x] Count recovered processing locks as failed attempts during worker startup (increment retry, dead-letter when exceeded).
 - [x] Enhanced Heartbeat Metadata (CPU/RAM, page progress, elapsed time)

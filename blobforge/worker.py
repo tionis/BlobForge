@@ -59,6 +59,14 @@ def _signal_name(signum: int) -> str:
         return f"signal {signum}"
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """Best-effort integer parsing with fallback."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _install_shutdown_handlers(handler: Callable[[int, Any], None]) -> Dict[int, Any]:
     """
     Install signal handlers for graceful shutdown.
@@ -262,6 +270,7 @@ class HeartbeatThread(threading.Thread):
         self.original_filename: Optional[str] = None
         self.file_size: Optional[int] = None
         self.running = True
+        self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._tqdm_progress: Optional[dict] = None  # Latest tqdm progress
         
@@ -296,6 +305,7 @@ class HeartbeatThread(threading.Thread):
     def stop(self):
         """Stop the heartbeat thread."""
         self.running = False
+        self._stop_event.set()
     
     def _build_progress_data(self) -> dict:
         """Build comprehensive progress data for heartbeat."""
@@ -354,7 +364,8 @@ class HeartbeatThread(threading.Thread):
         """Main heartbeat loop."""
         heartbeat_interval = get_heartbeat_interval()
         while self.running:
-            time.sleep(heartbeat_interval)
+            if self._stop_event.wait(timeout=heartbeat_interval):
+                break
             
             with self._lock:
                 job = self.current_job
@@ -446,10 +457,11 @@ class Worker:
             if data.get('worker') == self.id:
                 job_hash = key.split("/")[-1]
                 priority = data.get('priority', DEFAULT_PRIORITY)
-                try:
-                    previous_retries = int(data.get('retries', 0))
-                except (TypeError, ValueError):
-                    previous_retries = 0
+                todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
+                todo_data = self.s3.get_object_json(todo_key)
+                todo_retries = _safe_int(todo_data.get('retries', 0)) if isinstance(todo_data, dict) else 0
+                lock_retries = _safe_int(data.get('retries', 0))
+                previous_retries = max(lock_retries, todo_retries)
                 retry_count = previous_retries + 1
                 
                 if retry_count > max_retries:
@@ -471,8 +483,6 @@ class Worker:
                         f"Recovering crashed job {job_hash} "
                         f"(Priority: {priority}, retry: {retry_count}/{max_retries})"
                     )
-                    todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
-                    todo_data = self.s3.get_object_json(todo_key)
                     marker_content = todo_data if isinstance(todo_data, dict) else {}
                     marker_content.update({
                         "retries": retry_count,
@@ -686,7 +696,11 @@ class Worker:
                     images = {}
                     marker_meta = {"mock": True}
                 else:
-                    md_text, images, marker_meta = self._run_marker_conversion(pdf_path)
+                    conversion_timeout = get_conversion_timeout()
+                    md_text, images, marker_meta = self._run_conversion_with_timeout(
+                        pdf_path,
+                        timeout_seconds=conversion_timeout
+                    )
                     # Extract page count from marker metadata if available
                     if marker_meta and 'page_stats' in marker_meta:
                         page_count = len(marker_meta['page_stats'])
@@ -930,6 +944,45 @@ class Worker:
         
         return text, images, meta
     
+    def _run_conversion_with_timeout(self, pdf_path: str, timeout_seconds: int) -> tuple:
+        """
+        Run conversion with optional hard timeout.
+        
+        Uses SIGALRM/ITIMER_REAL when available to interrupt long-running
+        conversions. If timers are unavailable (platform/thread limitations),
+        conversion runs without hard timeout.
+        """
+        timeout = _safe_int(timeout_seconds, 0)
+        if timeout <= 0:
+            return self._run_marker_conversion(pdf_path)
+        
+        if not hasattr(signal, "SIGALRM") or not hasattr(signal, "setitimer"):
+            logger.warning("conversion_timeout configured but SIGALRM/setitimer is unavailable; running without hard timeout.")
+            return self._run_marker_conversion(pdf_path)
+        
+        if threading.current_thread() is not threading.main_thread():
+            logger.warning("conversion_timeout cannot be enforced outside the main thread; running without hard timeout.")
+            return self._run_marker_conversion(pdf_path)
+        
+        logger.info(f"Enforcing conversion timeout: {timeout}s")
+        
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_timer = signal.getitimer(signal.ITIMER_REAL)
+        
+        def _alarm_handler(_signum, _frame):
+            raise TimeoutError(f"Conversion exceeded timeout ({timeout}s)")
+        
+        signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        try:
+            return self._run_marker_conversion(pdf_path)
+        finally:
+            try:
+                signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+            except Exception:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+    
     def _requeue_active_job(self, reason: str = "graceful_shutdown") -> bool:
         """
         Requeue the currently active job and release its processing lock.
@@ -944,19 +997,13 @@ class Worker:
         lock_info = self.s3.get_lock_info(job_hash) or {}
         priority = self.current_priority or lock_info.get('priority', DEFAULT_PRIORITY)
         
-        try:
-            lock_retries = int(lock_info.get('retries', 0))
-        except (TypeError, ValueError):
-            lock_retries = 0
+        lock_retries = _safe_int(lock_info.get('retries', 0))
         
         todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
         todo_data = self.s3.get_object_json(todo_key)
         marker_content = todo_data if isinstance(todo_data, dict) else {}
         
-        try:
-            marker_retries = int(marker_content.get('retries', 0))
-        except (TypeError, ValueError):
-            marker_retries = 0
+        marker_retries = _safe_int(marker_content.get('retries', 0))
         
         marker_content.update({
             "retries": max(lock_retries, marker_retries),
@@ -992,11 +1039,12 @@ class Worker:
     def shutdown(self, requeue_current_job: bool = False, reason: str = "graceful_shutdown"):
         """Clean shutdown of worker."""
         self.heartbeat.stop()
-        # Wait for heartbeat thread to finish current iteration
-        self.heartbeat.join(timeout=get_heartbeat_interval() + 5)
         
         if requeue_current_job:
             self._requeue_active_job(reason=reason)
+        
+        # Wait for heartbeat thread to finish current iteration
+        self.heartbeat.join(timeout=get_heartbeat_interval() + 5)
         
         # Deregister worker
         logger.info(f"Deregistering worker {self.id}...")
@@ -1019,9 +1067,14 @@ def run_worker_loop(worker: Worker, run_once: bool = False, idle_sleep: Optional
     """
     logger.info(f"Worker {worker.id} started. Polling for jobs...")
     shutdown_requested = False
+    shutdown_in_progress = False
+    exit_code = 0
     
     def handle_shutdown_signal(signum, _frame):
-        nonlocal shutdown_requested
+        nonlocal shutdown_requested, shutdown_in_progress
+        if shutdown_in_progress:
+            logger.warning(f"Received {_signal_name(signum)} during shutdown; waiting for cleanup to finish.")
+            return
         shutdown_requested = True
         logger.info(f"Received {_signal_name(signum)}. Initiating graceful shutdown...")
         raise KeyboardInterrupt
@@ -1051,11 +1104,21 @@ def run_worker_loop(worker: Worker, run_once: bool = False, idle_sleep: Optional
     except KeyboardInterrupt:
         shutdown_requested = True
         logger.info("Shutdown requested. Stopping worker.")
+    except Exception:
+        shutdown_requested = True
+        exit_code = 1
+        logger.exception("Unhandled worker loop error. Attempting graceful shutdown.")
     finally:
-        _restore_shutdown_handlers(previous_handlers)
-        worker.shutdown(requeue_current_job=shutdown_requested)
+        shutdown_in_progress = True
+        try:
+            worker.shutdown(requeue_current_job=shutdown_requested)
+        except Exception:
+            exit_code = 1
+            logger.exception("Worker shutdown encountered an error.")
+        finally:
+            _restore_shutdown_handlers(previous_handlers)
     
-    return 0
+    return exit_code
 
 
 def main():

@@ -215,4 +215,34 @@
        - `DESIGN.md` worker section (`4.2.7`) for signal-aware graceful shutdown semantics.
        - Updated `TODO.md` and `AGENTS.md` findings.
 - **Status:** Worker shutdown now handles catchable signals and requeues active jobs without waiting for stale-lock recovery.
+
+## 2026-02-10 (Worker Runtime Hardening Follow-Up)
+- **Objective:** Address remaining worker robustness gaps after initial shutdown/recovery changes.
+- **Actions:**
+    1. `blobforge/worker.py` runtime/shutdown hardening:
+       - Added `_safe_int()` utility for resilient numeric parsing from lock/marker metadata.
+       - Updated startup recovery to reconcile retries using `max(lock_retries, todo_retries)` before incrementing.
+       - Updated heartbeat thread stop behavior to use an event (`wait`) for prompt shutdown wake-up.
+       - Reordered shutdown flow: stop heartbeat -> requeue active job -> join heartbeat -> deregister.
+       - Kept custom signal handlers active until shutdown cleanup completes.
+       - Added explicit handling for unexpected run loop exceptions (`exit_code=1`) while still forcing graceful cleanup/requeue.
+    2. Conversion timeout enforcement:
+       - Added `_run_conversion_with_timeout()` wrapper.
+       - Wired `process()` conversion path to enforce `conversion_timeout` using `SIGALRM`/`ITIMER_REAL` when available.
+       - Added fallback warnings for unsupported timer/signal environments.
+    3. Test coverage updates:
+       - Extended `tests/test_worker_shutdown.py` with shutdown ordering and handler-restore ordering checks.
+       - Extended `tests/test_worker_recovery.py` with lock/todo retry reconciliation coverage.
+       - Added `tests/test_worker_runtime.py`:
+         - Timeout wrapper behavior tests.
+         - Subprocess integration test sending real `SIGTERM` to verify graceful shutdown path invocation.
+    4. Documentation updates:
+       - Updated `DESIGN.md` worker sections (`4.2.1`, `4.2.4`, `4.2.7`).
+       - Updated `docs/worker_startup_recovery.md` and `docs/worker_graceful_shutdown.md`.
+       - Added `docs/worker_conversion_timeout.md`.
+       - Updated `TODO.md` and `AGENTS.md` findings.
+    5. Validation:
+       - `uv run python -m pytest tests/test_worker_shutdown.py tests/test_worker_recovery.py tests/test_worker_runtime.py -q` -> `15 passed`.
+       - `uv run python -m pytest tests/test_blobforge.py -q` -> `49 passed, 5 subtests passed`.
+- **Status:** All identified follow-up issues from worker robustness review have been addressed and validated.
     

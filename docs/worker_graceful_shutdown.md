@@ -24,7 +24,15 @@ On signal reception, the worker:
      - `queued_at`
      - `recovered_from: graceful_shutdown`
    - Releases processing lock.
-4. Stops heartbeat thread and deregisters worker.
+4. Keeps signal handlers installed until shutdown cleanup finishes.
+5. Stops heartbeat thread and deregisters worker.
+
+## Ordering Guarantees
+
+- Heartbeat thread is asked to stop first.
+- Active job requeue + lock release runs before heartbeat join wait.
+- Signal handlers are restored only after shutdown work completes.
+- Unexpected exceptions in the worker loop still trigger graceful shutdown with requeue intent.
 
 ## Non-Catchable Kill Paths
 

@@ -110,6 +110,43 @@ class TestWorkerStartupRecovery(unittest.TestCase):
         s3.delete_object.assert_not_called()
         s3.release_lock.assert_not_called()
 
+    def test_recovery_uses_max_retry_from_lock_and_todo_marker(self):
+        s3 = MagicMock()
+        job_hash = "maxretry"
+        processing_key = f"{S3_PREFIX_PROCESSING}/{job_hash}"
+        todo_key = f"{S3_PREFIX_TODO}/3_normal/{job_hash}"
+
+        s3.list_processing.return_value = [{"Key": processing_key}]
+
+        def mock_get_object_json(key):
+            if key == processing_key:
+                return {
+                    "worker": "atlantis",
+                    "priority": "3_normal",
+                    "retries": 1,
+                }
+            if key == todo_key:
+                return {"retries": 3}
+            return None
+
+        s3.get_object_json.side_effect = mock_get_object_json
+
+        with patch("blobforge.worker.WORKER_ID", "atlantis"), \
+             patch("blobforge.worker.get_max_retries", return_value=10), \
+             patch("blobforge.worker.HeartbeatThread"):
+            Worker(s3)
+
+        todo_write = None
+        for write_call in s3.put_object.call_args_list:
+            if write_call.args and write_call.args[0] == todo_key:
+                todo_write = write_call
+                break
+
+        self.assertIsNotNone(todo_write)
+        payload = json.loads(todo_write.args[1])
+        # max(1, 3) + 1
+        self.assertEqual(payload["retries"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

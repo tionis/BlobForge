@@ -145,7 +145,8 @@ Workers run anywhere. They only need S3 credentials.
 - Generate or use persistent `WORKER_ID` (based on machine fingerprint)
 - Scan `queue/processing/` for locks belonging to current `WORKER_ID`
 - If found, assume crash from previous run and count it as a failed attempt:
-  - Increment retry count from the processing lock
+  - Read retry state from both processing lock and todo marker, using the higher value as source of truth
+  - Increment retry count
   - If incremented retry count is within budget, restore to todo with updated retry metadata
   - If incremented retry count exceeds `MAX_RETRIES`, move directly to dead-letter queue
 
@@ -168,6 +169,7 @@ Workers run anywhere. They only need S3 credentials.
 - Download `store/raw/<HASH>.pdf` to temp directory
 - Fetch S3 object metadata (original name, tags)
 - Run conversion (marker/pymupdf4llm)
+  - Enforce `conversion_timeout` with `SIGALRM`/`ITIMER_REAL` when platform support is available
 - Create `info.json` with enriched metadata
 - Zip results
 
@@ -189,6 +191,8 @@ Workers run anywhere. They only need S3 credentials.
   - Preserve/rewrite todo marker with current retry count
   - Stamp recovery metadata (`recovered_from: graceful_shutdown`, `queued_at`)
   - Release processing lock immediately so another worker can continue
+- Keep custom signal handlers active until shutdown completes (prevents second signal from skipping cleanup)
+- Route unexpected loop exceptions through the same shutdown path (`requeue_current_job=True`)
 - Uncatchable termination (`SIGKILL`, OOM killer hard kill) still relies on startup/janitor crash recovery
 
 ### 4.3. Janitor (Crash Recovery + Retry Management)
