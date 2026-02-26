@@ -259,4 +259,59 @@
        - Added completed documentation item in `TODO.md`.
        - Added findings entry in `AGENTS.md`.
 - **Status:** README now matches current worker runtime behavior and operational expectations.
+
+## 2026-02-26 (Hydrate Converted Outputs Feature)
+- **Objective:** Implement a local hydration workflow that materializes completed conversion outputs next to source PDFs.
+- **Actions:**
+    1. Implemented new hydration component in `blobforge/hydrator.py`:
+       - Added recursive PDF discovery for files/directories.
+       - Reused xattr-aware SHA256 path (`compute_sha256_with_cache`) for hash resolution.
+       - Added done-zip existence checks at `{prefix}store/done/<hash>.zip`.
+       - Added local materialization to `<stem>.md` and `<stem>.assets/`.
+       - Added per-run archive download deduplication for duplicate hashes.
+       - Added markdown asset path rewriting (`assets/` -> `<stem>.assets/`) to prevent folder collisions.
+       - Added staging/atomic write behavior for markdown and staged asset directory replacement.
+       - Added `--dry-run` and `--force` support via function parameters.
+    2. Wired CLI in `blobforge/cli.py`:
+       - Added `cmd_hydrate(...)`.
+       - Added `hydrate` subcommand with positional `paths` and flags `--force`, `--dry-run`.
+    3. Added automated tests in `tests/test_hydrator.py`:
+       - Hydrates markdown/assets from a mocked conversion archive.
+       - Skips when local markdown exists and `--force` is not set.
+       - Verifies one archive download is reused for multiple PDFs with identical hash.
+    4. Added documentation:
+       - New design note: `docs/hydrate_command.md`.
+       - Updated `README.md` usage section with `blobforge hydrate` examples.
+    5. Updated repository tracking/protocol files:
+       - `TODO.md` completed item added.
+       - `AGENTS.md` findings updated.
+- **Tooling / Verification Commands:**
+    - `rg`, `sed` used to inspect command surfaces and existing hash/download logic.
+    - `uv run python -m pytest tests/test_hydrator.py -q` -> `3 passed`.
+    - `uv run python -m pytest tests/test_blobforge.py -q` -> `49 passed, 5 subtests passed`.
+    - `uv run python -m pytest tests -q` -> `69 passed, 5 subtests passed`.
+    - `uv run blobforge --help` -> confirmed `hydrate` command registered.
+    - `uv run blobforge hydrate --help` -> confirmed `paths`, `--force`, `--dry-run`.
+- **Status:** Feature implemented, documented, and validated.
+
+## 2026-02-26 (Hydrate Preflight Performance Optimization)
+- **Objective:** Reduce per-file remote checks during hydration by precomputing local/remote hash sets.
+- **Actions:**
+    1. Updated `blobforge/hydrator.py`:
+       - Added local preflight pass to compute hashes once for all hydration candidates.
+       - Added manifest prefilter (`get_manifest`) to eliminate remote checks for hashes not present in manifest.
+       - Added done-availability resolver keyed by unique hashes.
+       - Added bulk done-index path for large runs (`DONE_INDEX_THRESHOLD`) with helper fallback paths.
+    2. Updated `blobforge/s3_client.py`:
+       - Added `list_done_hashes()` to paginate done objects and return parsed `<hash>.zip` identifiers.
+    3. Updated tests:
+       - `tests/test_hydrator.py`: added manifest-prefilter test asserting reduced `exists` calls.
+       - `tests/test_blobforge.py`: added `list_done_hashes` parsing test.
+    4. Updated docs/tracking:
+       - Updated `docs/hydrate_command.md` with preflight and remote-check strategy.
+       - Updated `TODO.md` and `AGENTS.md` findings.
+- **Validation:**
+    - `uv run python -m pytest tests/test_hydrator.py tests/test_blobforge.py -q` -> `54 passed, 5 subtests passed`.
+    - `uv run python -m pytest tests -q` -> `71 passed, 5 subtests passed`.
+- **Status:** Optimization implemented and validated.
     

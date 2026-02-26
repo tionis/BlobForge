@@ -225,6 +225,25 @@ class TestS3ClientWithBoto3(unittest.TestCase):
         result = self.client.list_todo_batch("3_normal")
         self.assertEqual(result, [])
 
+    def test_list_done_hashes_parses_zip_keys(self):
+        """list_done_hashes should parse done/<hash>.zip objects."""
+        full_hash = "a" * 64
+        done_prefix = f"{S3_PREFIX_DONE}/"
+        paginator = MagicMock()
+        paginator.paginate.return_value = [
+            {
+                'Contents': [
+                    {'Key': f'{done_prefix}{full_hash}.zip'},
+                    {'Key': f'{done_prefix}not-a-hash.zip'},
+                    {'Key': f'{done_prefix}something.txt'},
+                ]
+            }
+        ]
+        self.mock_s3.get_paginator.return_value = paginator
+
+        result = self.client.list_done_hashes()
+        self.assertEqual(result, [full_hash])
+
 
 class TestJobStateChecks(unittest.TestCase):
     """Test job state checking logic."""

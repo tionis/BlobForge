@@ -287,6 +287,34 @@ class S3Client:
         """List all dead-letter jobs."""
         return self.list_objects(S3_PREFIX_DEAD + "/")
 
+    def list_done_hashes(self) -> List[str]:
+        """
+        List all completed job hashes from the done store.
+
+        Returns:
+            List of SHA256 hashes for objects stored as done/<hash>.zip.
+        """
+        if self.mock:
+            return []
+
+        prefix = f"{S3_PREFIX_DONE}/"
+        hashes: List[str] = []
+
+        try:
+            paginator = self.s3.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
+                for obj in page.get('Contents', []):
+                    key = obj.get('Key', '')
+                    if not key.startswith(prefix) or not key.endswith('.zip'):
+                        continue
+                    job_hash = key[len(prefix):-4]
+                    if len(job_hash) == 64:
+                        hashes.append(job_hash)
+            return hashes
+        except Exception as e:
+            print(f"Error listing done hashes: {e}")
+            return []
+
     # -------------------------------------------------------------------------
     # Queue Operations (Higher-level)
     # -------------------------------------------------------------------------

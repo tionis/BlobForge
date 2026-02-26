@@ -306,7 +306,27 @@ blobforge convert document.pdf
 blobforge convert document.pdf --output ./results/
 ```
 
-### 11. Telegram Bot
+### 11. Hydrate Existing PDFs
+
+Materialize converted markdown/assets next to local PDFs by matching on file hash.
+This is useful when conversions already exist in BlobForge and you want local `.md` files.
+
+Outputs per PDF:
+- `<stem>.md`
+- `<stem>.assets/`
+
+```bash
+# Hydrate all PDFs under a directory
+blobforge hydrate ./library
+
+# Preview what would be written
+blobforge hydrate ./library --dry-run
+
+# Overwrite existing markdown/assets
+blobforge hydrate ./library --force
+```
+
+### 12. Telegram Bot
 
 Run an interactive Telegram bot for remote management. Supports all major operations through an inline keyboard interface.
 

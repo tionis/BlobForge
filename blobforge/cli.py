@@ -25,6 +25,7 @@ from .s3_client import S3Client
 from . import ingestor
 from . import janitor as janitor_module
 from . import status as status_module
+from . import hydrator as hydrator_module
 
 
 def cmd_ingest(args):
@@ -382,6 +383,15 @@ def cmd_convert(args):
     print(f"Images: {len(images)} saved to {assets_dir}")
     
     return 0
+
+
+def cmd_hydrate(args):
+    """Hydrate local markdown/assets from completed conversion outputs."""
+    if len(args.paths) == 1:
+        print(f"Hydrating conversions for {args.paths[0]}...")
+    else:
+        print(f"Hydrating conversions for {len(args.paths)} paths...")
+    return hydrator_module.hydrate(args.paths, force=args.force, dry_run=args.dry_run)
 
 
 def cmd_janitor(args):
@@ -1614,6 +1624,13 @@ def main():
     p_convert.add_argument("path", help="Path to the PDF file")
     p_convert.add_argument("--output", "-o", help="Output directory (default: current_dir/filename)")
     p_convert.set_defaults(func=cmd_convert)
+
+    # Hydrate local markdown/assets from completed conversions
+    p_hydrate = subparsers.add_parser("hydrate", help="Hydrate local markdown/assets from completed conversions")
+    p_hydrate.add_argument("paths", nargs='+', help="PDF files or directories to hydrate")
+    p_hydrate.add_argument("--force", action="store_true", help="Overwrite existing markdown/assets")
+    p_hydrate.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
+    p_hydrate.set_defaults(func=cmd_hydrate)
     
     # Status (single job)
     p_status = subparsers.add_parser("status", help="Check status of a specific job")

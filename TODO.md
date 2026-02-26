@@ -12,6 +12,8 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Optimize `blobforge hydrate` with local hash preflight + single manifest prefilter to reduce per-file remote checks.
+- [x] Add `blobforge hydrate` command to materialize `<stem>.md` and `<stem>.assets/` from completed conversions.
 - [x] Document worker graceful shutdown and conversion timeout behavior in `README.md`.
 - [x] Keep shutdown signal handlers active until cleanup completes and route unexpected loop exceptions through graceful shutdown.
 - [x] Requeue active jobs before heartbeat join wait to release processing locks promptly on shutdown.
