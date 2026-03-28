@@ -38,6 +38,8 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-03-27:** Added `blobforge repair-metadata` to restore missing BlobForge raw-object metadata (`original-name`, `tags`, `size`) from manifest entries after S3 migrations. The repair uses same-key server-side copy with `MetadataDirective=REPLACE`, merges in unrelated existing metadata (for example `src_last_modified_millis`), and reconstructs `original-name` from the basename of the first manifest path to match historical ingest behavior.
+- **2026-03-27:** Investigated `blobforge dashboard` showing `unknown.pdf` for live processing jobs. The dashboard prints the worker heartbeat's `progress.original_filename`, and `worker.py` falls back to `s3_meta.get("original-name", "unknown.pdf")`. Live Backblaze raw objects currently retain only `src_last_modified_millis` metadata for sampled/in-flight PDFs, while the manifest still contains correct `paths`, so this symptom indicates missing raw-object filename metadata rather than lost PDF/manifest data. The user confirmed the cause: migrating raw objects to a new S3 provider with `rclone sync` did not preserve the BlobForge metadata.
 - **2026-02-03:** Added `S3_PREFIX` support to `config.py` to allow namespacing in the S3 bucket. All queue and storage paths now respect this prefix.
 - **2026-02-03:** Standardized `janitor.py` and `status.py` to use the central `config.py` for path resolution.
 - **2026-02-03:** Major refactor - consolidated all S3 operations into single `s3_client.py` module. All components now use this unified client.

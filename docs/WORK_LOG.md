@@ -1,5 +1,42 @@
 # Work Log
 
+## 2026-03-27 (Raw Metadata Repair Command)
+- **Objective:** Add an operator command to restore stripped raw-object metadata after S3 provider migration.
+- **Actions:**
+    1. Added metadata rewrite support to `blobforge/s3_client.py`:
+       - Implemented same-key server-side copy with `MetadataDirective='REPLACE'`.
+       - Preserved unrelated existing metadata keys such as `src_last_modified_millis`.
+       - Preserved common object headers such as `ContentType` during metadata rewrite.
+    2. Added CLI command `blobforge repair-metadata` in `blobforge/cli.py`:
+       - Uses manifest entries as the source of truth.
+       - Restores `original-name`, `tags`, and `size` onto `store/raw/<hash>.pdf`.
+       - Defaults to filling only missing keys.
+       - Supports `--force` to overwrite mismatched BlobForge metadata.
+       - Supports `--dry-run` and optional per-hash targeting.
+    3. Added test coverage in `tests/test_blobforge.py`:
+       - Verifies metadata merge/preservation in the S3 client.
+       - Verifies CLI repair behavior for missing metadata, forced overwrite, and dry-run.
+    4. Updated documentation:
+       - Added `docs/raw_metadata_repair.md`.
+       - Updated `README.md` and `DESIGN.md` command examples.
+- **Status:** Repair command implemented and documented.
+
+## 2026-03-27 (Dashboard Filename Investigation)
+- **Objective:** Determine why `blobforge dashboard` shows `unknown.pdf` for active jobs and verify whether data was lost.
+- **Actions:**
+    1. Inspected dashboard and worker code paths:
+       - Confirmed `blobforge/status.py` renders `progress.original_filename`.
+       - Confirmed `blobforge/worker.py` sets that field from raw-object metadata via `s3_meta.get("original-name", "unknown.pdf")`.
+    2. Queried live S3 state for the two active jobs shown in the dashboard:
+       - Verified both raw PDFs still exist in `store/raw/`.
+       - Verified neither job is in `done`, `failed`, or `dead`.
+       - Verified manifest entries still contain the original paths/filenames.
+       - Verified raw object metadata for the live jobs contains only `src_last_modified_millis`, not `original-name`, `tags`, or `size`.
+    3. Sampled additional raw objects and observed the same metadata shape (`src_last_modified_millis` only) in the sample.
+    4. Ran `blobforge test-s3` against the configured Backblaze endpoint:
+       - Confirmed custom metadata support works for new test writes.
+- **Conclusion:** `unknown.pdf` in the dashboard is a display fallback caused by missing raw-object filename metadata, not by loss of the underlying PDF or manifest entry. The user later confirmed the operational cause: `rclone sync` was used during S3-provider migration and did not preserve BlobForge's custom metadata on the raw objects.
+
 ## 2026-02-03
 - **Objective:** Add S3 namespacing support and establish agent protocols.
 - **Actions:**

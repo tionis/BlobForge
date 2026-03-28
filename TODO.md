@@ -7,11 +7,14 @@
 ## Normal Priority
 - [ ] Update README.md with full configuration reference.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
+- [ ] Add runtime fallback to manifest metadata when raw-object metadata is missing, so dashboards/output metadata stay readable even before repair.
 
 ## Low Priority
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Add `blobforge repair-metadata` to restore stripped raw-object metadata from manifest entries after S3 provider migrations.
+- [x] Investigate `blobforge dashboard` `unknown.pdf` display and confirm whether it reflects missing data or only missing raw-object metadata.
 - [x] Optimize `blobforge hydrate` with local hash preflight + single manifest prefilter to reduce per-file remote checks.
 - [x] Add `blobforge hydrate` command to materialize `<stem>.md` and `<stem>.assets/` from completed conversions.
 - [x] Document worker graceful shutdown and conversion timeout behavior in `README.md`.

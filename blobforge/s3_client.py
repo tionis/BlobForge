@@ -177,6 +177,72 @@ class S3Client:
             Key=dest_key
         )
 
+    def update_object_metadata(self, key: str, metadata_updates: Dict[str, str],
+                               merge_existing: bool = True) -> bool:
+        """
+        Rewrite object metadata in place using a same-key server-side copy.
+
+        This is primarily used to repair BlobForge's raw-object metadata after
+        S3 migrations that copied object bodies but stripped custom metadata.
+
+        Args:
+            key: S3 object key to update
+            metadata_updates: Decoded metadata values to write
+            merge_existing: Preserve existing metadata keys not present in
+                metadata_updates (default True)
+
+        Returns:
+            True if successful, False on error
+        """
+        if self.dry_run or self.mock:
+            meta_str = json.dumps(metadata_updates) if metadata_updates else "{}"
+            print(f"[DRY-RUN/MOCK] Updating metadata for s3://{S3_BUCKET}/{key} -> {meta_str}")
+            return True
+
+        try:
+            head = self.s3.head_object(Bucket=S3_BUCKET, Key=key)
+
+            # Keep provider-specific metadata keys (for example
+            # src_last_modified_millis) by merging against the raw stored
+            # metadata representation returned by head_object.
+            raw_metadata = dict(head.get('Metadata', {})) if merge_existing else {}
+            raw_metadata.update(sanitize_metadata(metadata_updates))
+
+            copy_kwargs = {
+                'Bucket': S3_BUCKET,
+                'CopySource': {'Bucket': S3_BUCKET, 'Key': key},
+                'Key': key,
+                'Metadata': raw_metadata,
+                'MetadataDirective': 'REPLACE',
+            }
+
+            content_type = head.get('ContentType')
+            if content_type:
+                copy_kwargs['ContentType'] = content_type
+            elif key.lower().endswith('.pdf'):
+                copy_kwargs['ContentType'] = 'application/pdf'
+
+            for field in (
+                'CacheControl',
+                'ContentDisposition',
+                'ContentEncoding',
+                'ContentLanguage',
+                'Expires',
+                'ServerSideEncryption',
+                'SSEKMSKeyId',
+                'WebsiteRedirectLocation',
+                'StorageClass',
+            ):
+                value = head.get(field)
+                if value is not None:
+                    copy_kwargs[field] = value
+
+            self.s3.copy_object(**copy_kwargs)
+            return True
+        except Exception as e:
+            print(f"Failed to update metadata for {key}: {e}")
+            return False
+
     # -------------------------------------------------------------------------
     # Listing Operations
     # -------------------------------------------------------------------------

@@ -257,6 +257,12 @@ blobforge lookup --path "DnD/Players Handbook.pdf"
 
 # Show manifest statistics
 blobforge manifest -v
+
+# Preview raw metadata repair after an S3 migration
+blobforge repair-metadata --dry-run
+
+# Restore missing raw-object metadata from the manifest
+blobforge repair-metadata
 ```
 
 ### 7. Reprioritize Jobs

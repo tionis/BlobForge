@@ -660,6 +660,114 @@ def cmd_manifest_sync(args, s3):
             return 1
 
 
+def _build_raw_metadata_from_manifest_entry(file_hash, entry):
+    """Reconstruct BlobForge raw-object metadata from a manifest entry."""
+    paths = entry.get('paths', []) or []
+    original_name = os.path.basename(paths[0]) if paths else f"{file_hash[:8]}.pdf"
+
+    return {
+        "original-name": original_name,
+        "tags": json.dumps(entry.get('tags', [])),
+        "size": str(entry.get('size', 0)),
+    }
+
+
+def cmd_repair_metadata(args):
+    """
+    Restore BlobForge raw-object metadata from the manifest.
+
+    This is intended for provider migrations where object bodies were copied
+    successfully but custom S3 metadata was dropped.
+    """
+    s3 = S3Client(dry_run=args.dry_run)
+    manifest_entries = s3.get_manifest().get('entries', {})
+
+    if args.hashes:
+        target_hashes = args.hashes
+        print(f"Repairing raw metadata for {len(target_hashes)} requested hash(es)...")
+    else:
+        target_hashes = sorted(manifest_entries.keys())
+        print(f"Repairing raw metadata for all {len(target_hashes)} manifest entries...")
+
+    if not target_hashes:
+        print("Nothing to repair.")
+        return 0
+
+    stats = {
+        "scanned": 0,
+        "repaired": 0,
+        "unchanged": 0,
+        "missing_manifest": 0,
+        "missing_raw": 0,
+        "failed": 0,
+    }
+
+    for file_hash in target_hashes:
+        stats["scanned"] += 1
+
+        entry = manifest_entries.get(file_hash)
+        if not entry:
+            print(f"  [SKIP] {file_hash[:16]}... not found in manifest")
+            stats["missing_manifest"] += 1
+            continue
+
+        raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
+        if not s3.exists(raw_key):
+            print(f"  [SKIP] {file_hash[:16]}... raw PDF missing from store/raw/")
+            stats["missing_raw"] += 1
+            continue
+
+        desired = _build_raw_metadata_from_manifest_entry(file_hash, entry)
+        existing = s3.get_object_metadata(raw_key)
+
+        missing_keys = [key for key in desired if not existing.get(key)]
+        mismatched_keys = [
+            key for key, value in desired.items()
+            if existing.get(key) and existing.get(key) != value
+        ]
+
+        if args.force:
+            update_payload = desired if (missing_keys or mismatched_keys) else {}
+        else:
+            update_payload = {key: desired[key] for key in missing_keys}
+
+        if not update_payload:
+            stats["unchanged"] += 1
+            continue
+
+        reason_parts = []
+        if missing_keys:
+            reason_parts.append("missing " + ",".join(missing_keys))
+        if mismatched_keys and args.force:
+            reason_parts.append("overwriting " + ",".join(mismatched_keys))
+        reason = "; ".join(reason_parts) if reason_parts else "updating metadata"
+        filename = desired.get("original-name", f"{file_hash[:8]}.pdf")
+
+        if args.dry_run:
+            print(f"  [DRY-RUN] {file_hash[:16]}... {reason} -> {filename}")
+            stats["repaired"] += 1
+            continue
+
+        if s3.update_object_metadata(raw_key, update_payload, merge_existing=True):
+            print(f"  [REPAIRED] {file_hash[:16]}... {reason} -> {filename}")
+            stats["repaired"] += 1
+        else:
+            print(f"  [FAILED] {file_hash[:16]}... could not update metadata")
+            stats["failed"] += 1
+
+    print("\n--- Repair Summary ---")
+    print(f"  Scanned:          {stats['scanned']}")
+    print(f"  Repaired:         {stats['repaired']}")
+    print(f"  Already correct:  {stats['unchanged']}")
+    print(f"  Missing manifest: {stats['missing_manifest']}")
+    print(f"  Missing raw PDF:  {stats['missing_raw']}")
+    print(f"  Failed:           {stats['failed']}")
+    if args.dry_run:
+        print("  [DRY-RUN] No changes were made")
+
+    return 1 if stats["failed"] else 0
+
+
 def cmd_config(args):
     """View or update remote configuration."""
     s3 = S3Client()
@@ -1699,7 +1807,25 @@ def main():
                             help="Skip confirmation and use non-locking update")
     p_manifest.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_manifest.set_defaults(func=cmd_manifest_stats)
-    
+
+    # Repair stripped raw-object metadata from the manifest
+    p_repair_metadata = subparsers.add_parser(
+        "repair-metadata",
+        help="Restore raw PDF S3 metadata from manifest entries"
+    )
+    p_repair_metadata.add_argument(
+        "hashes",
+        nargs="*",
+        help="Optional SHA256 hash(es) to repair. Defaults to all manifest entries."
+    )
+    p_repair_metadata.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite mismatched BlobForge metadata values, not just missing keys"
+    )
+    p_repair_metadata.add_argument("--dry-run", action="store_true", help="Preview repairs without writing")
+    p_repair_metadata.set_defaults(func=cmd_repair_metadata)
+
     # Config
     p_config = subparsers.add_parser("config", help="View or update remote configuration")
     p_config.add_argument("--show", action="store_true", help="Show current configuration")

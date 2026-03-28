@@ -268,6 +268,9 @@ blobforge lookup --path "DnD/PHB.pdf"
 
 # Show manifest statistics
 blobforge manifest --verbose
+
+# Repair stripped raw-object metadata from manifest entries
+blobforge repair-metadata --dry-run
 ```
 
 ## 7. Implementation

@@ -9,6 +9,8 @@ import json
 import time
 import tempfile
 import os
+import io
+from contextlib import redirect_stdout
 from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime, timedelta
 
@@ -17,8 +19,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from blobforge.config import PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
-from blobforge.config import S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
+from blobforge.config import S3_PREFIX_RAW, S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
 from blobforge.s3_client import S3Client
+from blobforge import cli as cli_module
 from blobforge.utils import (
     sanitize_metadata_value, decode_metadata_value,
     sanitize_metadata, decode_metadata, safe_filename
@@ -199,6 +202,43 @@ class TestS3ClientWithBoto3(unittest.TestCase):
         
         result = self.client.get_object_json("test/key")
         self.assertIsNone(result)
+
+    def test_update_object_metadata_merges_existing_metadata(self):
+        """Metadata repair should preserve unrelated metadata keys."""
+        self.mock_s3.head_object.return_value = {
+            'Metadata': {'src_last_modified_millis': '123'},
+            'ContentType': 'application/pdf',
+            'StorageClass': 'STANDARD',
+        }
+
+        result = self.client.update_object_metadata(
+            "pdf/store/raw/abc123.pdf",
+            {
+                "original-name": "Rulebook.pdf",
+                "tags": json.dumps(["tag1"]),
+                "size": "12345",
+            },
+            merge_existing=True,
+        )
+
+        self.assertTrue(result)
+        self.mock_s3.copy_object.assert_called_once()
+        call_kwargs = self.mock_s3.copy_object.call_args[1]
+        self.assertEqual(call_kwargs['MetadataDirective'], 'REPLACE')
+        self.assertEqual(call_kwargs['ContentType'], 'application/pdf')
+        self.assertEqual(call_kwargs['Metadata']['src_last_modified_millis'], '123')
+        self.assertEqual(
+            decode_metadata_value(call_kwargs['Metadata']['original-name']),
+            "Rulebook.pdf"
+        )
+        self.assertEqual(
+            decode_metadata_value(call_kwargs['Metadata']['tags']),
+            json.dumps(["tag1"])
+        )
+        self.assertEqual(
+            decode_metadata_value(call_kwargs['Metadata']['size']),
+            "12345"
+        )
 
     def test_list_todo_batch_returns_hashes(self):
         """list_todo_batch should return job hashes from S3 response."""
@@ -657,6 +697,127 @@ class TestSha256Computation(unittest.TestCase):
         # Known hash for "test content"
         expected = "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72"
         self.assertEqual(result, expected)
+
+
+class TestMetadataRepairCommand(unittest.TestCase):
+    """Test raw metadata repair command behavior."""
+
+    def test_repair_metadata_repairs_missing_keys_from_manifest(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_manifest.return_value = {
+            'entries': {
+                'abc123': {
+                    'paths': ['Books/Rulebook.pdf'],
+                    'tags': ['Books', 'Rulebook'],
+                    'size': 12345,
+                }
+            }
+        }
+        mock_s3.exists.return_value = True
+        mock_s3.get_object_metadata.return_value = {'src_last_modified_millis': '123'}
+        mock_s3.update_object_metadata.return_value = True
+
+        args = Mock(hashes=[], force=False, dry_run=False)
+
+        with patch('blobforge.cli.S3Client', return_value=mock_s3):
+            result = cli_module.cmd_repair_metadata(args)
+
+        self.assertEqual(result, 0)
+        mock_s3.update_object_metadata.assert_called_once_with(
+            f"{S3_PREFIX_RAW}/abc123.pdf",
+            {
+                'original-name': 'Rulebook.pdf',
+                'tags': json.dumps(['Books', 'Rulebook']),
+                'size': '12345',
+            },
+            merge_existing=True,
+        )
+
+    def test_repair_metadata_skips_mismatched_values_without_force(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_manifest.return_value = {
+            'entries': {
+                'abc123': {
+                    'paths': ['Books/Rulebook.pdf'],
+                    'tags': ['Books'],
+                    'size': 12345,
+                }
+            }
+        }
+        mock_s3.exists.return_value = True
+        mock_s3.get_object_metadata.return_value = {
+            'original-name': 'Wrong.pdf',
+            'tags': json.dumps(['Books']),
+            'size': '12345',
+        }
+
+        args = Mock(hashes=['abc123'], force=False, dry_run=False)
+
+        with patch('blobforge.cli.S3Client', return_value=mock_s3):
+            result = cli_module.cmd_repair_metadata(args)
+
+        self.assertEqual(result, 0)
+        mock_s3.update_object_metadata.assert_not_called()
+
+    def test_repair_metadata_force_overwrites_mismatched_values(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_manifest.return_value = {
+            'entries': {
+                'abc123': {
+                    'paths': ['Books/Rulebook.pdf'],
+                    'tags': ['Books'],
+                    'size': 12345,
+                }
+            }
+        }
+        mock_s3.exists.return_value = True
+        mock_s3.get_object_metadata.return_value = {
+            'original-name': 'Wrong.pdf',
+            'tags': json.dumps(['OldTag']),
+            'size': '999',
+        }
+        mock_s3.update_object_metadata.return_value = True
+
+        args = Mock(hashes=['abc123'], force=True, dry_run=False)
+
+        with patch('blobforge.cli.S3Client', return_value=mock_s3):
+            result = cli_module.cmd_repair_metadata(args)
+
+        self.assertEqual(result, 0)
+        mock_s3.update_object_metadata.assert_called_once_with(
+            f"{S3_PREFIX_RAW}/abc123.pdf",
+            {
+                'original-name': 'Rulebook.pdf',
+                'tags': json.dumps(['Books']),
+                'size': '12345',
+            },
+            merge_existing=True,
+        )
+
+    def test_repair_metadata_dry_run_reports_without_writing(self):
+        mock_s3 = MagicMock()
+        mock_s3.get_manifest.return_value = {
+            'entries': {
+                'abc123': {
+                    'paths': ['Books/Rulebook.pdf'],
+                    'tags': ['Books'],
+                    'size': 12345,
+                }
+            }
+        }
+        mock_s3.exists.return_value = True
+        mock_s3.get_object_metadata.return_value = {}
+
+        args = Mock(hashes=['abc123'], force=False, dry_run=True)
+        stdout = io.StringIO()
+
+        with patch('blobforge.cli.S3Client', return_value=mock_s3):
+            with redirect_stdout(stdout):
+                result = cli_module.cmd_repair_metadata(args)
+
+        self.assertEqual(result, 0)
+        self.assertIn("[DRY-RUN]", stdout.getvalue())
+        mock_s3.update_object_metadata.assert_not_called()
 
 
 if __name__ == '__main__':
