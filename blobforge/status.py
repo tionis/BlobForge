@@ -3,6 +3,7 @@ BlobForge Status - Display queue statistics and job status.
 """
 import os
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from .config import (
@@ -51,17 +52,48 @@ def show_status(verbose: bool = False):
     print(f"  Stale timeout: {stale_timeout} minutes")
     
     # -------------------------------------------------------------------------
+    # Fetch all data in parallel to minimise round-trips
+    # -------------------------------------------------------------------------
+    todo_prefixes = [f"{S3_PREFIX_TODO}/{prio}/" for prio in PRIORITIES]
+    result_prefixes = [f"{S3_PREFIX_DONE}/", f"{S3_PREFIX_FAILED}/", f"{S3_PREFIX_DEAD}/"]
+    all_prefixes = todo_prefixes + result_prefixes
+    
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        # Launch counts and processing scan concurrently
+        count_futures = {prefix: executor.submit(s3.count_prefix, prefix) for prefix in all_prefixes}
+        processing_future = executor.submit(s3.scan_processing_detailed)
+        
+        if verbose:
+            workers_future = executor.submit(s3.get_active_workers, stale_minutes=stale_timeout)
+        
+        # Collect todo counts
+        todo_counts = []
+        for prefix in todo_prefixes:
+            todo_counts.append(count_futures[prefix].result())
+        
+        # Collect result counts
+        done_count = count_futures[f"{S3_PREFIX_DONE}/"].result()
+        failed_count = count_futures[f"{S3_PREFIX_FAILED}/"].result()
+        dead_count = count_futures[f"{S3_PREFIX_DEAD}/"].result()
+        
+        # Collect processing jobs
+        active_jobs = processing_future.result()
+        
+        if verbose:
+            workers = workers_future.result()
+    
+    stale_count = sum(1 for j in active_jobs if j.get('stale', False))
+    total_todo = sum(todo_counts)
+    
+    # -------------------------------------------------------------------------
     # 1. TODO Queue Counts
     # -------------------------------------------------------------------------
     print(f"\n{'─' * 60}")
     print("[QUEUE]")
     print(f"{'─' * 60}")
-    total_todo = 0
-    for prio in PRIORITIES:
-        count = s3.count_prefix(f"{S3_PREFIX_TODO}/{prio}/")
+    for prio, count in zip(PRIORITIES, todo_counts):
         bar = "█" * min(count, 40) if count > 0 else ""
         print(f"  {prio:<15}: {count:>5} {bar}")
-        total_todo += count
     print(f"  {'TOTAL':<15}: {total_todo:>5}")
     
     # -------------------------------------------------------------------------
@@ -70,9 +102,6 @@ def show_status(verbose: bool = False):
     print(f"\n{'─' * 60}")
     print("[PROCESSING]")
     print(f"{'─' * 60}")
-    active_jobs = s3.scan_processing_detailed()
-    stale_count = sum(1 for j in active_jobs if j.get('stale', False))
-    
     print(f"  Active jobs : {len(active_jobs)}")
     print(f"  Stale (>{stale_timeout}m): {stale_count} {'⚠️  (run janitor to recover)' if stale_count else '✓'}")
     
@@ -157,9 +186,7 @@ def show_status(verbose: bool = False):
     print(f"\n{'─' * 60}")
     print("[RESULTS]")
     print(f"{'─' * 60}")
-    done_count = s3.count_prefix(f"{S3_PREFIX_DONE}/")
-    failed_count = s3.count_prefix(f"{S3_PREFIX_FAILED}/")
-    dead_count = s3.count_prefix(f"{S3_PREFIX_DEAD}/")
+    # Result counts already fetched above
     
     print(f"  ✅ Completed   : {done_count}")
     print(f"  ⏳ Failed      : {failed_count} {'(will be retried by janitor)' if failed_count else ''}")
@@ -200,7 +227,7 @@ def show_status(verbose: bool = False):
         print("[WORKERS]")
         print(f"{'─' * 60}")
         
-        workers = s3.get_active_workers(stale_minutes=stale_timeout)
+        # workers already fetched above
         if workers:
             print(f"  Active workers: {len(workers)}")
             for w in workers:

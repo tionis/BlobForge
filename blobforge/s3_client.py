@@ -271,17 +271,26 @@ class S3Client:
         objects = self.list_objects(prefix, max_keys)
         return [obj['Key'] for obj in objects]
 
-    def count_prefix(self, prefix: str) -> int:
-        """Count objects under a prefix."""
+    def count_prefix(self, prefix: str, limit: int = 0) -> int:
+        """Count objects under a prefix.
+
+        Args:
+            prefix: S3 key prefix to count under.
+            limit: If > 0, stop counting once this limit is reached and return
+                   the limit (useful for huge prefixes where exact count is
+                   not critical).
+        """
         if self.mock:
             return 0
-        
+
         try:
             paginator = self.s3.get_paginator('list_objects_v2')
             count = 0
             for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=prefix):
                 if 'Contents' in page:
                     count += len(page['Contents'])
+                    if limit and count >= limit:
+                        return limit
             return count
         except Exception:
             return 0
@@ -782,6 +791,44 @@ class S3Client:
     # Scan Operations (for status/janitor)
     # -------------------------------------------------------------------------
     
+    def _scan_processing_job(self, obj: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
+        """Parse a single processing lock object into a job info dict."""
+        key = obj['Key']
+        if key.endswith("/"):
+            return None
+
+        job_hash = key.split('/')[-1]
+        data = self.get_object_json(key)
+
+        if data:
+            heartbeat_ts = data.get('last_heartbeat', data.get('started', 0))
+            heartbeat_dt = datetime.fromtimestamp(heartbeat_ts / 1000.0)
+            age = now - heartbeat_dt
+            return {
+                "hash": job_hash,
+                "worker": data.get('worker', 'unknown'),
+                "priority": data.get('priority', 'unknown'),
+                "started": data.get('started'),
+                "last_heartbeat": heartbeat_ts,
+                "age": age,
+                "stale": age > timedelta(minutes=15),
+                "progress": data.get('progress')
+            }
+        else:
+            last_mod = obj.get('LastModified')
+            if last_mod:
+                last_mod = last_mod.replace(tzinfo=None)
+                age = now - last_mod
+            else:
+                age = timedelta(0)
+            return {
+                "hash": job_hash,
+                "worker": "unknown",
+                "priority": "unknown",
+                "age": age,
+                "stale": age > timedelta(minutes=15)
+            }
+
     def scan_processing_detailed(self) -> List[Dict[str, Any]]:
         """
         Scan processing queue with detailed information.
@@ -793,51 +840,22 @@ class S3Client:
                 {"hash": "mock_job_1", "worker": "worker-a", "age": timedelta(minutes=5), "stale": False},
                 {"hash": "mock_job_2", "worker": "worker-b", "age": timedelta(hours=3), "stale": True}
             ]
-        
-        jobs = []
+
         now = datetime.now()
-        
-        for obj in self.list_processing():
-            key = obj['Key']
-            if key.endswith("/"):
-                continue
-            
-            job_hash = key.split('/')[-1]
-            data = self.get_object_json(key)
-            
-            if data:
-                # Use internal heartbeat timestamp
-                heartbeat_ts = data.get('last_heartbeat', data.get('started', 0))
-                heartbeat_dt = datetime.fromtimestamp(heartbeat_ts / 1000.0)
-                age = now - heartbeat_dt
-                
-                jobs.append({
-                    "hash": job_hash,
-                    "worker": data.get('worker', 'unknown'),
-                    "priority": data.get('priority', 'unknown'),
-                    "started": data.get('started'),
-                    "last_heartbeat": heartbeat_ts,
-                    "age": age,
-                    "stale": age > timedelta(minutes=15),  # Shorter timeout with heartbeat
-                    "progress": data.get('progress')
-                })
-            else:
-                # Fallback to S3 LastModified
-                last_mod = obj.get('LastModified')
-                if last_mod:
-                    last_mod = last_mod.replace(tzinfo=None)
-                    age = now - last_mod
-                else:
-                    age = timedelta(0)
-                
-                jobs.append({
-                    "hash": job_hash,
-                    "worker": "unknown",
-                    "priority": "unknown",
-                    "age": age,
-                    "stale": age > timedelta(minutes=15)
-                })
-        
+        objects = self.list_processing()
+
+        if not objects:
+            return []
+
+        from concurrent.futures import ThreadPoolExecutor
+        jobs: List[Dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(self._scan_processing_job, obj, now) for obj in objects]
+            for future in futures:
+                result = future.result()
+                if result is not None:
+                    jobs.append(result)
+
         return jobs
 
     # -------------------------------------------------------------------------
@@ -1457,22 +1475,26 @@ class S3Client:
     def list_workers(self) -> List[Dict[str, Any]]:
         """
         List all registered workers.
-        
+
         Returns:
             List of worker metadata dicts
         """
         if self.mock:
             return []
-        
-        workers = []
-        keys = self.list_keys(f"{S3_PREFIX_WORKERS}/")
-        
-        for key in keys:
-            if key.endswith(".json"):
-                data = self.get_object_json(key)
+
+        keys = [k for k in self.list_keys(f"{S3_PREFIX_WORKERS}/") if k.endswith(".json")]
+        if not keys:
+            return []
+
+        from concurrent.futures import ThreadPoolExecutor
+        workers: List[Dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(self.get_object_json, key) for key in keys]
+            for future in futures:
+                data = future.result()
                 if data:
                     workers.append(data)
-        
+
         return workers
     
     def get_active_workers(self, stale_minutes: int = 15) -> List[Dict[str, Any]]:

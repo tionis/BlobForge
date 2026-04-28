@@ -513,4 +513,25 @@
     - `uv run python -m pytest tests/test_hydrator.py tests/test_blobforge.py -q` -> `54 passed, 5 subtests passed`.
     - `uv run python -m pytest tests -q` -> `71 passed, 5 subtests passed`.
 - **Status:** Optimization implemented and validated.
-    
+
+## 2026-04-28 (Dashboard Performance Investigation)
+- **Objective:** Investigate and fix `blobforge dashboard` slowness.
+- **Actions:**
+    1. Analyzed `blobforge/status.py` and `blobforge/s3_client.py` to identify I/O bottlenecks:
+       - `status.py` made ~9 sequential `count_prefix` S3 LIST calls (5 todo priorities + done/failed/dead).
+       - `s3_client.py` `scan_processing_detailed()` listed processing jobs then did a sequential `get_object_json` for each active job (N+1 query problem).
+       - `list_workers()` fetched each worker JSON sequentially.
+    2. Parallelized dashboard data fetching in `status.py`:
+       - Used `concurrent.futures.ThreadPoolExecutor(max_workers=8)` to run all `count_prefix` calls and `scan_processing_detailed` concurrently.
+       - In verbose mode, `get_active_workers()` also runs in the same executor pool.
+    3. Parallelized per-job lock fetching in `s3_client.py`:
+       - Extracted `_scan_processing_job()` helper.
+       - `scan_processing_detailed()` now uses `ThreadPoolExecutor(max_workers=16)` to fetch all processing lock contents in parallel.
+    4. Parallelized worker listing in `s3_client.py`:
+       - `list_workers()` now uses `ThreadPoolExecutor(max_workers=8)` to fetch worker metadata in parallel.
+    5. Added `limit` parameter to `S3Client.count_prefix()` for future capping of huge prefixes.
+    6. Updated `AGENTS.md` findings with root causes and fix summary.
+- **Validation:**
+    - `uv run python -m pytest tests/ -q` -> `76 passed, 5 subtests passed`.
+    - Module imports verified for `blobforge.status` and `blobforge.s3_client`.
+- **Status:** Dashboard I/O parallelized. Expected speedup is roughly the number of independent S3 calls (e.g., ~5-8x faster depending on queue sizes and active job counts).
