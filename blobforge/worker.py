@@ -14,10 +14,11 @@ import os
 import sys
 import time
 import json
-import shutil
 import random
 import argparse
+import math
 import signal
+import subprocess
 import zipfile
 import tempfile
 import threading
@@ -65,6 +66,132 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+class ScheduleWindowClosed(Exception):
+    """Raised when a worker schedule boundary aborts an active conversion."""
+
+
+class WorkerSchedule:
+    """
+    Local-time run window policy for workers.
+
+    Windows are represented as seconds from local midnight. A window whose end
+    is earlier than its start crosses midnight, e.g. 22:00-06:00.
+    """
+
+    def __init__(self, windows: list[tuple[int, int]], abort_running: bool = False,
+                 now_fn: Optional[Callable[[], datetime]] = None):
+        if not windows:
+            raise ValueError("At least one run window is required.")
+        self.windows = windows
+        self.abort_running = abort_running
+        self._now_fn = now_fn
+
+    @classmethod
+    def from_specs(cls, specs: list[str], abort_running: bool = False):
+        """Parse one or more comma-separated HH:MM-HH:MM window specs."""
+        windows: list[tuple[int, int]] = []
+        for spec in specs:
+            for part in spec.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" not in part:
+                    raise ValueError(f"Invalid run window '{part}'. Expected HH:MM-HH:MM.")
+                start_raw, end_raw = part.split("-", 1)
+                windows.append((cls._parse_time(start_raw), cls._parse_time(end_raw)))
+        return cls(windows, abort_running=abort_running)
+
+    @staticmethod
+    def _parse_time(value: str) -> int:
+        parts = value.strip().split(":")
+        if len(parts) != 2:
+            raise ValueError(f"Invalid time '{value}'. Expected HH:MM.")
+        try:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"Invalid time '{value}'. Expected HH:MM.") from exc
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError(f"Invalid time '{value}'. Expected HH:MM in 24-hour local time.")
+        return hour * 3600 + minute * 60
+
+    def _now(self) -> datetime:
+        return self._now_fn() if self._now_fn else datetime.now().astimezone()
+
+    @staticmethod
+    def _second_of_day(at: datetime) -> float:
+        return (
+            at.hour * 3600
+            + at.minute * 60
+            + at.second
+            + at.microsecond / 1_000_000
+        )
+
+    @staticmethod
+    def _contains(second: float, start: int, end: int) -> bool:
+        if start == end:
+            return True
+        if start < end:
+            return start <= second < end
+        return second >= start or second < end
+
+    def is_allowed(self, at: Optional[datetime] = None) -> bool:
+        """Return True when the worker is inside any configured run window."""
+        second = self._second_of_day(at or self._now())
+        return any(self._contains(second, start, end) for start, end in self.windows)
+
+    def seconds_until_next_allowed(self, at: Optional[datetime] = None) -> float:
+        """Seconds until a run window opens. Returns 0 when already allowed."""
+        current = at or self._now()
+        second = self._second_of_day(current)
+        if self.is_allowed(current):
+            return 0.0
+
+        day = 24 * 3600
+        waits = []
+        for start, end in self.windows:
+            if start == end:
+                return 0.0
+            waits.append((start - second) % day)
+        return min(waits) if waits else day
+
+    def seconds_until_window_end(self, at: Optional[datetime] = None) -> Optional[float]:
+        """
+        Seconds until the current allowed period ends.
+
+        Returns None if not currently allowed or if a full-day window is present.
+        When multiple windows overlap, this returns the latest containing end so
+        adjacent/overlapping windows do not abort unnecessarily early.
+        """
+        current = at or self._now()
+        second = self._second_of_day(current)
+        day = 24 * 3600
+        ends = []
+        for start, end in self.windows:
+            if start == end and self._contains(second, start, end):
+                return None
+            if not self._contains(second, start, end):
+                continue
+            if start < end:
+                end_second = end
+            elif second >= start:
+                end_second = end + day
+            else:
+                end_second = end
+            ends.append(end_second - second)
+        return max(ends) if ends else None
+
+    def describe(self) -> str:
+        def fmt(value: int) -> str:
+            hour, rem = divmod(value, 3600)
+            minute = rem // 60
+            return f"{hour:02d}:{minute:02d}"
+
+        parts = [f"{fmt(start)}-{fmt(end)}" for start, end in self.windows]
+        suffix = " (abort active jobs outside window)" if self.abort_running else ""
+        return ", ".join(parts) + suffix
 
 
 def _install_shutdown_handlers(handler: Callable[[int, Any], None]) -> Dict[int, Any]:
@@ -159,7 +286,7 @@ def _install_tqdm_hook():
                         progress_data['tqdm_eta'] = round(remaining, 1)
                     
                     _tqdm_progress_callback(progress_data)
-                except Exception as e:
+                except Exception:
                     # Don't let callback errors break tqdm
                     pass
         
@@ -389,7 +516,7 @@ class Worker:
     2. Uses 2-character prefix sharding (256 shards vs 16)
     3. Implements heartbeat mechanism for faster stale detection
     4. Tracks retries and respects MAX_RETRIES limit
-    5. Uses marker Python API directly (models stay in memory)
+    5. Uses marker Python API directly (models stay in memory) or an isolated subprocess
     6. Optimized polling: broad scan first, sharding only for contention
     7. Tracks throughput metrics (jobs completed, bytes processed, avg time)
     """
@@ -402,11 +529,12 @@ class Worker:
     POLL_BATCH_SIZE = 50  # Max jobs to fetch per priority in broad scan
     MAX_LOCK_ATTEMPTS = 5  # Max attempts to lock before moving to next priority
     
-    def __init__(self, s3_client: S3Client):
+    def __init__(self, s3_client: S3Client, isolate_conversion: bool = False):
         self.s3 = s3_client
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
         self.current_priority: Optional[str] = None
+        self.isolate_conversion = isolate_conversion
         
         # Polling optimization state
         self._empty_poll_count = 0  # Track consecutive empty polls for backoff
@@ -432,6 +560,8 @@ class Worker:
         set_tqdm_progress_callback(self.heartbeat.update_tqdm_progress)
         
         logger.info(f"Worker {self.id} initialized.")
+        if self.isolate_conversion:
+            logger.info("Marker conversions will run in an isolated subprocess.")
         self.cleanup_previous_session()
     
     def cleanup_previous_session(self):
@@ -516,8 +646,6 @@ class Worker:
         
         Returns the job hash if acquired, None otherwise.
         """
-        import time as _time
-        
         for priority in PRIORITIES:
             # Check priority cache to skip empty queues
             if self._is_priority_cached_empty(priority):
@@ -626,7 +754,7 @@ class Worker:
         
         return max(5, base_delay + jitter)
     
-    def process(self, job_hash: str):
+    def process(self, job_hash: str, run_schedule: Optional[WorkerSchedule] = None):
         """
         Process a PDF conversion job.
         
@@ -687,24 +815,49 @@ class Worker:
             # 2. Convert using marker Python API
             logger.info("Running marker conversion...")
             self.heartbeat.update_progress({"stage": "converting"})
-            
+            conversion_output_written = False
+
             try:
+                if run_schedule and run_schedule.abort_running and not run_schedule.is_allowed():
+                    raise ScheduleWindowClosed("Worker schedule window closed before conversion started")
+
                 if self.s3.mock:
                     # Mock marker output
                     logger.info("[MOCK] Skipping actual conversion")
                     md_text = "# Mock Conversion\n\nThis is mock content."
                     images = {}
+                    image_count = 0
                     marker_meta = {"mock": True}
                 else:
                     conversion_timeout = get_conversion_timeout()
-                    md_text, images, marker_meta = self._run_conversion_with_timeout(
-                        pdf_path,
-                        timeout_seconds=conversion_timeout
+                    conversion_timeout, schedule_abort = self._resolve_conversion_timeout(
+                        conversion_timeout,
+                        run_schedule
                     )
+                    if self.isolate_conversion:
+                        md_text, image_count, marker_meta = self._run_conversion_subprocess(
+                            pdf_path,
+                            out_dir,
+                            timeout_seconds=conversion_timeout,
+                            timeout_reason="schedule_window_closed" if schedule_abort else "conversion_timeout"
+                        )
+                        images = None
+                        conversion_output_written = True
+                    else:
+                        md_text, images, marker_meta = self._run_conversion_with_timeout(
+                            pdf_path,
+                            timeout_seconds=conversion_timeout,
+                            timeout_reason="schedule_window_closed" if schedule_abort else "conversion_timeout"
+                        )
+                        image_count = len(images)
                     # Extract page count from marker metadata if available
                     if marker_meta and 'page_stats' in marker_meta:
                         page_count = len(marker_meta['page_stats'])
-                    logger.info(f"Marker conversion completed: {len(md_text)} chars, {len(images)} images, {page_count or '?'} pages")
+                    logger.info(f"Marker conversion completed: {len(md_text)} chars, {image_count} images, {page_count or '?'} pages")
+            except ScheduleWindowClosed:
+                logger.info(f"Schedule window closed for {job_hash[:12]}... Requeueing active job.")
+                self._requeue_active_job(reason="schedule_window_closed")
+                return
             except Exception as e:
                 logger.error(f"Marker failed: {type(e).__name__}: {e}")
                 self._handle_failure(
@@ -720,26 +873,27 @@ class Worker:
             self.heartbeat.update_progress({
                 "stage": "packaging",
                 "page_count": page_count,
-                "image_count": len(images),
+                "image_count": image_count,
                 "output_chars": len(md_text)
             })
-            
-            # Save markdown
-            md_path = os.path.join(out_dir, "content.md")
-            with open(md_path, "w", encoding="utf-8") as f:
-                f.write(md_text)
-            
-            # Save images to assets folder
-            if images:
-                assets_dir = os.path.join(out_dir, "assets")
-                os.makedirs(assets_dir, exist_ok=True)
-                for img_name, img in images.items():
-                    img_path = os.path.join(assets_dir, img_name)
-                    # Convert to RGB if needed (for JPEG)
-                    if hasattr(img, 'mode') and img.mode != "RGB":
-                        img = img.convert("RGB")
-                    img.save(img_path)
-                logger.info(f"Saved {len(images)} images to assets/")
+
+            if not conversion_output_written:
+                # Save markdown
+                md_path = os.path.join(out_dir, "content.md")
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(md_text)
+
+                # Save images to assets folder
+                if images:
+                    assets_dir = os.path.join(out_dir, "assets")
+                    os.makedirs(assets_dir, exist_ok=True)
+                    for img_name, img in images.items():
+                        img_path = os.path.join(assets_dir, img_name)
+                        # Convert to RGB if needed (for JPEG)
+                        if hasattr(img, 'mode') and img.mode != "RGB":
+                            img = img.convert("RGB")
+                        img.save(img_path)
+                    logger.info(f"Saved {len(images)} images to assets/")
             
             # List files for debugging
             output_files = [f for _, _, files in os.walk(out_dir) for f in files]
@@ -944,7 +1098,32 @@ class Worker:
         
         return text, images, meta
     
-    def _run_conversion_with_timeout(self, pdf_path: str, timeout_seconds: int) -> tuple:
+    def _resolve_conversion_timeout(self, timeout_seconds: int,
+                                    run_schedule: Optional[WorkerSchedule]) -> tuple[int, bool]:
+        """
+        Resolve the effective conversion timeout.
+
+        Returns (timeout_seconds, schedule_abort), where schedule_abort means
+        the timeout comes from a closing run window and should requeue the job
+        instead of marking it failed.
+        """
+        timeout = _safe_int(timeout_seconds, 0)
+        if not run_schedule or not run_schedule.abort_running:
+            return timeout, False
+
+        seconds_remaining = run_schedule.seconds_until_window_end()
+        if seconds_remaining is None:
+            return timeout, False
+
+        schedule_timeout = max(1, int(math.ceil(seconds_remaining)))
+        if timeout <= 0 or schedule_timeout < timeout:
+            logger.info(f"Worker schedule window closes in {schedule_timeout}s; active conversion will be requeued at boundary.")
+            return schedule_timeout, True
+
+        return timeout, False
+
+    def _run_conversion_with_timeout(self, pdf_path: str, timeout_seconds: int,
+                                     timeout_reason: str = "conversion_timeout") -> tuple:
         """
         Run conversion with optional hard timeout.
         
@@ -970,6 +1149,8 @@ class Worker:
         previous_timer = signal.getitimer(signal.ITIMER_REAL)
         
         def _alarm_handler(_signum, _frame):
+            if timeout_reason == "schedule_window_closed":
+                raise ScheduleWindowClosed("Worker schedule window closed during conversion")
             raise TimeoutError(f"Conversion exceeded timeout ({timeout}s)")
         
         signal.signal(signal.SIGALRM, _alarm_handler)
@@ -982,6 +1163,90 @@ class Worker:
             except Exception:
                 signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous_handler)
+
+    def _run_conversion_subprocess(self, pdf_path: str, out_dir: str, timeout_seconds: int,
+                                   timeout_reason: str = "conversion_timeout") -> tuple[str, int, dict]:
+        """
+        Run marker conversion in a child Python process.
+
+        This protects the worker process from native crashes in marker/PyTorch
+        and gives scheduled aborts a process to terminate cleanly at the window
+        boundary.
+        """
+        timeout = _safe_int(timeout_seconds, 0)
+        cmd = [
+            sys.executable,
+            "-m",
+            "blobforge.conversion_child",
+            pdf_path,
+            out_dir,
+        ]
+        logger.info("Running marker conversion in isolated subprocess...")
+        if timeout > 0:
+            logger.info(f"Enforcing isolated conversion timeout: {timeout}s")
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout if timeout > 0 else None)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            if stderr:
+                logger.warning(f"Conversion subprocess stderr after timeout:\n{stderr[-4000:]}")
+            if timeout_reason == "schedule_window_closed":
+                raise ScheduleWindowClosed("Worker schedule window closed during conversion") from exc
+            raise TimeoutError(f"Conversion exceeded timeout ({timeout}s)") from exc
+
+        if stdout:
+            logger.debug(f"Conversion subprocess stdout:\n{stdout[-4000:]}")
+        if stderr:
+            logger.debug(f"Conversion subprocess stderr:\n{stderr[-4000:]}")
+
+        if proc.returncode != 0:
+            detail = stderr.strip() or stdout.strip() or "no subprocess output"
+            if proc.returncode < 0:
+                detail = f"terminated by {_signal_name(-proc.returncode)}: {detail}"
+            raise RuntimeError(
+                f"Isolated conversion subprocess exited with code {proc.returncode}: "
+                f"{detail[-2000:]}"
+            )
+
+        md_path = os.path.join(out_dir, "content.md")
+        meta_path = os.path.join(out_dir, "marker_meta.json")
+        result_path = os.path.join(out_dir, "conversion_result.json")
+
+        with open(md_path, encoding="utf-8") as f:
+            md_text = f.read()
+        marker_meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path, encoding="utf-8") as f:
+                marker_meta = json.load(f)
+
+        image_count = 0
+        if os.path.exists(result_path):
+            with open(result_path, encoding="utf-8") as f:
+                result = json.load(f)
+            image_count = _safe_int(result.get("image_count", 0))
+        else:
+            assets_dir = os.path.join(out_dir, "assets")
+            if os.path.isdir(assets_dir):
+                image_count = len([
+                    name for name in os.listdir(assets_dir)
+                    if os.path.isfile(os.path.join(assets_dir, name))
+                ])
+
+        for helper_path in (meta_path, result_path):
+            try:
+                os.remove(helper_path)
+            except FileNotFoundError:
+                pass
+
+        return md_text, image_count, marker_meta
     
     def _requeue_active_job(self, reason: str = "graceful_shutdown") -> bool:
         """
@@ -1053,7 +1318,9 @@ class Worker:
         logger.info(f"Worker {self.id} shut down.")
 
 
-def run_worker_loop(worker: Worker, run_once: bool = False, idle_sleep: Optional[float] = None) -> int:
+def run_worker_loop(worker: Worker, run_once: bool = False,
+                    idle_sleep: Optional[float] = None,
+                    run_schedule: Optional[WorkerSchedule] = None) -> int:
     """
     Run the worker polling loop with graceful signal handling.
     
@@ -1061,11 +1328,14 @@ def run_worker_loop(worker: Worker, run_once: bool = False, idle_sleep: Optional
         worker: Worker instance
         run_once: Process at most one job
         idle_sleep: Fixed sleep when idle. If None, use adaptive backoff.
+        run_schedule: Optional local-time run window policy.
     
     Returns:
         Process exit code
     """
     logger.info(f"Worker {worker.id} started. Polling for jobs...")
+    if run_schedule:
+        logger.info(f"Worker schedule enabled: {run_schedule.describe()}")
     shutdown_requested = False
     shutdown_in_progress = False
     exit_code = 0
@@ -1083,9 +1353,23 @@ def run_worker_loop(worker: Worker, run_once: bool = False, idle_sleep: Optional
     
     try:
         while True:
+            if run_schedule and not run_schedule.is_allowed():
+                wait_seconds = run_schedule.seconds_until_next_allowed()
+                if run_once:
+                    logger.info(
+                        "Current time is outside worker run window; no job will be acquired in --run-once mode."
+                    )
+                    break
+                logger.info(
+                    f"Outside worker run window; sleeping for {wait_seconds:.1f}s "
+                    "until the next configured window opens."
+                )
+                time.sleep(max(1, wait_seconds))
+                continue
+
             job = worker.acquire_job()
             if job:
-                worker.process(job)
+                worker.process(job, run_schedule=run_schedule)
                 if run_once:
                     break
             else:
@@ -1125,11 +1409,35 @@ def main():
     parser = argparse.ArgumentParser(description="BlobForge PDF Worker")
     parser.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
     parser.add_argument("--run-once", action="store_true", help="Process one job and exit")
+    parser.add_argument(
+        "--run-window",
+        action="append",
+        default=[],
+        help="Local-time run window HH:MM-HH:MM. May be repeated or comma-separated."
+    )
+    parser.add_argument(
+        "--abort-outside-window",
+        action="store_true",
+        help="Abort and requeue active conversions when a run window closes."
+    )
+    parser.add_argument(
+        "--isolate-conversion",
+        action="store_true",
+        help="Run marker conversion in a child process so native crashes do not kill the worker."
+    )
     args = parser.parse_args()
+
+    try:
+        run_schedule = (
+            WorkerSchedule.from_specs(args.run_window, abort_running=args.abort_outside_window)
+            if args.run_window else None
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     
     client = S3Client(dry_run=args.dry_run)
-    worker = Worker(client)
-    return run_worker_loop(worker, run_once=args.run_once)
+    worker = Worker(client, isolate_conversion=args.isolate_conversion or args.abort_outside_window)
+    return run_worker_loop(worker, run_once=args.run_once, run_schedule=run_schedule)
 
 
 if __name__ == "__main__":

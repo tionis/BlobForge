@@ -1,5 +1,34 @@
 # Work Log
 
+## 2026-07-09 (Worker Conversion Isolation)
+- **Objective:** Fix scheduled-abort worker mode after marker crashed natively with `corrupted double-linked list` and left an active processing lock behind.
+- **Actions:**
+    1. Investigated live queue state:
+       - Job `f829c114cc2982b16472c22110b21f662cf32001d3a76f77582eb212c6fa7b98` remained in `PROCESSING` under worker `f8a500d06011`.
+       - The active PDF was `Geist - The Sin-Eaters.pdf`.
+    2. Updated worker runtime:
+       - Added isolated marker conversion supervision via a child Python process.
+       - Made `--abort-outside-window` automatically enable isolated conversion.
+       - Added `--isolate-conversion` for crash containment without a run schedule.
+       - Parent worker now keeps S3 lock ownership, enforces child timeout, and requeues on schedule boundary.
+    3. Added `blobforge/conversion_child.py`:
+       - Runs marker conversion in the child process.
+       - Writes `content.md`, assets, marker metadata, and a small handoff result.
+    4. Updated tests:
+       - Covered successful isolated conversion handoff.
+       - Covered schedule-boundary timeout killing the child and raising the requeue path.
+    5. Updated documentation and tracking:
+       - Updated `docs/worker_schedule.md`, `README.md`, `DESIGN.md`, `TODO.md`, and `AGENTS.md`.
+- **Validation:**
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --no-project --with pytest python -m pytest tests/test_worker_runtime.py -q` -> `14 passed`.
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --no-project --with pytest --with xattr python -m pytest tests -q` -> `86 passed, 5 subtests passed`.
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --no-project --with ruff ruff check blobforge/worker.py blobforge/conversion_child.py tests/test_worker_runtime.py` -> passed.
+    - Targeted Ruff including `blobforge/cli.py` is still blocked by pre-existing lint issues in `cli.py`.
+- **Recovery:**
+    - Network-approved `blobforge janitor --verbose` recovered stale processing lock `f829c114cc29...` at retry `1/3`.
+    - Final queue check: `PROCESSING: 0`, `FAILED: 0`, `DEAD-LETTER: 0`, `TODO: 439`, `DONE: 1371`.
+- **Status:** Implementation validated and stale failed-run lock recovered.
+
 ## 2026-03-27 (Raw Metadata Repair Command)
 - **Objective:** Add an operator command to restore stripped raw-object metadata after S3 provider migration.
 - **Actions:**
@@ -283,6 +312,83 @@
        - `uv run python -m pytest tests/test_blobforge.py -q` -> `49 passed, 5 subtests passed`.
 - **Status:** All identified follow-up issues from worker robustness review have been addressed and validated.
 
+## 2026-07-08 (Worker Run Windows)
+- **Objective:** Add a worker runtime option that limits CPU-intensive conversion work to configured local-time windows and can optionally abort/requeue active jobs when a window closes.
+- **Actions:**
+    1. Inspected worker polling, graceful shutdown, active-job requeue, and conversion-timeout paths.
+    2. Implemented local run-window parsing and gating in `blobforge/worker.py`.
+       - Supports repeated or comma-separated `HH:MM-HH:MM` windows.
+       - Supports windows crossing midnight.
+       - Prevents job acquisition outside configured windows.
+    3. Added optional active conversion abort/requeue.
+       - `--abort-outside-window` uses the existing signal timer path.
+       - Window-boundary aborts raise a schedule-specific exception and requeue the active job with `recovered_from: schedule_window_closed`.
+       - Default behavior still lets active jobs finish after a window closes.
+    4. Wired CLI flags in both `blobforge worker` and standalone `blobforge.worker` parser.
+    5. Added focused unit coverage for schedule parsing, run-loop acquisition gating, process schedule propagation, and schedule-derived conversion timeout.
+    6. Added documentation:
+       - `docs/worker_schedule.md`
+       - README worker examples and behavior notes.
+       - DESIGN worker lifecycle notes.
+    7. Validation:
+       - `uv run --no-project --with pytest python -m pytest tests/test_worker_runtime.py tests/test_worker_shutdown.py tests/test_worker_recovery.py -q` -> `23 passed`.
+       - `uv run --no-project --with pytest --with xattr python -m pytest tests -q` -> `84 passed, 5 subtests passed`.
+       - `uv run --no-project --with ruff ruff check blobforge/worker.py tests/test_worker_runtime.py` -> passed.
+       - `uv run --no-project --with ruff ruff check .` -> failed on pre-existing unrelated lint issues across the repo; touched worker files pass targeted Ruff.
+       - `uv run blobforge worker --help` -> confirmed `--run-window` and `--abort-outside-window` are registered.
+    8. Refined outside-window idle behavior:
+       - Worker now sleeps until the next configured opening window instead of waking on `idle_sleep`/short polling intervals.
+       - Existing signal handling still interrupts the sleep for graceful shutdown.
+       - Added regression coverage for a 10-hour outside-window sleep despite `idle_sleep=10`.
+- **Status:** Worker run-window scheduling implemented, documented, and validated.
+
+## 2026-06-25 (Failed Jobs Follow-Up Investigation)
+- **Objective:** Inspect jobs that failed after the previous selective dead-letter retry, identify current failure causes, and recommend next handling.
+- **Actions:**
+    1. Started follow-up investigation and reviewed prior failed/dead-letter workflow notes.
+    2. Queried live queue, worker registry, remote config, and object-level queue records.
+       - Todo: 436 total (`3_normal`: 5, `4_low`: 431).
+       - Processing locks: 1 actual lock (`0237641f74fd...`, worker `f8a500d06011`).
+       - Failed queue: 1 job.
+       - Dead-letter queue: 4 jobs.
+       - Remote config: `max_retries: 3`, `conversion_timeout: 86400`.
+    3. Noted that `atlantis` and `citadel` are retired hosts per user confirmation; their worker registry records are stale and should not be treated as live workers.
+    4. Triaged current problem records:
+       - Failed: `792ac29bd6b6...` (`Changeling The Lost - Core Book.pdf`, 126.7 MiB), `Conversion exceeded timeout (86400s)`, retries `1`.
+       - Dead: `0857d1183713...` (`7910 - Rigger 3.pdf`, 104.4 MiB), `Worker restarted while job was processing`, retries `4`.
+       - Dead: `3c7ccc748fb4...` (`Trinity Continuum Aberrant (Rasterized).pdf`, 92.9 MiB), `Exceeded max retries (4)`, retries `4`.
+       - Dead: `a96530cb7011...` (`Cthulhu-Edition-7-Grundregelwerk-2017.pdf`, 48.0 MiB), `Worker restarted while job was processing`, retries `4`.
+       - Dead: `f829c114cc29...` (`Geist - The Sin-Eaters.pdf`, 57.4 MiB), `Worker restarted while job was processing`, retries `4`.
+       - Processing/stale: `0237641f74fd...` (`Cthulhu_7_Grundregelwerk.pdf`, 46.0 MiB), last heartbeat about 4h50m old, retries `2`.
+    5. Ran `blobforge janitor --dry-run --verbose`.
+       - Would restore stale `0237641f74fd...` to `3_normal` with retry `3/3`.
+       - Would retry failed `792ac29bd6b6...` to `3_normal` with retry `2/3`.
+       - Would not move any additional jobs to dead-letter.
+    6. Checked available job logs.
+       - Dead-letter jobs and stale processing lock had no structured error logs available.
+       - Timeout job had structured error detail.
+- **Status:** Investigation complete. Current failed/stale jobs are mostly resource/runtime failures, not PDFium data-format corruption. Suggested next operational step is to run janitor for the stale/failed queue, then decide separately whether to manually reset/requeue the four dead-letter jobs.
+
+## 2026-06-25 (Failed/Dead/Stale Requeue)
+- **Objective:** Requeue all current failed, dead-letter, and stale processing jobs after determining they were retry candidates.
+- **Actions:**
+    1. Ran `blobforge janitor --verbose`.
+       - Restored stale processing lock `0237641f74fd...` to `3_normal` at retry `3/3`.
+       - Retried failed timeout job `792ac29bd6b6...` to `3_normal` at retry `2/3`.
+       - Moved no jobs to dead-letter.
+    2. Ran `blobforge retry-all --dead --reset-retries --priority 3_normal`.
+       - Requeued `0857d1183713...`.
+       - Requeued `3c7ccc748fb4...`.
+       - Requeued `a96530cb7011...`.
+       - Requeued `f829c114cc29...`.
+    3. Verified post-requeue state:
+       - Failed queue: `0`.
+       - Dead-letter queue: `0`.
+       - Processing locks: `0`.
+       - `3_normal`: `9` jobs.
+       - `4_low`: `431` jobs.
+- **Status:** All current failed/dead/stale jobs were requeued successfully.
+
 ## 2026-02-10 (README Documentation Sync)
 - **Objective:** Update user-facing docs to reflect finalized worker shutdown and timeout semantics.
 - **Actions:**
@@ -330,6 +436,62 @@
     - `uv run blobforge --help` -> confirmed `hydrate` command registered.
     - `uv run blobforge hydrate --help` -> confirmed `paths`, `--force`, `--dry-run`.
 - **Status:** Feature implemented, documented, and validated.
+
+## 2026-06-09 (Failed Queue Investigation)
+- **Objective:** Inspect the current failed PDF queue, identify likely failure causes, and determine whether to retry jobs on this machine.
+- **Actions:**
+    1. Reviewed CLI/S3 queue support for failed jobs, retries, janitor recovery, and job logs.
+    2. Confirmed `search-queue` does not currently include failed/dead queues, so failed-job triage will use direct failed-queue listing and `blobforge logs`.
+    3. Queried live queue state with `uv run blobforge list --verbose`:
+       - Todo: 411 jobs.
+       - Processing: 2 jobs.
+       - Failed queue: 0 jobs.
+       - Dead-letter queue: 40 jobs.
+    4. Queried remote config and worker state:
+       - `max_retries: 3`; dead-letter entries are at retry count 4.
+       - Active workers: `atlantis` and `citadel`; `atlantis` was already memory-saturated while processing a large rasterized PDF.
+    5. Triaged dead-letter records plus structured error logs:
+       - 34 jobs: `Worker restarted while job was processing`.
+       - 4 jobs: `A process in the process pool was terminated abruptly while the future was running or pending.`
+       - 2 jobs: `Failed to load document (PDFium: Data format error).`
+    6. Installed optional local conversion dependencies with `uv pip install -e ".[convert,metrics]"`.
+    7. Downloaded the smallest restart-failed PDF (`1f71f4699dbe...`, 19.8 MiB) to `/tmp` and ran a local offline conversion probe.
+       - Marker model downloads completed successfully.
+       - The PDF loaded and began layout recognition, reaching `8/184` batches before the probe was stopped.
+       - Local memory pressure rose substantially during the probe, then returned to normal after termination.
+- **Status:** The live failed queue is empty; the real backlog is 40 dead-letter jobs. Most look like worker restart/resource casualties rather than corrupt PDFs. Do not bulk retry. Prefer one managed retry at a time, starting with a small restart-failed job, using `blobforge retry <hash> --priority 1_critical --reset-retries` followed by `blobforge worker --run-once` on a machine with enough RAM.
+
+## 2026-06-09 (Selective Dead-Letter Requeue)
+- **Objective:** Requeue all dead-letter jobs except PDFs that failed with `PDFium: Data format error`.
+- **Actions:**
+    1. Ran a dry-run S3 scan over `queue/dead/` and structured error logs.
+       - Selected for requeue: 38 jobs.
+       - Skipped: 2 jobs with `Failed to load document (PDFium: Data format error).`
+    2. Requeued the selected 38 jobs to `queue/todo/3_normal/` with retry counters reset to `0`.
+       - Todo marker `recovered_from`: `manual_bulk_retry_dead_excluding_pdfium`.
+       - Preserved each prior error in marker metadata as `previous_error`.
+    3. Removed the corresponding 38 dead-letter markers.
+    4. Verified queue state after the update:
+       - `3_normal`: 39 jobs.
+       - `dead-letter`: 2 jobs.
+       - Remaining dead-letter hashes are `3f094b24b162...` and `5be2a0426593...`, both PDFium data-format failures.
+- **Status:** Selective requeue completed successfully.
+
+## 2026-06-09 (Broken PDF Removal)
+- **Objective:** Remove the two PDFs that failed with `PDFium: Data format error`.
+- **Actions:**
+    1. Ran dry-run removals for both broken PDF hashes:
+       - `3f094b24b162ccb468c5f941eeb439d8ba5c9c59834ad6cdc16e9b6614f4e4b4` (`4th Edition/Shadowrun 4E - Mil Spec Tech.pdf`)
+       - `5be2a04265933289f7ec557f66732e37f9049811296db2deb86867e84279ed94` (`Scion 1st/Scion - Seeds of Tomorrow.pdf`)
+    2. Applied `blobforge remove` for both jobs.
+       - Removed dead-letter markers.
+       - Removed raw PDF objects.
+       - Removed manifest entries.
+       - Removed one error log per job.
+    3. Verified queue and manifest state:
+       - Dead-letter queue: `0`.
+       - Both hashes are no longer present in the manifest.
+- **Status:** Broken PDF jobs removed successfully.
 
 ## 2026-02-26 (Hydrate Preflight Performance Optimization)
 - **Objective:** Reduce per-file remote checks during hydration by precomputing local/remote hash sets.

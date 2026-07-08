@@ -152,6 +152,7 @@ Workers run anywhere. They only need S3 credentials.
 
 #### 4.2.2. Acquire Job (Atomic Locking with Improved Sharding)
 - Iterate through priorities: `1_critical` → `2_high` → `3_normal` → `4_low` → `5_background`
+- If a local worker run window is configured and the current local time is outside all windows, do not acquire work
 - **Sharding:** Use 2-character hex prefix (256 shards) for better distribution
   - Random prefix like `"ab"`, `"7f"`, etc.
   - Reduces lock contention compared to single-character sharding
@@ -170,6 +171,8 @@ Workers run anywhere. They only need S3 credentials.
 - Fetch S3 object metadata (original name, tags)
 - Run conversion (marker/pymupdf4llm)
   - Enforce `conversion_timeout` with `SIGALRM`/`ITIMER_REAL` when platform support is available
+  - `--isolate-conversion` runs marker in a child process and lets the parent worker contain native crashes
+  - If `--abort-outside-window` is active, isolated conversion is enabled automatically so the parent can terminate the conversion child at the configured run-window boundary
 - Create `info.json` with enriched metadata
 - Zip results
 
@@ -194,6 +197,14 @@ Workers run anywhere. They only need S3 credentials.
 - Keep custom signal handlers active until shutdown completes (prevents second signal from skipping cleanup)
 - Route unexpected loop exceptions through the same shutdown path (`requeue_current_job=True`)
 - Uncatchable termination (`SIGKILL`, OOM killer hard kill) still relies on startup/janitor crash recovery
+
+#### 4.2.8. Local Run Windows
+- Workers may be started with one or more local-time run windows (`HH:MM-HH:MM`)
+- Outside a run window, the worker remains registered but does not acquire new jobs
+- Outside-window idle sleep lasts until the next configured opening window; normal shutdown signals still interrupt that sleep
+- By default, jobs already running when a window closes are allowed to finish
+- With scheduled abort enabled, the isolated conversion child is killed at the boundary and the active job is requeued with `recovered_from: schedule_window_closed`
+- Run windows are process-local CLI policy, not remote S3 configuration
 
 ### 4.3. Janitor (Crash Recovery + Retry Management)
 

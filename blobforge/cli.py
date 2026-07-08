@@ -403,9 +403,27 @@ def cmd_worker(args):
     """Start a worker to process jobs."""
     from . import worker as worker_module
     
+    try:
+        run_schedule = (
+            worker_module.WorkerSchedule.from_specs(
+                args.run_window,
+                abort_running=args.abort_outside_window
+            )
+            if args.run_window else None
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 1
+
     client = S3Client(dry_run=args.dry_run)
-    w = worker_module.Worker(client)
-    return worker_module.run_worker_loop(w, run_once=args.run_once, idle_sleep=10)
+    isolate_conversion = args.isolate_conversion or args.abort_outside_window
+    w = worker_module.Worker(client, isolate_conversion=isolate_conversion)
+    return worker_module.run_worker_loop(
+        w,
+        run_once=args.run_once,
+        idle_sleep=10,
+        run_schedule=run_schedule
+    )
 
 
 def cmd_dashboard(args):
@@ -1775,6 +1793,22 @@ def main():
     p_worker = subparsers.add_parser("worker", help="Start a worker to process jobs")
     p_worker.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
     p_worker.add_argument("--run-once", action="store_true", help="Process one job and exit")
+    p_worker.add_argument(
+        "--run-window",
+        action="append",
+        default=[],
+        help="Local-time run window HH:MM-HH:MM. May be repeated or comma-separated."
+    )
+    p_worker.add_argument(
+        "--abort-outside-window",
+        action="store_true",
+        help="Abort and requeue active conversions when a run window closes."
+    )
+    p_worker.add_argument(
+        "--isolate-conversion",
+        action="store_true",
+        help="Run marker conversion in a child process so native crashes do not kill the worker."
+    )
     p_worker.set_defaults(func=cmd_worker)
     
     # Dashboard

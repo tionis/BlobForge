@@ -13,6 +13,13 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Isolate scheduled-abort worker conversions in a child process so native marker crashes do not kill the worker.
+- [x] Add worker run-window scheduling with optional active-job abort/requeue.
+- [x] Requeue all current failed, dead-letter, and stale processing jobs after follow-up investigation.
+- [x] Investigate current failed/dead-letter jobs after rerun.
+- [x] Remove the two PDFium data-format failure jobs from dead-letter, raw store, manifest, and logs.
+- [x] Requeue non-PDFium dead-letter jobs for retry while leaving PDFium data-format failures in dead-letter.
+- [x] Investigate current failed/dead-letter PDF queue and assess local retry viability.
 - [x] Add `blobforge repair-metadata` to restore stripped raw-object metadata from manifest entries after S3 provider migrations.
 - [x] Investigate `blobforge dashboard` `unknown.pdf` display and confirm whether it reflects missing data or only missing raw-object metadata.
 - [x] Optimize `blobforge hydrate` with local hash preflight + single manifest prefilter to reduce per-file remote checks.

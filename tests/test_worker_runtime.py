@@ -1,16 +1,19 @@
 """
 Runtime robustness tests for worker loop and conversion timeout behavior.
 """
+import json
+import os
 import signal
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
-import time
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from blobforge.worker import Worker
+from blobforge.worker import ScheduleWindowClosed, Worker, WorkerSchedule, run_worker_loop
 
 
 class TestConversionTimeout(unittest.TestCase):
@@ -67,6 +70,176 @@ class TestConversionTimeout(unittest.TestCase):
         self.assertEqual(result, ("md", {}, {}))
         run_conv.assert_called_once_with("source.pdf")
         setit.assert_not_called()
+
+    def test_schedule_abort_shortens_conversion_timeout(self):
+        worker = self._build_worker()
+        schedule = WorkerSchedule(
+            [(22 * 3600, 6 * 3600)],
+            abort_running=True,
+            now_fn=lambda: datetime(2026, 1, 1, 23, 30),
+        )
+
+        timeout, schedule_abort = worker._resolve_conversion_timeout(86400, schedule)
+
+        self.assertEqual(timeout, 6 * 3600 + 30 * 60)
+        self.assertTrue(schedule_abort)
+
+    def test_schedule_without_abort_does_not_change_conversion_timeout(self):
+        worker = self._build_worker()
+        schedule = WorkerSchedule(
+            [(22 * 3600, 6 * 3600)],
+            abort_running=False,
+            now_fn=lambda: datetime(2026, 1, 1, 23, 30),
+        )
+
+        timeout, schedule_abort = worker._resolve_conversion_timeout(86400, schedule)
+
+        self.assertEqual(timeout, 86400)
+        self.assertFalse(schedule_abort)
+
+    def test_isolated_conversion_reads_child_output(self):
+        worker = self._build_worker()
+
+        class FakeProcess:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return ('{"output_chars": 2, "image_count": 3}\n', "")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = os.path.join(tmp_dir, "output")
+            os.makedirs(out_dir)
+            with open(os.path.join(out_dir, "content.md"), "w", encoding="utf-8") as f:
+                f.write("md")
+            with open(os.path.join(out_dir, "marker_meta.json"), "w", encoding="utf-8") as f:
+                json.dump({"page_stats": [{}, {}]}, f)
+            with open(os.path.join(out_dir, "conversion_result.json"), "w", encoding="utf-8") as f:
+                json.dump({"image_count": 3}, f)
+
+            with patch("blobforge.worker.subprocess.Popen", return_value=FakeProcess()) as popen:
+                md_text, image_count, marker_meta = worker._run_conversion_subprocess(
+                    "source.pdf",
+                    out_dir,
+                    timeout_seconds=5,
+                )
+
+            self.assertEqual(md_text, "md")
+            self.assertEqual(image_count, 3)
+            self.assertEqual(marker_meta, {"page_stats": [{}, {}]})
+            self.assertFalse(os.path.exists(os.path.join(out_dir, "marker_meta.json")))
+            self.assertFalse(os.path.exists(os.path.join(out_dir, "conversion_result.json")))
+            popen.assert_called_once()
+
+    def test_isolated_schedule_timeout_kills_child_and_requeues(self):
+        worker = self._build_worker()
+
+        class FakeProcess:
+            returncode = None
+            killed = False
+
+            def communicate(self, timeout=None):
+                if not self.killed:
+                    raise subprocess.TimeoutExpired(["worker"], timeout)
+                return "", "timed out"
+
+            def kill(self):
+                self.killed = True
+
+        fake_proc = FakeProcess()
+
+        with tempfile.TemporaryDirectory() as tmp_dir, \
+             patch("blobforge.worker.subprocess.Popen", return_value=fake_proc):
+            with self.assertRaises(ScheduleWindowClosed):
+                worker._run_conversion_subprocess(
+                    "source.pdf",
+                    tmp_dir,
+                    timeout_seconds=1,
+                    timeout_reason="schedule_window_closed",
+                )
+
+        self.assertTrue(fake_proc.killed)
+
+
+class TestWorkerSchedule(unittest.TestCase):
+    """Validate local-time worker run window parsing and gating."""
+
+    def test_cross_midnight_window(self):
+        schedule = WorkerSchedule.from_specs(["22:00-06:00"])
+
+        self.assertTrue(schedule.is_allowed(datetime(2026, 1, 1, 23, 0)))
+        self.assertTrue(schedule.is_allowed(datetime(2026, 1, 2, 5, 59)))
+        self.assertFalse(schedule.is_allowed(datetime(2026, 1, 2, 12, 0)))
+
+    def test_comma_separated_windows(self):
+        schedule = WorkerSchedule.from_specs(["06:00-08:00,22:00-23:00"])
+
+        self.assertTrue(schedule.is_allowed(datetime(2026, 1, 1, 7, 0)))
+        self.assertTrue(schedule.is_allowed(datetime(2026, 1, 1, 22, 30)))
+        self.assertFalse(schedule.is_allowed(datetime(2026, 1, 1, 12, 0)))
+
+    def test_invalid_window_raises(self):
+        with self.assertRaises(ValueError):
+            WorkerSchedule.from_specs(["25:00-06:00"])
+
+
+class TestScheduledWorkerRunLoop(unittest.TestCase):
+    """Validate schedule-aware polling loop behavior."""
+
+    def test_run_once_outside_window_does_not_acquire_job(self):
+        worker = MagicMock()
+        worker.id = "scheduled"
+        schedule = WorkerSchedule(
+            [(22 * 3600, 23 * 3600)],
+            now_fn=lambda: datetime(2026, 1, 1, 12, 0),
+        )
+
+        with patch("blobforge.worker._install_shutdown_handlers", return_value={}), \
+             patch("blobforge.worker._restore_shutdown_handlers"):
+            rc = run_worker_loop(worker, run_once=True, idle_sleep=0, run_schedule=schedule)
+
+        self.assertEqual(rc, 0)
+        worker.acquire_job.assert_not_called()
+        worker.shutdown.assert_called_once_with(requeue_current_job=False)
+
+    def test_outside_window_sleeps_until_next_window(self):
+        worker = MagicMock()
+        worker.id = "scheduled"
+        worker.acquire_job.side_effect = KeyboardInterrupt()
+        current_time = {"value": datetime(2026, 1, 1, 12, 0)}
+        schedule = WorkerSchedule(
+            [(22 * 3600, 23 * 3600)],
+            now_fn=lambda: current_time["value"],
+        )
+
+        def advance_to_window(_seconds):
+            current_time["value"] = datetime(2026, 1, 1, 22, 30)
+
+        with patch("blobforge.worker._install_shutdown_handlers", return_value={}), \
+             patch("blobforge.worker._restore_shutdown_handlers"), \
+             patch("blobforge.worker.time.sleep", side_effect=advance_to_window) as sleep:
+            rc = run_worker_loop(worker, run_once=False, idle_sleep=10, run_schedule=schedule)
+
+        self.assertEqual(rc, 0)
+        sleep.assert_called_once_with(10 * 3600)
+        worker.acquire_job.assert_called_once()
+        worker.shutdown.assert_called_once_with(requeue_current_job=True)
+
+    def test_run_loop_passes_schedule_to_process(self):
+        worker = MagicMock()
+        worker.id = "scheduled"
+        worker.acquire_job.return_value = "job123"
+        schedule = WorkerSchedule(
+            [(22 * 3600, 23 * 3600)],
+            now_fn=lambda: datetime(2026, 1, 1, 22, 30),
+        )
+
+        with patch("blobforge.worker._install_shutdown_handlers", return_value={}), \
+             patch("blobforge.worker._restore_shutdown_handlers"):
+            rc = run_worker_loop(worker, run_once=True, idle_sleep=0, run_schedule=schedule)
+
+        self.assertEqual(rc, 0)
+        worker.process.assert_called_once_with("job123", run_schedule=schedule)
+        worker.shutdown.assert_called_once_with(requeue_current_job=False)
 
 
 @unittest.skipUnless(hasattr(signal, "SIGTERM"), "SIGTERM unavailable on this platform")

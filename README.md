@@ -180,9 +180,28 @@ blobforge worker --run-once
 
 # Preview without making changes
 blobforge worker --dry-run
+
+# Only acquire work during local nighttime hours
+blobforge worker --run-window 22:00-06:00
+
+# Requeue active conversion when the window closes
+blobforge worker --run-window 22:00-06:00 --abort-outside-window
+
+# Run marker in a child process so native crashes do not kill the worker
+blobforge worker --isolate-conversion
 ```
 
 *Run multiple instances on any number of machines to scale horizontally.*
+
+**Run window behavior**
+- `--run-window HH:MM-HH:MM` uses the worker machine's local time.
+- The option may be repeated or comma-separated, for example `--run-window 06:00-08:00,22:00-23:30`.
+- Outside configured windows, workers stay idle and do not acquire new jobs.
+- Outside-window idle sleep lasts until the next configured opening window; workers do not poll every few seconds while waiting.
+- By default, active jobs finish even if the window closes.
+- With `--abort-outside-window`, active conversion is interrupted at the window boundary, requeued, and unlocked.
+- `--abort-outside-window` automatically enables isolated conversion so the parent worker can kill the conversion child at the boundary.
+- `--isolate-conversion` can also be used by itself to contain native marker/PyTorch crashes; it reloads marker models per job.
 
 **Graceful shutdown behavior**
 - On `SIGINT`/`SIGTERM` (and platform-available `SIGHUP`/`SIGQUIT`), workers perform graceful shutdown.
