@@ -1,5 +1,50 @@
 # Work Log
 
+## 2026-07-15 (Backend Implementation Complexity)
+- **Objective:** Compare implementation effort for Bunny Edge Scripting + Database versus Cloudflare Worker + SQLite Durable Object.
+- **Finding:** Bunny has less initial scaffolding for a prototype. Cloudflare has one additional routing/runtime boundary but produces the simpler reliable implementation by providing serialized coordination, strong storage semantics, alarms, and recovery facilities.
+- **Status:** Complexity assessment documented; no application code changed.
+
+## 2026-07-15 (Objective Coordination Platform Recommendation)
+- **Objective:** Select the platform that best fits BlobForge's persistent, low-throughput coordination workload independent of the earlier preference to try Bunny.
+- **Actions:** Compared Bunny Edge Scripting + Bunny Database against Cloudflare Workers with D1 or SQLite-backed Durable Objects, using current official consistency, transaction, storage, recovery, maturity, limits, and pricing documentation.
+- **Decision:** Cloudflare Worker + one SQLite-backed Durable Object is the stronger production architecture. Cloudflare Queues remain rejected because their retention cannot hold the months-long backlog. Bunny remains viable as an experiment but is not favored on current production guarantees.
+- **Status:** Recommendation documented; platform selection remains pending and no application code changed.
+
+## 2026-07-15 (Persistent Backlog Requirement)
+- **Objective:** Reassess managed queues against BlobForge's real backlog duration.
+- **Finding:** Hundreds of queued PDFs at only a few completions per day implies a months-long backlog. Cloudflare Queue retention (24 hours Free, at most 14 days Paid) cannot safely hold the authoritative queue.
+- **Decision:** Use a non-expiring Bunny Database job table with atomic leases and inline stale-lease recovery. Do not add a message queue merely as a wake-up hint because it would introduce a second system without replacing database queue logic.
+- **Status:** Architecture documentation updated; no application code changed.
+
+## 2026-07-15 (Bunny vs Cloudflare Coordination Pricing)
+- **Objective:** Compare current Bunny and Cloudflare pricing for BlobForge's coordination workload.
+- **Actions:** Reviewed official Bunny Database, Edge Scripting, and platform pricing plus Cloudflare Workers, Queues, and D1 pricing. Added current rates and scale observations to the architecture evaluation and findings.
+- **Finding:** Both platforms can be free or nearly free at BlobForge's likely scale. Bunny has a lower paid floor and persistent database jobs; Cloudflare's free Queue has 24-hour retention, while Paid starts at $5/month and supplies generous Worker/D1 allowances.
+- **Status:** Pricing comparison documented; no application code changed.
+
+## 2026-07-15 (Cloudflare Coordination Comparison)
+- **Objective:** Determine whether Cloudflare provides coordination capabilities unavailable from the selected Bunny Edge Scripting + Bunny Database design.
+- **Actions:** Reviewed current official documentation for Cloudflare Queues, pull consumers, retries/DLQs, Workflows, Durable Objects/alarms, Cron Triggers, and Bunny Database durability, consistency, authentication, replication, and Edge Scripting limits. Updated the architecture evaluation and proof-of-concept requirements.
+- **Finding:** Cloudflare provides managed queue delivery and scheduling/durable-execution primitives that Bunny does not currently document as first-class services. Bunny leases can emulate their functional behavior, but Bunny Database's documented failover window can lose recently committed writes and requires an explicit BlobForge reconciliation strategy.
+- **Status:** Comparison documented; no application code changed.
+
+## 2026-07-15 (Bunny Coordination Scope Clarification)
+- **Objective:** Correct the proposed backend scope after user clarification.
+- **Actions:** Updated `docs/edge_backend_evaluation.md`, `TODO.md`, and `AGENTS.md` to specify a Bunny-only coordination plane.
+- **Decision:** Bunny Edge Scripting and Bunny Database coordinate external Python workers and replace S3 queue/manifest coordination. Worker hosting and blob storage remain unchanged; Cloudflare, PostgreSQL, and Bunny Magic Containers are not part of the target backend.
+- **Status:** Documentation corrected; no application code changed.
+
+## 2026-07-15 (Bunny Edge Backend Evaluation)
+- **Objective:** Evaluate rebuilding BlobForge metadata and job management with Bunny Database and Edge Scripting, with Cloudflare Workers or hosted PostgreSQL as alternatives.
+- **Actions:**
+    1. Inspected the current S3 queue/state implementation and the uncommitted PostgreSQL prototype, including schema, worker claim/heartbeat/completion paths, dashboard reads, ingestion, janitor recovery, and operator commands.
+    2. Reviewed current official Bunny Database, Edge Scripting, Magic Containers, and Cloudflare Queues documentation, including transactions, replication, preview limits, runtime limits, pull consumers, retries, and delivery guarantees.
+    3. Recorded the proposed architecture in `docs/edge_backend_evaluation.md` and added the proof-of-concept and prototype-disposition tasks to `TODO.md`.
+- **Finding:** Edge Scripting should be the short-lived API/control plane, not the long-running converter. Bunny Database is a plausible first authoritative state store if job claims use atomic lease transitions and the design retains a PostgreSQL escape hatch.
+- **Tool executions:** Repository inspection used `sed`, `rg`, `git status`, `git diff`, and a `uv run python -m py_compile` attempt. The compile attempt could not access uv's default cache under the workspace sandbox; no source compile error was observed. Internet research used official Bunny and Cloudflare documentation searches.
+- **Status:** Evaluation documented; no backend implementation or existing prototype files changed.
+
 ## 2026-03-27 (Raw Metadata Repair Command)
 - **Objective:** Add an operator command to restore stripped raw-object metadata after S3 provider migration.
 - **Actions:**

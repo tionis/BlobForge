@@ -3,11 +3,15 @@
 ## High Priority
 - [ ] Add unit tests for S3 operations and queue state transitions.
 - [ ] Test heartbeat mechanism under load.
+- [ ] If Bunny is selected, prototype Edge Scripting + Bunny Database coordination, including atomic claim, lease fencing, idempotent completion, replica consistency, and failover write-loss recovery tests.
+- [ ] If Cloudflare is selected, prototype a Worker + single SQLite Durable Object with atomic claims, fencing leases, alarms, and external Python worker API tests.
+- [ ] Choose between the user-preferred Bunny experiment and the production-oriented Cloudflare Worker + SQLite Durable Object backend before implementation.
 
 ## Normal Priority
 - [ ] Update README.md with full configuration reference.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
 - [ ] Add runtime fallback to manifest metadata when raw-object metadata is missing, so dashboards/output metadata stay readable even before repair.
+- [ ] Preserve and set aside the incomplete PostgreSQL prototype before implementing the Bunny-only coordination backend.
 
 ## Low Priority
 - [ ] Implement optional SQLite + Litestream for manifest storage.
