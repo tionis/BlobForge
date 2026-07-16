@@ -1,5 +1,33 @@
 # Work Log
 
+## 2026-07-16 (Bunny IndieAuth fix commit)
+- **Objective:** Commit the validated cross-edge IndieAuth session and multi-admin login fix at the user's request.
+- **Actions:**
+    1. Reviewed the final working-tree scope with `git status --short`.
+    2. Confirmed the commit contains signed PKCE/session tokens, the dedicated signing secret, normalized profile input, multi-admin allowlisting, focused tests, and documentation updates.
+- **Status:** Prepared for a single focused Git commit.
+
+## 2026-07-16 (Bunny IndieAuth session and multi-admin fix)
+- **Objective:** Fix IndieAuth redirecting back to the login page and support multiple administrators selected through a profile URL field.
+- **Diagnosis:**
+    1. Inspected Bunny auth routing, database session methods, UI rendering, runtime variables, and existing tests.
+    2. Identified that the callback wrote a database session and immediately redirected to a new request that could run at another Bunny edge and read before replica visibility. PKCE attempts had the same cross-request dependency.
+- **Implementation:**
+    1. Replaced database-backed PKCE attempts and sessions with HMAC-signed self-contained tokens using a new, independently scoped `SESSION_SIGNING_SECRET`.
+    2. Embedded the requested identity, verifier, token endpoint, nonce, and expiry in signed OAuth state; callback validation requires a valid signature, freshness, current allowlist membership, and an exact returned identity.
+    3. Added a signed session cookie containing only identity and expiry. It remains `Secure`, `HttpOnly`, and `SameSite=Lax`, and is immediately verifiable by any edge without a database read.
+    4. Removed unused authentication/session tables and database methods from the new schema. Existing deployed tables can remain harmlessly until a future explicit cleanup migration.
+    5. Added a login form for IndieAuth profile URLs. Bare domains gain `https://`, non-HTTPS URLs are rejected, and disallowed identities are rejected before network discovery.
+    6. Added comma-separated `ADMIN_MES` support with backward-compatible `ADMIN_ME` fallback. The default allowlist still contains `https://eric.wendland.dev/`.
+    7. Updated the environment template and deployment/architecture documentation with the new signing secret, multi-admin configuration, and rotation behavior.
+- **Validation so far:**
+    1. `npm run check` passed.
+    2. Bunny/libSQL tests pass (`8 passed`), including login-field rendering, bare-domain normalization, non-HTTPS rejection, pre-discovery allowlist rejection, full mocked IndieAuth callback, and immediate signed-session dashboard access.
+- **Final validation:**
+    1. Final Edge Script build passed; bundle size is 192.9 KiB.
+    2. Complete Python suite passed: `88 passed, 5 subtests passed`.
+- **Status:** IndieAuth session and multi-admin fix is implemented, documented, and fully validated. Deployment requires adding `SESSION_SIGNING_SECRET`, changing the admin variable to `ADMIN_MES` as needed, and publishing the new bundle.
+
 ## 2026-07-16 (Bunny backend commit)
 - **Objective:** Commit the completed migration from Cloudflare coordination to Bunny Edge Scripting and Bunny Database at the user's request.
 - **Actions:**
@@ -18,7 +46,7 @@
     1. Removed the `cloudflare/` Wrangler, Durable Object, test-runtime, generated dependency, and deployment artifacts.
     2. Added `bunny/` with the Bunny Edge Script SDK, web libSQL client, esbuild single-file output, TypeScript checks, Vitest, environment template, and gitignored build/secrets.
     3. Split the service into a Bunny runtime entry point, HTTP/IndieAuth application, database layer, and reusable management UI.
-    4. Recreated file metadata, job states, priority ordering, retry/dead-letter handling, workers, progress, config, logs, IndieAuth attempts/sessions, and audit tables in Bunny Database.
+    4. Recreated file metadata, job states, priority ordering, retry/dead-letter handling, workers, progress, config, logs, and audit tables in Bunny Database. (Authentication state was subsequently moved to signed tokens; see the later IndieAuth fix entry.)
     5. Implemented claims as atomic SQLite `UPDATE ... RETURNING` operations with opaque lease tokens and a same-worker exclusion. Repeated claims return the existing lease, preserving request-loss safety.
     6. Replaced Durable Object alarms with atomic lazy lease recovery before claims and snapshots plus explicit UI recovery. Recovery increments retry state, clears stale workers, and permits immediate reclaim.
     7. Preserved authenticated enqueue/read/claim/heartbeat/complete/fail/release APIs, exponential failure backoff, migration import, worker/admin token separation, IndieAuth + PKCE admin restriction for `https://eric.wendland.dev/`, same-origin checks, secure cookies, and CSP.

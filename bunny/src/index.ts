@@ -19,7 +19,8 @@ const client = createClient({
 const app = new BlobForgeApp(new CoordinatorDatabase(client), {
   workerApiToken: required("WORKER_API_TOKEN"),
   migrationApiToken: Deno.env.get("MIGRATION_API_TOKEN"),
-  adminMe: Deno.env.get("ADMIN_ME") || "https://eric.wendland.dev/",
+  sessionSigningSecret: required("SESSION_SIGNING_SECRET"),
+  adminMes: (Deno.env.get("ADMIN_MES") || Deno.env.get("ADMIN_ME") || "https://eric.wendland.dev/").split(",").map((value) => value.trim()).filter(Boolean),
   sessionTtlSeconds: Number(Deno.env.get("SESSION_TTL_SECONDS") || 43_200),
   leaseSeconds: Number(Deno.env.get("LEASE_SECONDS") || 900),
 });

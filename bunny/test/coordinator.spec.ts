@@ -1,6 +1,6 @@
 import { createClient, type Client } from "@libsql/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BlobForgeApp } from "../src/app";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BlobForgeApp, normalizeProfileUrl } from "../src/app";
 import { CoordinatorDatabase } from "../src/database";
 
 let client: Client;
@@ -14,11 +14,12 @@ beforeEach(() => {
   app = new BlobForgeApp(database, {
     workerApiToken: "worker-secret",
     migrationApiToken: "migration-secret",
-    adminMe: "https://eric.wendland.dev/",
+    sessionSigningSecret: "session-secret-that-is-different-from-worker-secret",
+    adminMes: ["https://eric.wendland.dev/", "https://alice.example/"],
   });
 });
 
-afterEach(() => client.close());
+afterEach(() => { vi.restoreAllMocks(); client.close(); });
 
 function call(path: string, method = "GET", body?: unknown, headers = workerHeaders): Promise<Response> {
   return app.fetch(new Request(`https://blobforge.example${path}`, {
@@ -97,5 +98,53 @@ describe("Bunny BlobForge coordinator", () => {
       client_id: "https://blobforge.example/client-metadata.json",
       redirect_uris: ["https://blobforge.example/auth/callback"],
     });
+  });
+
+  it("shows a profile URL field and normalizes bare domains to HTTPS", async () => {
+    const page = await app.fetch(new Request("https://blobforge.example/"));
+    const body = await page.text();
+    expect(body).toContain('name="me"');
+    expect(normalizeProfileUrl("alice.example")).toBe("https://alice.example/");
+    expect(() => normalizeProfileUrl("http://alice.example")).toThrow("must use HTTPS");
+  });
+
+  it("rejects identities outside the multi-admin allowlist before discovery", async () => {
+    const discovery = vi.spyOn(globalThis, "fetch");
+    const response = await app.fetch(new Request("https://blobforge.example/auth/login?me=mallory.example"));
+    expect(response.status).toBe(403);
+    expect(discovery).not.toHaveBeenCalled();
+  });
+
+  it("completes IndieAuth with a signed session that is immediately readable", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://alice.example/") return new Response(
+        '<link rel="indieauth-metadata" href="https://auth.example/metadata">',
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+      if (url === "https://auth.example/metadata") return Response.json({
+        issuer: "https://auth.example/",
+        authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+      });
+      if (url === "https://auth.example/token") return Response.json({ me: "https://alice.example/" });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const login = await app.fetch(new Request("https://blobforge.example/auth/login?me=alice.example"));
+    expect(login.status).toBe(302);
+    const authorization = new URL(login.headers.get("location")!);
+    expect(authorization.searchParams.get("me")).toBe("https://alice.example/");
+
+    const callback = await app.fetch(new Request(
+      `https://blobforge.example/auth/callback?code=test-code&state=${encodeURIComponent(authorization.searchParams.get("state")!)}`,
+    ));
+    expect(callback.status).toBe(302);
+    const cookie = callback.headers.get("set-cookie")!.split(";", 1)[0]!;
+
+    const dashboard = await app.fetch(new Request("https://blobforge.example/", { headers: { cookie } }));
+    const body = await dashboard.text();
+    expect(body).toContain("Coordination console");
+    expect(body).toContain("https://alice.example/");
   });
 });

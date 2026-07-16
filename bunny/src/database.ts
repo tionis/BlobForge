@@ -49,9 +49,6 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS job_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, level TEXT NOT NULL, message TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS job_logs_hash_idx ON job_logs(file_hash,created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS auth_attempts (state TEXT PRIMARY KEY, verifier TEXT NOT NULL, token_endpoint TEXT NOT NULL, issuer TEXT NOT NULL, expires_at INTEGER NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, me TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at)`,
   `CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, subject TEXT, detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
 ];
 
@@ -322,39 +319,6 @@ export class CoordinatorDatabase {
     await this.client.batch(statements, "write");
     await this.audit("migration-api", "import", null, { imported: items.length });
     return items.length;
-  }
-
-  async saveAuthAttempt(state: string, verifier: string, tokenEndpoint: string, issuer: string, expiresAt: number): Promise<void> {
-    await this.client.batch([
-      statement("DELETE FROM auth_attempts WHERE expires_at<?", [Date.now()]),
-      statement("INSERT INTO auth_attempts(state,verifier,token_endpoint,issuer,expires_at) VALUES(?,?,?,?,?)", [state, verifier, tokenEndpoint, issuer, expiresAt]),
-    ], "write");
-  }
-
-  async takeAuthAttempt(state: string): Promise<Row | null> {
-    const results = await this.client.batch([
-      statement("SELECT * FROM auth_attempts WHERE state=?", [state]),
-      statement("DELETE FROM auth_attempts WHERE state=?", [state]),
-    ], "write");
-    return results[0].rows[0] || null;
-  }
-
-  async createSession(tokenHash: string, me: string, ttlSeconds: number): Promise<void> {
-    const timestamp = Date.now();
-    await this.client.batch([
-      statement("DELETE FROM sessions WHERE expires_at<?", [timestamp]),
-      statement("INSERT INTO sessions(token_hash,me,created_at,expires_at) VALUES(?,?,?,?)", [tokenHash, me, timestamp, timestamp + ttlSeconds * 1000]),
-    ], "write");
-  }
-
-  async getSession(tokenHash: string): Promise<{ me: string; expires_at: number } | null> {
-    const result = await this.client.execute(statement("SELECT me,expires_at FROM sessions WHERE token_hash=?", [tokenHash]));
-    const row = result.rows[0];
-    return row ? { me: String(row.me), expires_at: numeric(row.expires_at) } : null;
-  }
-
-  async deleteSession(tokenHash: string): Promise<void> {
-    await this.client.execute(statement("DELETE FROM sessions WHERE token_hash=?", [tokenHash]));
   }
 
   async audit(actor: string, action: string, subject: string | null, detail: unknown): Promise<void> {

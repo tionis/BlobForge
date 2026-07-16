@@ -22,7 +22,7 @@ Official platform references:
 ## Components
 
 - `bunny/src/index.ts`: Bunny runtime entry point and database connection.
-- `bunny/src/app.ts`: HTTP API, IndieAuth, sessions, validation, and UI routes.
+- `bunny/src/app.ts`: HTTP API, IndieAuth, signed state/sessions, validation, and UI routes.
 - `bunny/src/database.ts`: schema and atomic queue operations.
 - `bunny/src/ui.ts`: dependency-free management console.
 - `blobforge/coordinator_client.py`: worker/ingestor HTTP client.
@@ -69,19 +69,21 @@ repeating conversion.
 ```text
 WORKER_API_TOKEN=<long random worker secret>
 MIGRATION_API_TOKEN=<different long random migration secret>
+SESSION_SIGNING_SECRET=<third independent long random secret>
 ```
 
 7. Add these non-secret environment variables:
 
 ```text
-ADMIN_ME=https://eric.wendland.dev/
+ADMIN_MES=https://eric.wendland.dev/,https://another-admin.example/
 SESSION_TTL_SECONDS=43200
 LEASE_SECONDS=900
 ```
 
 Use a stable HTTPS custom hostname before testing IndieAuth. The request origin
-becomes the IndieAuth client ID and callback origin. The default administrator
-is `https://eric.wendland.dev/`.
+becomes the IndieAuth client ID and callback origin. `ADMIN_MES` is a
+comma-separated allowlist. `ADMIN_ME` remains accepted as a single-admin
+compatibility setting when `ADMIN_MES` is absent.
 
 Alternatively, Bunny's repository integration can generate its deployment
 workflow after the project, build command, and entry file are selected in the
@@ -89,15 +91,21 @@ dashboard. This avoids committing account-specific script identifiers.
 
 ## Authentication and authorization
 
-The management UI discovers the administrator's IndieAuth metadata and uses
-Authorization Code + PKCE with expiring state. It accepts only the exact
-canonical identity `https://eric.wendland.dev/`. Session tokens are stored only
-as hashes and sent using `Secure`, `HttpOnly`, `SameSite=Lax` cookies. UI writes
-also require a same-origin request.
+The login page asks for an IndieAuth profile URL. A value without a protocol is
+normalized to `https://`; explicitly non-HTTPS profiles are rejected. Discovery
+only starts after the normalized URL matches `ADMIN_MES`.
+
+The management UI uses Authorization Code + PKCE. PKCE state and authenticated
+sessions are HMAC-signed with `SESSION_SIGNING_SECRET`, so the callback and next
+page request do not depend on cross-region database replication. Session
+cookies are `Secure`, `HttpOnly`, and `SameSite=Lax`; UI writes also require a
+same-origin request. Rotating the signing secret immediately logs out every
+administrator.
 
 The worker secret can enqueue and operate leases, but cannot call admin or
-migration routes. The migration secret can import state but cannot operate
-workers or UI routes. Rotate or remove the migration secret after cutover.
+migration routes and cannot forge admin sessions. The migration secret can
+import state but cannot operate workers or UI routes. All three secrets must be
+independent. Rotate or remove the migration secret after cutover.
 
 ## Configure BlobForge clients
 

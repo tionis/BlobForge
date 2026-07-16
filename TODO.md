@@ -13,6 +13,7 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Fix Bunny IndieAuth cross-edge login sessions and add normalized profile input with a multi-admin allowlist.
 - [x] Replace S3 queue coordination with Bunny Edge Scripting + Bunny Database, IndieAuth management UI, fenced leases, and legacy-state migration.
 - [x] Isolate scheduled-abort worker conversions in a child process so native marker crashes do not kill the worker.
 - [x] Add worker run-window scheduling with optional active-job abort/requeue.

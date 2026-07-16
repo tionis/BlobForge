@@ -4,6 +4,8 @@ import { APP_CSS, APP_JS, renderHome } from "./ui";
 export interface AppConfig {
   workerApiToken: string;
   migrationApiToken?: string;
+  sessionSigningSecret: string;
+  adminMes?: string[];
   adminMe?: string;
   sessionTtlSeconds?: number;
   leaseSeconds?: number;
@@ -35,6 +37,15 @@ function canonicalUrl(value: string): string {
   return url.toString();
 }
 
+export function normalizeProfileUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error("Enter your IndieAuth profile URL");
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  const normalized = canonicalUrl(withProtocol);
+  if (new URL(normalized).protocol !== "https:") throw new Error("IndieAuth profile URLs must use HTTPS");
+  return normalized;
+}
+
 function validHash(value: string): boolean {
   return /^[a-f0-9]{64}$/.test(value);
 }
@@ -56,6 +67,12 @@ function base64url(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function decodeBase64url(value: string): Uint8Array {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - value.length % 4) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 function randomToken(bytes = 32): string {
@@ -171,7 +188,7 @@ export class BlobForgeApp {
       if (url.pathname.startsWith("/api/v1/")) return this.workerApi(request, url);
       if (url.pathname === "/" && request.method === "GET") {
         const session = await this.session(request);
-        return html(renderHome(Boolean(session), this.adminMe(), `${url.origin}/auth/callback`));
+        return html(renderHome(Boolean(session), session?.me || "", `${url.origin}/auth/callback`));
       }
       return error("Not found", 404);
     } catch (cause) {
@@ -180,7 +197,11 @@ export class BlobForgeApp {
     }
   }
 
-  private adminMe(): string { return canonicalUrl(this.config.adminMe || "https://eric.wendland.dev/"); }
+  private allowedAdmins(): string[] {
+    const configured = this.config.adminMes?.length ? this.config.adminMes : [this.config.adminMe || "https://eric.wendland.dev/"];
+    return [...new Set(configured.map(normalizeProfileUrl))];
+  }
+  private isAdmin(me: string): boolean { return this.allowedAdmins().includes(me); }
   private leaseSeconds(runtime?: Record<string, unknown>): number { return Math.max(60, Number(runtime?.lease_seconds || this.config.leaseSeconds || 900)); }
   private clientMetadata(url: URL): Response { return json({ client_id: `${url.origin}/client-metadata.json`, client_name: "BlobForge", client_uri: `${url.origin}/`, redirect_uris: [`${url.origin}/auth/callback`] }); }
 
@@ -199,6 +220,28 @@ export class BlobForgeApp {
   private sameOrigin(request: Request): boolean {
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
     return request.headers.get("origin") === new URL(request.url).origin;
+  }
+
+  private async signature(payload: string): Promise<string> {
+    const key = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(this.config.sessionSigningSecret),
+      { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+    );
+    return base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload))));
+  }
+
+  private async signPayload(value: Record<string, unknown>): Promise<string> {
+    const payload = base64url(new TextEncoder().encode(JSON.stringify(value)));
+    return `${payload}.${await this.signature(payload)}`;
+  }
+
+  private async verifyPayload(value: string): Promise<Record<string, unknown> | null> {
+    const parts = value.split(".");
+    if (parts.length !== 2 || !(await secureEqual(parts[1]!, await this.signature(parts[0]!)))) return null;
+    try {
+      const parsed = JSON.parse(new TextDecoder().decode(decodeBase64url(parts[0]!)));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch { return null; }
   }
 
   private async workerApi(request: Request, url: URL): Promise<Response> {
@@ -289,9 +332,14 @@ export class BlobForgeApp {
   }
 
   private async login(request: Request): Promise<Response> {
-    const url = new URL(request.url); const me = this.adminMe(); const discovered = await discoverIndieAuth(me);
-    const state = randomToken(); const verifier = randomToken(48); const challenge = await sha256(verifier);
-    await this.db.saveAuthAttempt(state, verifier, discovered.token, discovered.issuer, Date.now() + 600_000);
+    const url = new URL(request.url);
+    let me: string;
+    try { me = normalizeProfileUrl(url.searchParams.get("me") || ""); }
+    catch (cause) { return error(cause instanceof Error ? cause.message : "Invalid profile URL"); }
+    if (!this.isAdmin(me)) return error("This IndieAuth identity is not a BlobForge administrator", 403);
+    const discovered = await discoverIndieAuth(me);
+    const verifier = randomToken(48); const challenge = await sha256(verifier);
+    const state = await this.signPayload({ me, verifier, token_endpoint: discovered.token, issuer: discovered.issuer, exp: Date.now() + 600_000, nonce: randomToken() });
     const auth = new URL(discovered.authorization);
     for (const [key, value] of Object.entries({ response_type: "code", client_id: `${url.origin}/client-metadata.json`, redirect_uri: `${url.origin}/auth/callback`, state, code_challenge: challenge, code_challenge_method: "S256", scope: "profile", me })) auth.searchParams.set(key, value);
     return Response.redirect(auth.toString(), 302);
@@ -300,30 +348,31 @@ export class BlobForgeApp {
   private async callback(request: Request): Promise<Response> {
     const url = new URL(request.url); const state = url.searchParams.get("state") || ""; const code = url.searchParams.get("code") || "";
     if (!state || !code) return error(url.searchParams.get("error") || "Missing IndieAuth response", 400);
-    const attempt = await this.db.takeAuthAttempt(state);
-    if (!attempt || Number(attempt.expires_at) < Date.now()) return error("Expired or invalid IndieAuth state", 400);
+    const attempt = await this.verifyPayload(state);
+    if (!attempt || Number(attempt.exp) < Date.now() || typeof attempt.me !== "string" || !this.isAdmin(attempt.me)) return error("Expired or invalid IndieAuth state", 400);
     const form = new URLSearchParams({ grant_type: "authorization_code", code, client_id: `${url.origin}/client-metadata.json`, redirect_uri: `${url.origin}/auth/callback`, code_verifier: String(attempt.verifier) });
     const tokenResponse = await fetch(String(attempt.token_endpoint), { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: form });
     const result: Record<string, unknown> = (tokenResponse.headers.get("content-type") || "").includes("json") ? await tokenResponse.json() as Record<string, unknown> : Object.fromEntries(new URLSearchParams(await tokenResponse.text()));
     if (!tokenResponse.ok) return error(String(result.error_description || result.error || "IndieAuth exchange failed"), 401);
-    if (typeof result.me !== "string" || canonicalUrl(result.me) !== this.adminMe()) return error("Authenticated identity is not a BlobForge administrator", 403);
-    const token = randomToken(); const ttl = Math.max(300, this.config.sessionTtlSeconds || 43_200);
-    await this.db.createSession(await sha256(token), canonicalUrl(result.me), ttl);
-    await this.db.audit(canonicalUrl(result.me), "login", canonicalUrl(result.me), {});
+    if (typeof result.me !== "string") return error("IndieAuth response did not include an identity", 401);
+    const returnedMe = normalizeProfileUrl(result.me);
+    if (returnedMe !== attempt.me || !this.isAdmin(returnedMe)) return error("Authenticated identity is not a BlobForge administrator", 403);
+    const ttl = Math.max(300, this.config.sessionTtlSeconds || 43_200);
+    const token = await this.signPayload({ me: returnedMe, exp: Date.now() + ttl * 1000 });
+    await this.db.audit(returnedMe, "login", returnedMe, {});
     return new Response(null, { status: 302, headers: { location: "/", "set-cookie": sessionCookie(url, token, ttl) } });
   }
 
   private async logout(request: Request): Promise<Response> {
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
-    const url = new URL(request.url); const token = parseCookies(request).get(cookieName(url));
-    if (token) await this.db.deleteSession(await sha256(token));
+    const url = new URL(request.url);
     return new Response(null, { status: 302, headers: { location: "/", "set-cookie": clearSessionCookie(url) } });
   }
 
   private async session(request: Request): Promise<{ me: string } | null> {
     const url = new URL(request.url); const token = parseCookies(request).get(cookieName(url));
     if (!token) return null;
-    const session = await this.db.getSession(await sha256(token));
-    return session && session.expires_at >= Date.now() ? { me: session.me } : null;
+    const session = await this.verifyPayload(token);
+    return session && typeof session.me === "string" && Number(session.exp) >= Date.now() && this.isAdmin(session.me) ? { me: session.me } : null;
   }
 }
