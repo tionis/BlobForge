@@ -11,6 +11,7 @@
 ## Low Priority
 
 ## Done
+- [x] Replace the preview's handwritten Markdown subset with Marked + DOMPurify and add a sticky/collapsible active-section ToC.
 - [x] Add Web UI PDF ingestion, paginated library search/filtering, PDF/ZIP downloads, and client-side result previews.
 - [x] Add application-level Bunny Database backups to S3 and a management UI trigger.
 - [x] Remove manifest/log/Telegram dependencies and add dry-run-first legacy S3 cleanup.

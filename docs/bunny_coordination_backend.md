@@ -24,7 +24,9 @@ Official platform references:
 - `bunny/src/index.ts`: Bunny runtime entry point and database connection.
 - `bunny/src/app.ts`: HTTP API, IndieAuth, signed state/sessions, validation, and UI routes.
 - `bunny/src/object_store.ts`: WebCrypto AWS SigV4 presigning and output existence checks.
-- `bunny/src/management_ui.ts`: authenticated queue and worker-enrollment console behavior.
+- `bunny/src/management_ui.ts`: authenticated file library, worker management, ZIP preview, and persistent ToC behavior.
+- `bunny/src/markdown_runtime.ts`: Marked + DOMPurify browser rendering boundary.
+- `bunny/scripts/generate-markdown.mjs`: reproducibly embeds the self-hosted browser renderer in the Edge Script bundle.
 - `bunny/src/database.ts`: schema and atomic queue operations.
 - `bunny/src/ui.ts`: dependency-free management console.
 - `blobforge/coordinator_client.py`: worker/ingestor HTTP client.
@@ -262,12 +264,22 @@ through Edge Scripting. It then calls
 raw object exists before creating or updating the database job.
 
 Source PDF and completed ZIP downloads use short-lived exact-key GET URLs.
-Result preview downloads the ZIP in the administrator's browser, parses stored
-or deflated entries with browser APIs, escapes Markdown HTML, resolves
-`content.md` image references to archive-backed blob URLs, and renders a safe
-Markdown subset. Preview rejects archives with more than 10,000 entries or more
-than 1 GiB declared expanded data. ZIP64 and uncommon compression methods are
-downloadable but not previewable.
+Result preview downloads the ZIP in the administrator's browser and parses
+stored or deflated entries with browser APIs. A self-hosted Marked bundle
+renders full GFM Markdown, then DOMPurify sanitizes both parser output and raw
+HTML before it reaches the preview DOM. Archive image references are replaced
+with blob URLs only after sanitization. The renderer assigns stable,
+duplicate-safe IDs to sanitized headings and derives a persistent navigation
+tree from them: it is a sticky left sidebar with active-section highlighting on
+desktop and a collapsible drawer on narrow screens. This avoids a top-only ToC
+that disappears while reading long documents.
+
+`npm run check` and `npm run build` regenerate
+`bunny/src/generated/markdown_bundle.ts` from the pinned dependencies; the
+browser never loads parser code from a third-party CDN. Preview rejects
+archives with more than 10,000 entries or more than 1 GiB declared expanded
+data. ZIP64 and uncommon compression methods remain downloadable but are not
+previewable.
 
 Because browser uploads and previews contact the object store directly, set a
 CORS rule for the exact management-console origin. An AWS-compatible example is:

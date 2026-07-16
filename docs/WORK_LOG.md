@@ -746,3 +746,21 @@
     - `UV_CACHE_DIR=/tmp/uv-cache uv run --offline --no-sync python -m pytest tests/ -q` -> `92 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
     - `git diff --check` and source TODO/debug-marker scans -> clean.
 - **Status:** Implemented, documented, and validated.
+
+## 2026-07-16 (Maintained Markdown Renderer and Persistent ToC)
+
+- **Objective:** Replace the preview's handwritten Markdown subset with a maintained library and keep document navigation available while reading large results.
+- **Research/decision:** Compared Marked and markdown-it using their official documentation. Selected Marked for its focused GFM browser compiler and paired it with DOMPurify, which Marked explicitly recommends because parser output is not sanitized. Avoided a separate ToC plugin: deriving navigation from the sanitized heading DOM produces the exact rendered outline, handles duplicate headings, and keeps the security boundary simpler.
+- **Implementation:**
+    1. Added pinned `marked` and `dompurify` runtime dependencies plus jsdom-based security/render tests.
+    2. Added a reproducible esbuild generation step that embeds the self-hosted browser bundle; no third-party CDN or relaxed script CSP is required.
+    3. Removed the handwritten regex renderer. GFM output and raw HTML are sanitized before DOM insertion; links and archive images are constrained after sanitization.
+    4. Added stable duplicate-safe heading anchors and a live ToC with active-section highlighting.
+    5. Made the ToC a persistent left sidebar inside the reader on desktop and a collapsible drawer on narrow screens.
+- **Validation:**
+    - `cd bunny && npm run check` -> generated renderer bundle and TypeScript passed.
+    - `cd bunny && npm test -- --run` -> `12 passed`, including GFM, XSS sanitization, asset resolution, duplicate heading IDs, UI bundle syntax, and persistent/collapsible ToC markup.
+    - `cd bunny && npm run build` -> successful Edge Script bundle (`298.2kb`).
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --offline --no-sync python -m pytest tests/ -q` -> `92 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
+    - `git diff --check` and handwritten-renderer reference scan -> clean.
+- **Status:** Implemented, documented, and validated.

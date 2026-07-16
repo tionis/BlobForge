@@ -1,7 +1,8 @@
 import { CoordinatorDatabase, PRIORITIES, type JobRecord, type JobStatus, type Priority } from "./database";
 import type { ObjectTransferStore } from "./object_store";
-import { APP_CSS, LOGIN_JS, renderHome } from "./ui";
+import { APP_CSS, LOGIN_JS, VIEWER_CSS, renderHome } from "./ui";
 import { APP_JS } from "./management_ui";
+import { MARKDOWN_JS } from "./generated/markdown_bundle";
 
 export interface AppConfig {
   clientApiToken: string;
@@ -182,8 +183,9 @@ export class BlobForgeApp {
     try {
       await this.db.ensureSchema();
       const url = new URL(request.url);
-      if (url.pathname === "/app.css") return new Response(APP_CSS, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" } });
+      if (url.pathname === "/app.css") return new Response(`${APP_CSS}${VIEWER_CSS}`, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" } });
       if (url.pathname === "/app.js") return new Response(APP_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
+      if (url.pathname === "/markdown.js") return new Response(MARKDOWN_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
       if (url.pathname === "/login.js") return new Response(LOGIN_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
       if (url.pathname === "/client-metadata.json") return this.clientMetadata(url);
       if (url.pathname === "/auth/login" && request.method === "GET") return this.login(request);

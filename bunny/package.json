@@ -4,17 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js --external:@bunny.net/edgescript-sdk",
-    "check": "tsc --noEmit",
+    "generate:markdown": "node scripts/generate-markdown.mjs",
+    "build": "npm run generate:markdown && esbuild src/index.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=dist/index.js --external:@bunny.net/edgescript-sdk",
+    "check": "npm run generate:markdown && tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
     "@bunny.net/edgescript-sdk": "^0.11.2",
-    "@libsql/client": "^0.15.15"
+    "@libsql/client": "^0.15.15",
+    "dompurify": "^3.4.12",
+    "marked": "^18.0.6"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
     "esbuild": "^0.25.3",
+    "jsdom": "^29.1.1",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   }

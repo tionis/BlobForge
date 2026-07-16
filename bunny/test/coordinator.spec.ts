@@ -139,7 +139,10 @@ describe("Bunny BlobForge coordinator", () => {
     expect(await loginScript.text()).toContain("window.location.assign");
 
     const consolePage = await app.fetch(new Request("https://blobforge.example/console"));
-    expect(await consolePage.text()).toContain("Coordination console");
+    const consoleBody = await consolePage.text();
+    expect(consoleBody).toContain("Coordination console");
+    expect(consoleBody).toContain('id="viewer-toc"');
+    expect(consoleBody).toContain('id="toc-toggle"');
     const appScript = await app.fetch(new Request("https://blobforge.example/app.js"));
     const appBody = await appScript.text();
     expect(() => new Function(appBody)).not.toThrow();
@@ -150,6 +153,16 @@ describe("Bunny BlobForge coordinator", () => {
     expect(appBody).toContain("/api/v1/admin/files");
     expect(appBody).toContain("/api/v1/admin/uploads");
     expect(appBody).toContain("DecompressionStream");
+    expect(appBody).toContain("BlobForgeMarkdown.render");
+    expect(appBody).toContain("renderToc");
+    expect(appBody).not.toContain("markdownToHtml");
+    const markdownScript = await app.fetch(new Request("https://blobforge.example/markdown.js"));
+    expect(markdownScript.headers.get("content-type")).toContain("text/javascript");
+    expect((await markdownScript.text()).length).toBeGreaterThan(10_000);
+    const stylesheet = await app.fetch(new Request("https://blobforge.example/app.css"));
+    const css = await stylesheet.text();
+    expect(css).toContain(".viewer-toc");
+    expect(css).toContain(".viewer-toc.open");
   });
 
   it("rejects identities outside the multi-admin allowlist before discovery", async () => {
