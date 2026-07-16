@@ -104,13 +104,21 @@ describe("Bunny BlobForge coordinator", () => {
     const page = await app.fetch(new Request("https://blobforge.example/"));
     const body = await page.text();
     expect(body).toContain('name="me"');
-    expect(body).toContain('src="/login.js"');
+    expect(body).toContain('src="/login.js?v=2"');
     expect(normalizeProfileUrl("alice.example")).toBe("https://alice.example/");
     expect(() => normalizeProfileUrl("http://alice.example")).toThrow("must use HTTPS");
 
     const loginScript = await app.fetch(new Request("https://blobforge.example/login.js"));
     expect(loginScript.headers.get("content-type")).toContain("text/javascript");
     expect(await loginScript.text()).toContain("window.location.assign");
+
+    const consolePage = await app.fetch(new Request("https://blobforge.example/console"));
+    expect(await consolePage.text()).toContain("Coordination console");
+    const appScript = await app.fetch(new Request("https://blobforge.example/app.js"));
+    const appBody = await appScript.text();
+    expect(appBody).toContain("localStorage.setItem");
+    expect(appBody).toContain("history.replaceState");
+    expect(appBody).toContain("BlobForge-Session");
   });
 
   it("rejects identities outside the multi-admin allowlist before discovery", async () => {
@@ -120,7 +128,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(discovery).not.toHaveBeenCalled();
   });
 
-  it("completes IndieAuth with a signed session that is immediately readable", async () => {
+  it("completes IndieAuth with a signed header session that is immediately readable", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       if (url === "https://alice.example/") return new Response(
@@ -146,16 +154,27 @@ describe("Bunny BlobForge coordinator", () => {
     ));
     expect(callback.status).toBe(302);
     expect(callback.headers.get("cache-control")).toContain("no-store");
-    expect(callback.headers.get("set-cookie")).toContain("__Host-blobforge_session=");
-    expect(callback.headers.get("set-cookie")).toContain("; Secure;");
-    const cookie = callback.headers.get("set-cookie")!.split(";", 1)[0]!;
+    expect(callback.headers.get("set-cookie")).toBeNull();
+    const destination = new URL(callback.headers.get("location")!, "https://blobforge.example");
+    expect(destination.pathname).toBe("/console");
+    const token = new URLSearchParams(destination.hash.slice(1)).get("session");
+    expect(token).toBeTruthy();
+    const authorizationHeader = { authorization: `BlobForge-Session ${token}` };
 
-    const dashboard = await app.fetch(new Request("https://blobforge.example/", { headers: { cookie } }));
+    const dashboard = await app.fetch(new Request("https://blobforge.example/console"));
     const body = await dashboard.text();
     expect(body).toContain("Coordination console");
-    expect(body).toContain("https://alice.example/");
 
-    const status = await app.fetch(new Request("https://blobforge.example/auth/status", { headers: { cookie } }));
-    await expect(status.json()).resolves.toMatchObject({ authenticated: true, cookie_present: true, identity: "https://alice.example/" });
+    const snapshot = await app.fetch(new Request("https://blobforge.example/api/v1/admin/snapshot", { headers: authorizationHeader }));
+    expect(snapshot.status).toBe(200);
+    await expect(snapshot.json()).resolves.toMatchObject({ identity: "https://alice.example/" });
+
+    const status = await app.fetch(new Request("https://blobforge.example/auth/status", { headers: authorizationHeader }));
+    await expect(status.json()).resolves.toMatchObject({
+      authenticated: true,
+      cookie_present: false,
+      session_header_present: true,
+      identity: "https://alice.example/",
+    });
   });
 });

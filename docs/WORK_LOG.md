@@ -1,5 +1,24 @@
 # Work Log
 
+## 2026-07-16 (Cookie-independent Bunny session commit)
+- **Objective:** Commit the validated cookie-independent IndieAuth session transport at the user's request.
+- **Actions:** Confirmed the scope contains the fragment bootstrap, browser-stored signed session, authenticated admin API header, rollout cache bust, focused tests, and required documentation/protocol updates.
+- **Status:** Prepared for one focused publication commit.
+
+## 2026-07-16 (Cookie-independent Bunny admin sessions)
+- **Objective:** Fix IndieAuth returning to an unauthenticated login screen after the prior cookie transport hardening.
+- **Evidence:** The deployed `/auth/status` response reported `authenticated: false` and `cookie_present: false` while both the public request URL and forwarded protocol were HTTPS. This isolated the remaining failure to cookie transport rather than signature validation, database replication, or callback identity validation.
+- **Implementation:**
+    1. Changed the successful callback to redirect to `/console` with the HMAC-signed session in a URL fragment instead of a response cookie.
+    2. Added a public, data-free console shell. Its same-origin application module copies the fragment token into browser storage and immediately replaces the history entry without the fragment.
+    3. Added `BlobForge-Session` Authorization-header validation to the existing signed-session verifier, retaining cookie parsing only as backward-compatible fallback.
+    4. Updated all management UI API calls to send the session header, clear expired sessions, and return to login on `401`; sign-out now removes the local session.
+    5. Included the authenticated identity in the protected admin snapshot and expanded `/auth/status` to distinguish header and cookie transport.
+    6. Preserved strict CSP, CDN/browser no-store controls, signed expiry, admin allowlisting, and same-origin validation for writes.
+    7. Versioned the authentication script URLs so browsers cannot combine the new callback with the previously cacheable cookie-only application bundle during rollout.
+- **Validation:** TypeScript checking passed; all Bunny/libSQL tests pass (`8 passed`), including a full mocked IndieAuth callback, fragment handoff, authenticated snapshot, and header-based status diagnostic. The production Edge Script bundle built successfully at 195.2 KiB, and `git diff --check` passed.
+- **Status:** Cookie-independent session transport is implemented, documented, and ready to commit and deploy.
+
 ## 2026-07-16 (Bunny session transport fix commit)
 - **Objective:** Commit the validated session-cookie and CDN-cache hardening so Bunny can publish the fix.
 - **Actions:** Confirmed the scope contains the scheme-independent host cookie, explicit CDN no-store controls, `/auth/status`, focused tests, and required documentation updates.

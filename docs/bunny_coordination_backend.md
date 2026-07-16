@@ -102,16 +102,27 @@ IndieAuth authorization endpoint as a disallowed form destination.
 
 The management UI uses Authorization Code + PKCE. PKCE state and authenticated
 sessions are HMAC-signed with `SESSION_SIGNING_SECRET`, so the callback and next
-page request do not depend on cross-region database replication. Session
-cookies are `Secure`, `HttpOnly`, and `SameSite=Lax`; UI writes also require a
-same-origin request. Rotating the signing secret immediately logs out every
-administrator.
+page request do not depend on cross-region database replication. Rotating the
+signing secret immediately logs out every administrator.
 
-The production cookie is always named `__Host-blobforge_session`; it does not
-depend on the internal protocol Bunny presents to a particular edge instance.
-Authenticated and HTML responses send browser/CDN/surrogate no-store headers.
-`GET /auth/status` provides safe transport diagnostics: it reports whether the
-cookie arrived and whether it validates, but never returns the signed token.
+Standalone Bunny deployment testing showed that the callback's `Set-Cookie`
+did not reach the subsequent request. The callback therefore redirects to
+`/console` with the signed session in the URL fragment. Fragments are not sent
+to the Edge Script or in HTTP referrers; the local application module stores the
+token in same-origin browser storage and immediately removes the fragment from
+the address bar and history entry. Management API calls authenticate with the
+dedicated `Authorization: BlobForge-Session …` scheme. The `/console` document
+is only a public shell: all queue data and mutations remain behind signed-token
+validation, and writes additionally require a same-origin request.
+
+This design makes the session readable to same-origin JavaScript, so the strict
+same-origin CSP, absence of third-party scripts, and short session lifetime are
+part of the security boundary. Signing out removes the browser copy; because
+sessions are stateless, a copied token remains valid until expiry or signing-key
+rotation. Authenticated and HTML responses send browser/CDN/surrogate no-store
+headers. `GET /auth/status` reports cookie and session-header presence plus
+signed-session validity without returning the token. A normal address-bar
+request does not include the application-managed session header.
 
 The worker secret can enqueue and operate leases, but cannot call admin or
 migration routes and cannot forge admin sessions. The migration secret can

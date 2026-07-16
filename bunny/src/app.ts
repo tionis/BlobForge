@@ -107,10 +107,6 @@ async function secureEqual(left: string, right: string): Promise<boolean> {
 
 const SESSION_COOKIE = "__Host-blobforge_session";
 
-function sessionCookie(token: string, maxAge: number): string {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`;
-}
-
 function clearSessionCookie(): string {
   return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
 }
@@ -196,6 +192,9 @@ export class BlobForgeApp {
       if (url.pathname === "/api/v1/migration/import" && request.method === "POST") return this.migrationImport(request);
       if (url.pathname.startsWith("/api/v1/admin/")) return this.adminApi(request, url);
       if (url.pathname.startsWith("/api/v1/")) return this.workerApi(request, url);
+      if (url.pathname === "/console" && request.method === "GET") {
+        return html(renderHome(true, "", `${url.origin}/auth/callback`));
+      }
       if (url.pathname === "/" && request.method === "GET") {
         const session = await this.session(request);
         return html(renderHome(Boolean(session), session?.me || "", `${url.origin}/auth/callback`));
@@ -322,7 +321,9 @@ export class BlobForgeApp {
     const session = await this.session(request);
     if (!session) return error("Unauthorized", 401);
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
-    if (url.pathname === "/api/v1/admin/snapshot" && request.method === "GET") return json(await this.db.snapshot());
+    if (url.pathname === "/api/v1/admin/snapshot" && request.method === "GET") {
+      return json({ ...await this.db.snapshot(), identity: session.me });
+    }
     if (url.pathname === "/api/v1/admin/config" && request.method === "PUT") {
       const body = await this.body(request);
       const allowed = new Set(["max_retries", "heartbeat_interval", "lease_seconds", "conversion_timeout"]);
@@ -370,7 +371,7 @@ export class BlobForgeApp {
     const ttl = Math.max(300, this.config.sessionTtlSeconds || 43_200);
     const token = await this.signPayload({ me: returnedMe, exp: Date.now() + ttl * 1000 });
     await this.db.audit(returnedMe, "login", returnedMe, {});
-    const headers = new Headers({ location: "/", "set-cookie": sessionCookie(token, ttl) });
+    const headers = new Headers({ location: `/console#session=${encodeURIComponent(token)}` });
     setPrivateNoCache(headers);
     return new Response(null, { status: 302, headers });
   }
@@ -383,7 +384,10 @@ export class BlobForgeApp {
   }
 
   private async session(request: Request): Promise<{ me: string } | null> {
-    const token = parseCookies(request).get(SESSION_COOKIE);
+    const authorization = request.headers.get("authorization") || "";
+    const token = authorization.startsWith("BlobForge-Session ")
+      ? authorization.slice("BlobForge-Session ".length)
+      : parseCookies(request).get(SESSION_COOKIE);
     if (!token) return null;
     const session = await this.verifyPayload(token);
     return session && typeof session.me === "string" && Number(session.exp) >= Date.now() && this.isAdmin(session.me) ? { me: session.me } : null;
@@ -391,10 +395,12 @@ export class BlobForgeApp {
 
   private async authStatus(request: Request): Promise<Response> {
     const cookiePresent = parseCookies(request).has(SESSION_COOKIE);
+    const sessionHeaderPresent = (request.headers.get("authorization") || "").startsWith("BlobForge-Session ");
     const session = await this.session(request);
     return json({
       authenticated: Boolean(session),
       cookie_present: cookiePresent,
+      session_header_present: sessionHeaderPresent,
       identity: session?.me || null,
       request_protocol: new URL(request.url).protocol,
       forwarded_protocol: request.headers.get("x-forwarded-proto"),
