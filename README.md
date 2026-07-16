@@ -33,6 +33,11 @@ The current architecture and deployment/cutover guide are documented in
 Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` to use it.
 Trusted ingestors use the deployment's client token. Conversion workers use a
 per-worker token created in the management UI.
+
+Worker labels become stable IDs by slugging them (`GPU Workstation` becomes
+`gpu-workstation`). Duplicate or slug-colliding labels are rejected. A worker
+token belongs to that single enrollment and should not be reused to represent
+multiple machines.
 The object store contains only immutable inputs, outputs, and portable
 coordinator backups:
 
@@ -186,6 +191,13 @@ blobforge worker --isolate-conversion
 ```
 
 *Run multiple instances on any number of machines to scale horizontally.*
+
+When using the Bunny coordinator, the management console shows live macro-stage
+progress and any Marker/tqdm counters reported by the worker. Stage changes are
+published promptly rather than waiting for the full heartbeat interval. Failed
+and dead jobs have a **Failures** action with per-attempt worker, stage,
+exception type, diagnostics, and traceback; this history remains available
+after a retry.
 
 **Run window behavior**
 - `--run-window HH:MM-HH:MM` uses the worker machine's local time.

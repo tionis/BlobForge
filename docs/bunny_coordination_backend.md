@@ -209,11 +209,45 @@ Schema initialization creates `worker_credentials` automatically. Existing
 queue, runtime worker, and job records are retained; old runtime records remain
 visible in coordinator snapshots until replaced or stale.
 
+An enrollment's worker ID is the label's deterministic lowercase ASCII slug:
+`GPU Workstation` becomes `gpu-workstation`. The coordinator rejects duplicate
+IDs and labels that normalize to an existing slug with HTTP 409; revoked IDs
+remain reserved so audit history cannot silently change owners. Each displayed
+token is a credential for that one ID and must not be shared across workers.
+Reusable provisioning, if needed, is a separate dynamic-registration-token
+design: a bootstrap token would authorize registration and mint a distinct
+worker ID/credential for every registering instance (potentially using an
+incrementing suffix). It is not part of ordinary enrollment.
+
 Runtime settings are edited in the management UI. The UI displays queue counts,
 recent jobs, progress, enrolled/runtime workers, and supports worker creation
 and revocation, retry, cancellation, reprioritization, and immediate
-expired-lease recovery. Browser PDF upload is intentionally deferred; ingestion
-continues through trusted BlobForge ingestors.
+expired-lease recovery. Browser PDF upload uses a coordinator-issued pre-signed
+URL, so PDF bodies do not pass through Edge Scripting.
+
+## Progress and failure diagnostics
+
+Workers publish explicit macro stages (`claimed`, `downloading`, `inspecting`,
+`converting`, `packaging`, and `uploading`) with an approximate overall
+percentage. Marker/tqdm counters, rates, and ETA are included when available.
+Isolated conversions publish model-loading, conversion, extraction, and output
+writing checkpoints through an atomic JSON side channel monitored by the parent
+worker, so subprocess isolation does not make progress disappear.
+Changing stage wakes the heartbeat publisher immediately; noisy converter
+events are coalesced to one publication per two seconds, and the configured
+heartbeat interval remains the maximum quiet-period/liveness update. The Web UI
+refreshes active jobs every ten seconds and renders stage, percentage, worker,
+elapsed time, converter counters, and ETA.
+
+Every failed attempt creates an append-only `job_failures` row before the job is
+released. It records the attempt number, worker, timestamp, concise error,
+traceback, structured context (including stage and exception type), and the last
+progress/system snapshot. Lease expiry creates the same kind of record. The job
+table keeps only the latest summary for queue queries, while
+`GET /api/v1/admin/jobs/{hash}/failures` and the management UI expose up to 50
+most-recent detailed attempts. Retrying a job clears its current error summary
+but deliberately preserves this history. Database backups include the failure
+table.
 
 ## Database backups
 

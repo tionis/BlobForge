@@ -403,6 +403,7 @@ class HeartbeatThread(threading.Thread):
         self.file_size: Optional[int] = None
         self.running = True
         self._stop_event = threading.Event()
+        self._publish_event = threading.Event()
         self._lock = threading.Lock()
         self._tqdm_progress: Optional[dict] = None  # Latest tqdm progress
         
@@ -415,13 +416,16 @@ class HeartbeatThread(threading.Thread):
                 lease_token: Optional[str] = None):
         """Set the current job being processed."""
         with self._lock:
+            same_job = bool(job_hash and job_hash == self.current_job)
             self.current_job = job_hash
             self.progress = progress
-            self.job_start_time = time.time() if job_hash else None
-            self.original_filename = original_filename
-            self.file_size = file_size
-            self.lease_token = lease_token
-            self._tqdm_progress = None  # Reset tqdm progress for new job
+            self.job_start_time = self.job_start_time if same_job else (time.time() if job_hash else None)
+            self.original_filename = original_filename if original_filename is not None else (self.original_filename if same_job else None)
+            self.file_size = file_size if file_size is not None else (self.file_size if same_job else None)
+            self.lease_token = lease_token if lease_token is not None else (self.lease_token if same_job else None)
+            if not same_job:
+                self._tqdm_progress = None  # Reset converter progress for a new job
+        self._publish_event.set()
     
     def update_progress(self, progress: dict):
         """Update progress information for current job."""
@@ -430,16 +434,19 @@ class HeartbeatThread(threading.Thread):
                 self.progress.update(progress)
             else:
                 self.progress = progress
+        self._publish_event.set()
     
     def update_tqdm_progress(self, tqdm_data: dict):
         """Update tqdm progress (called from tqdm hook)."""
         with self._lock:
             self._tqdm_progress = tqdm_data
+        self._publish_event.set()
     
     def stop(self):
         """Stop the heartbeat thread."""
         self.running = False
         self._stop_event.set()
+        self._publish_event.set()
     
     def _build_progress_data(self) -> dict:
         """Build comprehensive progress data for heartbeat."""
@@ -497,8 +504,17 @@ class HeartbeatThread(threading.Thread):
     def run(self):
         """Main heartbeat loop."""
         heartbeat_interval = get_heartbeat_interval()
+        last_publish = 0.0
         while self.running:
-            if self._stop_event.wait(timeout=heartbeat_interval):
+            self._publish_event.wait(timeout=heartbeat_interval)
+            self._publish_event.clear()
+            if self._stop_event.is_set():
+                break
+
+            # Coalesce noisy converter updates while publishing stage changes
+            # promptly instead of waiting a full heartbeat interval.
+            delay = 2.0 - (time.monotonic() - last_publish)
+            if delay > 0 and self._stop_event.wait(timeout=delay):
                 break
             
             with self._lock:
@@ -540,6 +556,7 @@ class HeartbeatThread(threading.Thread):
                     logger.error("Legacy worker registration requires an S3 client")
                     continue
                 self.s3.update_worker_heartbeat(current_job=job, system_metrics=get_system_metrics())
+            last_publish = time.monotonic()
 
 
 class Worker:
@@ -710,6 +727,7 @@ class Worker:
             self.current_job_data = job
             self.heartbeat.set_job(
                 self.current_job,
+                progress={"stage": "claimed", "percent": 0},
                 original_filename=job.get("original_name"),
                 file_size=_safe_int(job.get("size_bytes", 0)),
                 lease_token=self.current_lease_token,
@@ -866,6 +884,7 @@ class Worker:
             
             # 1. Download & Metadata
             raw_key = f"{S3_PREFIX_RAW}/{job_hash}.pdf"
+            self.heartbeat.update_progress({"stage": "downloading", "percent": 2})
             try:
                 if self.coordinator:
                     self.coordinator.download_job_input(self.current_job_data or {}, pdf_path)
@@ -894,7 +913,7 @@ class Worker:
                 # Update heartbeat with file info
                 self.heartbeat.set_job(
                     job_hash, 
-                    progress={"stage": "downloaded", "page_count": page_count},
+                    progress={"stage": "inspecting", "percent": 10, "page_count": page_count},
                     original_filename=original_filename,
                     file_size=file_size,
                     lease_token=self.current_lease_token,
@@ -904,13 +923,13 @@ class Worker:
                 logger.error(f"Download/Meta failed: {e}")
                 self._handle_failure(
                     job_hash, f"Download failed: {e}", retry_count,
-                    context={"stage": "download", "raw_key": raw_key}
+                    context={"stage": "download", "raw_key": raw_key, "exception_type": type(e).__name__}
                 )
                 return
             
             # 2. Convert using marker Python API
             logger.info("Running marker conversion...")
-            self.heartbeat.update_progress({"stage": "converting"})
+            self.heartbeat.update_progress({"stage": "converting", "percent": 15})
             conversion_output_written = False
 
             try:
@@ -961,13 +980,15 @@ class Worker:
                     context={
                         "stage": "conversion", 
                         "original_filename": original_filename,
-                        "file_size": file_size
+                        "file_size": file_size,
+                        "exception_type": type(e).__name__,
                     }
                 )
                 return
             
             self.heartbeat.update_progress({
                 "stage": "packaging",
+                "percent": 85,
                 "page_count": page_count,
                 "image_count": image_count,
                 "output_chars": len(md_text)
@@ -1010,22 +1031,38 @@ class Worker:
             
             # 4. Zip & Upload
             zip_path = os.path.join(tmp_dir, f"{job_hash}.zip")
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for root, _, files in os.walk(out_dir):
-                    for file in files:
-                        p = os.path.join(root, file)
-                        zf.write(p, os.path.relpath(p, out_dir))
-            
-            self.heartbeat.update_progress({"stage": "uploading"})
-            if self.coordinator:
-                self.coordinator.upload_job_output(
-                    job_hash,
-                    zip_path,
-                    worker_id=self.id,
-                    lease_token=self.current_lease_token or "",
+            try:
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for root, _, files in os.walk(out_dir):
+                        for file in files:
+                            p = os.path.join(root, file)
+                            zf.write(p, os.path.relpath(p, out_dir))
+            except Exception as e:
+                logger.error(f"Packaging failed: {type(e).__name__}: {e}")
+                self._handle_failure(
+                    job_hash, f"Packaging failed: {e}", retry_count,
+                    context={"stage": "packaging", "exception_type": type(e).__name__},
                 )
-            else:
-                self.s3.upload_file(zip_path, f"{S3_PREFIX_DONE}/{job_hash}.zip")
+                return
+            
+            self.heartbeat.update_progress({"stage": "uploading", "percent": 95})
+            try:
+                if self.coordinator:
+                    self.coordinator.upload_job_output(
+                        job_hash,
+                        zip_path,
+                        worker_id=self.id,
+                        lease_token=self.current_lease_token or "",
+                    )
+                else:
+                    self.s3.upload_file(zip_path, f"{S3_PREFIX_DONE}/{job_hash}.zip")
+            except Exception as e:
+                logger.error(f"Upload failed: {type(e).__name__}: {e}")
+                self._handle_failure(
+                    job_hash, f"Upload failed: {e}", retry_count,
+                    context={"stage": "upload", "exception_type": type(e).__name__},
+                )
+                return
             
             # Calculate processing time
             processing_time = time.time() - job_start_time
@@ -1323,6 +1360,8 @@ class Worker:
             pdf_path,
             out_dir,
         ]
+        progress_path = os.path.join(out_dir, ".conversion-progress.json")
+        cmd.extend(["--progress-path", progress_path])
         logger.info("Running marker conversion in isolated subprocess...")
         if timeout > 0:
             logger.info(f"Enforcing isolated conversion timeout: {timeout}s")
@@ -1333,16 +1372,27 @@ class Worker:
             stderr=subprocess.PIPE,
             text=True,
         )
-        try:
-            stdout, stderr = proc.communicate(timeout=timeout if timeout > 0 else None)
-        except subprocess.TimeoutExpired as exc:
-            proc.kill()
-            stdout, stderr = proc.communicate()
-            if stderr:
-                logger.warning(f"Conversion subprocess stderr after timeout:\n{stderr[-4000:]}")
-            if timeout_reason == "schedule_window_closed":
-                raise ScheduleWindowClosed("Worker schedule window closed during conversion") from exc
-            raise TimeoutError(f"Conversion exceeded timeout ({timeout}s)") from exc
+        deadline = time.monotonic() + timeout if timeout > 0 else None
+        while True:
+            remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else 2.0
+            try:
+                stdout, stderr = proc.communicate(timeout=min(2.0, remaining) if deadline is not None else 2.0)
+                break
+            except subprocess.TimeoutExpired as exc:
+                try:
+                    with open(progress_path, encoding="utf-8") as progress_file:
+                        self.heartbeat.update_tqdm_progress(json.load(progress_file))
+                except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+                    pass
+                if deadline is None or time.monotonic() < deadline:
+                    continue
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                if stderr:
+                    logger.warning(f"Conversion subprocess stderr after timeout:\n{stderr[-4000:]}")
+                if timeout_reason == "schedule_window_closed":
+                    raise ScheduleWindowClosed("Worker schedule window closed during conversion") from exc
+                raise TimeoutError(f"Conversion exceeded timeout ({timeout}s)") from exc
 
         if stdout:
             logger.debug(f"Conversion subprocess stdout:\n{stdout[-4000:]}")
@@ -1382,7 +1432,7 @@ class Worker:
                     if os.path.isfile(os.path.join(assets_dir, name))
                 ])
 
-        for helper_path in (meta_path, result_path):
+        for helper_path in (meta_path, result_path, progress_path):
             try:
                 os.remove(helper_path)
             except FileNotFoundError:

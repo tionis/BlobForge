@@ -31,6 +31,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS jobs (file_hash TEXT PRIMARY KEY REFERENCES files(hash) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('todo','processing','failed','dead','done')), priority TEXT NOT NULL CHECK(priority IN ('1_critical','2_high','3_normal','4_low','5_background')), retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,available_at,priority,created_at)`,
   `CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status,lease_expires_at)`,
+  `CREATE TABLE IF NOT EXISTS job_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, attempt INTEGER NOT NULL, worker_id TEXT, failed_at INTEGER NOT NULL, error_message TEXT NOT NULL, traceback TEXT, context_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT NOT NULL DEFAULT '{}')`,
+  `CREATE INDEX IF NOT EXISTS job_failures_job_idx ON job_failures(file_hash,failed_at DESC,id DESC)`,
   `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE TABLE IF NOT EXISTS worker_credentials (worker_id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, revoked_at INTEGER, last_used_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS worker_credentials_token_idx ON worker_credentials(token_hash)`,
@@ -167,13 +169,15 @@ export class CoordinatorDatabase {
     };
   }
 
-  async createWorkerCredential(workerId: string, label: string, tokenHash: string, actor: string): Promise<void> {
+  async createWorkerCredential(workerId: string, label: string, tokenHash: string, actor: string): Promise<boolean> {
     const timestamp = Date.now();
-    await this.client.execute(statement(
-      "INSERT INTO worker_credentials(worker_id,label,token_hash,created_at,created_by,revoked_at,last_used_at) VALUES(?,?,?,?,?,NULL,NULL)",
+    const result = await this.client.execute(statement(
+      "INSERT OR IGNORE INTO worker_credentials(worker_id,label,token_hash,created_at,created_by,revoked_at,last_used_at) VALUES(?,?,?,?,?,NULL,NULL)",
       [workerId, label, tokenHash, timestamp, actor],
     ));
+    if (!result.rowsAffected) return false;
     await this.audit(actor, "worker.create", workerId, { label });
+    return true;
   }
 
   async authenticateWorkerToken(tokenHash: string): Promise<string | null> {
@@ -239,6 +243,9 @@ export class CoordinatorDatabase {
   async recoverExpiredLeases(): Promise<number> {
     const timestamp = Date.now();
     const results = await this.client.batch([
+      statement(`INSERT INTO job_failures(file_hash,attempt,worker_id,failed_at,error_message,traceback,context_json,progress_json)
+        SELECT file_hash,retry_count+1,worker_id,?,'Worker lease expired',NULL,?,progress_json FROM jobs WHERE status='processing' AND lease_expires_at<?`,
+        [timestamp, JSON.stringify({ stage: "lease", reason: "expired" }), timestamp]),
       statement(`UPDATE jobs SET status=CASE WHEN retry_count+1>max_retries THEN 'dead' ELSE 'todo' END,retry_count=retry_count+1,available_at=?,error_message='Worker lease expired',updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE status='processing' AND lease_expires_at<? RETURNING file_hash`, [timestamp, timestamp, timestamp]),
       statement("UPDATE workers SET status='stale',current_job=NULL WHERE current_job IS NOT NULL AND NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.file_hash=workers.current_job AND jobs.status='processing')"),
     ], "write");
@@ -305,7 +312,15 @@ export class CoordinatorDatabase {
 
   async fail(hash: string, workerId: string, leaseToken: string, message: string, detail: unknown, metrics: unknown): Promise<JobRecord | null> {
     const timestamp = Date.now();
+    const failureDetail = detail && typeof detail === "object" && !Array.isArray(detail) ? detail as Record<string, unknown> : {};
+    const context = failureDetail.context && typeof failureDetail.context === "object" && !Array.isArray(failureDetail.context)
+      ? failureDetail.context : {};
+    const traceback = typeof failureDetail.traceback === "string" ? failureDetail.traceback.slice(0, 100_000) : null;
     const results = await this.client.batch([
+      statement(`INSERT INTO job_failures(file_hash,attempt,worker_id,failed_at,error_message,traceback,context_json,progress_json)
+        SELECT file_hash,retry_count+1,worker_id,?,?,?,?,progress_json FROM jobs
+        WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?`,
+        [timestamp, message, traceback, JSON.stringify(context), hash, workerId, leaseToken]),
       statement(`UPDATE jobs SET status=CASE WHEN retry_count+1>max_retries THEN 'dead' ELSE 'failed' END,retry_count=retry_count+1,available_at=?+MIN(3600000,60000*(1 << retry_count)),error_message=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? RETURNING file_hash`, [timestamp, message, timestamp, hash, workerId, leaseToken]),
       statement("UPDATE workers SET status='idle',current_job=NULL,last_heartbeat=?,metrics_json=? WHERE worker_id=? AND current_job=?", [timestamp, JSON.stringify(metrics || {}), workerId, hash]),
     ], "write");
@@ -393,6 +408,8 @@ export class CoordinatorDatabase {
     const results = await this.client.batch([
       statement(`SELECT COUNT(*) count FROM jobs j JOIN files f ON f.hash=j.file_hash ${clause}`, args),
       statement(`SELECT j.*,f.original_name,f.size_bytes,f.source,
+        (SELECT failed_at FROM job_failures jf WHERE jf.file_hash=j.file_hash ORDER BY failed_at DESC,id DESC LIMIT 1) latest_failure_at,
+        (SELECT context_json FROM job_failures jf WHERE jf.file_hash=j.file_hash ORDER BY failed_at DESC,id DESC LIMIT 1) latest_failure_context,
         COALESCE((SELECT json_group_array(path) FROM file_paths WHERE file_hash=j.file_hash),'[]') paths_json,
         COALESCE((SELECT json_group_array(tag) FROM file_tags WHERE file_hash=j.file_hash),'[]') tags_json
         FROM jobs j JOIN files f ON f.hash=j.file_hash ${clause}
@@ -403,13 +420,29 @@ export class CoordinatorDatabase {
       jobs: results[1]!.rows.map((row) => ({
         ...jobFromRow(row), hash: String(row.file_hash), lease_token: null,
         progress: JSON.parse(String(row.progress_json || "{}")), source: row.source === null ? null : String(row.source),
+        latest_failure_at: nullableNumber(row.latest_failure_at),
+        latest_failure_context: JSON.parse(String(row.latest_failure_context || "{}")),
         paths: JSON.parse(String(row.paths_json || "[]")), tags: JSON.parse(String(row.tags_json || "[]")),
       })),
     };
   }
 
+  async listJobFailures(hash: string): Promise<Record<string, unknown>[]> {
+    const result = await this.client.execute(statement(
+      `SELECT id,attempt,worker_id,failed_at,error_message,traceback,context_json,progress_json
+       FROM job_failures WHERE file_hash=? ORDER BY failed_at DESC,id DESC LIMIT 50`,
+      [hash],
+    ));
+    return result.rows.map((row) => ({
+      id: numeric(row.id), attempt: numeric(row.attempt),
+      worker_id: row.worker_id === null ? null : String(row.worker_id), failed_at: numeric(row.failed_at),
+      error_message: String(row.error_message), traceback: row.traceback === null ? null : String(row.traceback),
+      context: JSON.parse(String(row.context_json || "{}")), progress: JSON.parse(String(row.progress_json || "{}")),
+    }));
+  }
+
   async exportBackup(): Promise<Record<string, unknown>> {
-    const tableNames = ["files", "file_paths", "file_tags", "jobs", "workers", "worker_credentials", "config", "audit_log"];
+    const tableNames = ["files", "file_paths", "file_tags", "jobs", "job_failures", "workers", "worker_credentials", "config", "audit_log"];
     const results = await this.client.batch([
       statement(
         `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND tbl_name IN (${tableNames.map(() => "?").join(",")}) ORDER BY type,name`,

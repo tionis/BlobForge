@@ -764,3 +764,40 @@
     - `UV_CACHE_DIR=/tmp/uv-cache uv run --offline --no-sync python -m pytest tests/ -q` -> `92 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
     - `git diff --check` and handwritten-renderer reference scan -> clean.
 - **Status:** Implemented, documented, and validated.
+
+## 2026-07-17 (Live Progress and Failure Diagnostics)
+
+- **Objective:** Make coordinator progress reports timely and useful, and make failed jobs explain why each attempt failed.
+- **Findings:** Progress changes were only sent on the normal heartbeat timer; isolated or quiet conversion phases therefore appeared frozen. The worker already sent traceback/context on failure, but the coordinator discarded both, cleared the last progress snapshot, and retained only one short error string.
+- **Implementation:**
+    1. Added explicit macro-stage percentages from claim through upload and made stage/converter updates wake a coalescing heartbeat publisher (maximum one send per two seconds).
+    2. Added atomic child-to-parent progress checkpoints for isolated conversions, covering model loading, conversion, content extraction, and output writing.
+    3. Preserved the original job start time across metadata updates so elapsed time covers the full download-to-upload attempt.
+    4. Converted packaging and upload exceptions into normal structured job failures instead of letting them escape into worker-loop recovery.
+    5. Added append-only `job_failures` storage for every worker failure and expired lease, retaining attempt, worker, traceback, context, and last progress/system snapshot.
+    6. Added latest-failure context to file listings, a protected failure-history API, and a Web UI viewer with expandable diagnostics and tracebacks.
+    7. Added progress bars, stage/counter/ETA details, concise failure summaries, and ten-second live refreshes to the management console.
+    8. Included failure history in portable coordinator backups and documented the data flow and retention behavior.
+- **Validation:**
+    - `cd bunny && npm run check` -> passed.
+    - `cd bunny && npm test -- --run` -> `13 passed`.
+    - `cd bunny && npm run build` -> successful Edge Script bundle (`306.1kb`).
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --offline --no-sync python -m pytest tests/ -q` -> `93 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
+    - `git diff --check` and final status/diff review -> clean.
+- **Status:** Implemented, documented, and validated.
+
+## 2026-07-17 (Deterministic Worker Enrollment IDs)
+
+- **Objective:** Remove random worker-ID suffixes and keep reusable provisioning credentials separate from ordinary worker enrollment.
+- **Implementation:**
+    1. Extracted deterministic label slugging and now use the slug directly as the worker ID.
+    2. Changed credential creation to an atomic insert-or-reject operation and return HTTP 409 for duplicate or slug-colliding labels, including revoked IDs.
+    3. Updated enrollment UI copy to preview the slug behavior and state that the one-time token belongs to one worker.
+    4. Added API coverage for stable slugs and duplicate rejection.
+    5. Documented a future dynamic-registration-token flow as the separate mechanism for reusable bootstrap credentials and incremented identities.
+- **Validation:**
+    - `cd bunny && npm run check` -> passed.
+    - `cd bunny && npm test -- --run` -> `13 passed`, including deterministic slug and duplicate-enrollment coverage.
+    - `cd bunny && npm run build` -> successful Edge Script bundle (`306.5kb`).
+    - `git diff --check` and final working-tree review -> clean.
+- **Status:** Implemented, documented, and validated.

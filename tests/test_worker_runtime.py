@@ -159,6 +159,34 @@ class TestConversionTimeout(unittest.TestCase):
 
         self.assertTrue(fake_proc.killed)
 
+    def test_isolated_conversion_forwards_child_progress(self):
+        worker = self._build_worker()
+
+        class FakeProcess:
+            returncode = 0
+            calls = 0
+
+            def communicate(self, timeout=None):
+                self.calls += 1
+                if self.calls == 1:
+                    raise subprocess.TimeoutExpired(["worker"], timeout)
+                return "", ""
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_dir = os.path.join(tmp_dir, "output")
+            os.makedirs(out_dir)
+            with open(os.path.join(out_dir, ".conversion-progress.json"), "w", encoding="utf-8") as f:
+                json.dump({"tqdm_stage": "Converting PDF", "tqdm_percent": 40}, f)
+            with open(os.path.join(out_dir, "content.md"), "w", encoding="utf-8") as f:
+                f.write("md")
+
+            with patch("blobforge.worker.subprocess.Popen", return_value=FakeProcess()):
+                worker._run_conversion_subprocess("source.pdf", out_dir, timeout_seconds=10)
+
+        worker.heartbeat.update_tqdm_progress.assert_called_once_with({
+            "tqdm_stage": "Converting PDF", "tqdm_percent": 40,
+        })
+
 
 class TestCoordinatorObjectTransfers(unittest.TestCase):
     def test_worker_uses_enrollment_identity_and_signed_transfers(self):
@@ -197,6 +225,12 @@ class TestCoordinatorObjectTransfers(unittest.TestCase):
         coordinator.download_job_input.assert_called_once()
         coordinator.upload_job_output.assert_called_once()
         coordinator.complete.assert_called_once()
+        self.assertTrue(any(
+            call.kwargs.get("progress") == {"stage": "claimed", "percent": 0}
+            for call in heartbeat.set_job.call_args_list
+        ))
+        reported_stages = [call.args[0].get("stage") for call in heartbeat.update_progress.call_args_list]
+        self.assertEqual(reported_stages, ["downloading", "converting", "packaging", "uploading"])
         s3.download_file.assert_not_called()
         s3.get_object_metadata.assert_not_called()
         s3.upload_file.assert_not_called()

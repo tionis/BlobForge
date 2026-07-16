@@ -6,11 +6,14 @@
 
 ## Normal Priority
 - [ ] Update README.md with full configuration reference.
+- [ ] Add a separate dynamic-registration token flow for intentionally reusable bootstrap credentials, issuing distinct incremented worker IDs and per-worker credentials at registration time.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
 
 ## Low Priority
 
 ## Done
+- [x] Derive worker IDs directly from label slugs and reject duplicate/colliding enrollment labels.
+- [x] Make coordinator progress updates prompt and add persistent per-attempt failure diagnostics with a Web UI history viewer.
 - [x] Replace the preview's handwritten Markdown subset with Marked + DOMPurify and add a sticky/collapsible active-section ToC.
 - [x] Add Web UI PDF ingestion, paginated library search/filtering, PDF/ZIP downloads, and client-side result previews.
 - [x] Add application-level Bunny Database backups to S3 and a management UI trigger.

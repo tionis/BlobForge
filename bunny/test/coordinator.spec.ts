@@ -1,6 +1,6 @@
 import { createClient, type Client } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BlobForgeApp, normalizeProfileUrl } from "../src/app";
+import { BlobForgeApp, normalizeProfileUrl, workerIdFromLabel } from "../src/app";
 import { CoordinatorDatabase } from "../src/database";
 
 let client: Client;
@@ -118,6 +118,33 @@ describe("Bunny BlobForge coordinator", () => {
     });
   });
 
+  it("retains structured failure history and the last progress snapshot", async () => {
+    const hash = "f".repeat(64);
+    await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "test" });
+    await call(`/api/v1/jobs/${hash}`, "PUT", { original_name: "broken.pdf", priority: "3_normal" });
+    const claimed = await (await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" })).json() as Record<string, unknown>;
+    await call(`/api/v1/jobs/${hash}/heartbeat`, "POST", {
+      worker_id: "worker-1", lease_token: claimed.lease_token,
+      progress: { stage: "converting", percent: 15, elapsed_seconds: 42 },
+    });
+
+    const failed = await call(`/api/v1/jobs/${hash}/fail`, "POST", {
+      worker_id: "worker-1", lease_token: claimed.lease_token,
+      error: "PDFium data format error", traceback: "Traceback: conversion exploded",
+      context: { stage: "conversion", exception_type: "RuntimeError" },
+    });
+    await expect(failed.json()).resolves.toMatchObject({ status: "failed", retry_count: 1 });
+    await expect(database.listJobFailures(hash)).resolves.toMatchObject([{
+      attempt: 1, worker_id: "worker-1", error_message: "PDFium data format error",
+      traceback: "Traceback: conversion exploded",
+      context: { stage: "conversion", exception_type: "RuntimeError" },
+      progress: { stage: "converting", percent: 15, elapsed_seconds: 42 },
+    }]);
+    await expect(database.listJobs({ status: "failed" })).resolves.toMatchObject({
+      jobs: [expect.objectContaining({ latest_failure_context: { stage: "conversion", exception_type: "RuntimeError" } })],
+    });
+  });
+
   it("publishes IndieAuth client metadata", async () => {
     const response = await app.fetch(new Request("https://blobforge.example/client-metadata.json"));
     await expect(response.json()).resolves.toMatchObject({
@@ -133,6 +160,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(body).toContain('src="/login.js?v=3"');
     expect(normalizeProfileUrl("alice.example")).toBe("https://alice.example/");
     expect(() => normalizeProfileUrl("http://alice.example")).toThrow("must use HTTPS");
+    expect(workerIdFromLabel("GPU Workstation #2")).toBe("gpu-workstation-2");
 
     const loginScript = await app.fetch(new Request("https://blobforge.example/login.js"));
     expect(loginScript.headers.get("content-type")).toContain("text/javascript");
@@ -143,6 +171,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(consoleBody).toContain("Coordination console");
     expect(consoleBody).toContain('id="viewer-toc"');
     expect(consoleBody).toContain('id="toc-toggle"');
+    expect(consoleBody).toContain('id="failure-viewer"');
     const appScript = await app.fetch(new Request("https://blobforge.example/app.js"));
     const appBody = await appScript.text();
     expect(() => new Function(appBody)).not.toThrow();
@@ -155,6 +184,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(appBody).toContain("DecompressionStream");
     expect(appBody).toContain("BlobForgeMarkdown.render");
     expect(appBody).toContain("renderToc");
+    expect(appBody).toContain("showFailures");
     expect(appBody).not.toContain("markdownToHtml");
     const markdownScript = await app.fetch(new Request("https://blobforge.example/markdown.js"));
     expect(markdownScript.headers.get("content-type")).toContain("text/javascript");
@@ -260,8 +290,16 @@ describe("Bunny BlobForge coordinator", () => {
     }));
     expect(enrollment.status).toBe(201);
     const created = await enrollment.json() as Record<string, unknown>;
-    expect(created).toMatchObject({ label: "GPU workstation", coordinator_url: "https://blobforge.example" });
+    expect(created).toMatchObject({ worker_id: "gpu-workstation", label: "GPU workstation", coordinator_url: "https://blobforge.example" });
     expect(created.token).toMatch(/^bfw_/);
+
+    const duplicate = await app.fetch(new Request("https://blobforge.example/api/v1/admin/workers", {
+      method: "POST",
+      headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: JSON.stringify({ label: "GPU--workstation" }),
+    }));
+    expect(duplicate.status).toBe(409);
+    await expect(duplicate.json()).resolves.toMatchObject({ error: expect.stringContaining("gpu-workstation") });
 
     const identity = await app.fetch(new Request("https://blobforge.example/api/v1/workers/me", {
       headers: { authorization: `Bearer ${created.token}` },

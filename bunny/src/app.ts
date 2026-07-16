@@ -176,6 +176,10 @@ function jobJson(job: JobRecord, includeLease = true): Record<string, unknown> {
   };
 }
 
+export function workerIdFromLabel(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 64);
+}
+
 export class BlobForgeApp {
   constructor(private readonly db: CoordinatorDatabase, private readonly config: AppConfig) {}
 
@@ -400,6 +404,12 @@ export class BlobForgeApp {
       }
       return error("Invalid download kind");
     }
+    const failuresMatch = url.pathname.match(/^\/api\/v1\/admin\/jobs\/([a-f0-9]{64})\/failures$/);
+    if (failuresMatch && request.method === "GET") {
+      const job = await this.db.getJob(failuresMatch[1]!);
+      if (!job) return error("Job not found", 404);
+      return json({ hash: job.file_hash, failures: await this.db.listJobFailures(job.file_hash) });
+    }
     if (url.pathname === "/api/v1/admin/backups" && request.method === "POST") {
       const backup = await this.db.exportBackup();
       const body = JSON.stringify(backup);
@@ -414,9 +424,12 @@ export class BlobForgeApp {
     if (url.pathname === "/api/v1/admin/workers" && request.method === "POST") {
       const body = await this.body(request); const label = String(body.label || "").trim();
       if (!label || label.length > 80) return error("Worker label must contain 1 to 80 characters");
-      const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "worker";
-      const workerId = `${slug}-${randomToken(6)}`; const token = `bfw_${randomToken(32)}`;
-      await this.db.createWorkerCredential(workerId, label, await sha256(token), session.me);
+      const workerId = workerIdFromLabel(label);
+      if (!workerId) return error("Worker label must contain at least one ASCII letter or number");
+      const token = `bfw_${randomToken(32)}`;
+      if (!(await this.db.createWorkerCredential(workerId, label, await sha256(token), session.me))) {
+        return error(`Worker ID '${workerId}' already exists; choose a different label`, 409);
+      }
       return json({ worker_id: workerId, label, token, coordinator_url: new URL(request.url).origin }, { status: 201 });
     }
     const workerMatch = url.pathname.match(/^\/api\/v1\/admin\/workers\/([A-Za-z0-9._:-]{1,128})\/revoke$/);
