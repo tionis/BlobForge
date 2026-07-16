@@ -21,6 +21,9 @@ export interface ObjectTransferStore {
   download(hash: string): Promise<PresignedTransfer>;
   upload(hash: string): Promise<PresignedTransfer>;
   outputExists(hash: string): Promise<boolean>;
+  rawExists(hash: string): Promise<boolean>;
+  rawUpload(hash: string): Promise<PresignedTransfer>;
+  outputDownload(hash: string): Promise<PresignedTransfer>;
   backup(name: string, body: string): Promise<{ key: string }>;
 }
 
@@ -78,6 +81,23 @@ export class S3ObjectStore implements ObjectTransferStore {
     if (response.ok) return true;
     if (response.status === 404) return false;
     throw new Error(`Object-store HEAD failed (${response.status})`);
+  }
+
+  async rawExists(hash: string): Promise<boolean> {
+    const response = await fetch(await this.presign("HEAD", this.rawKey(hash), 60), { method: "HEAD" });
+    if (response.ok) return true;
+    if (response.status === 404) return false;
+    throw new Error(`Raw object HEAD failed (${response.status})`);
+  }
+
+  async rawUpload(hash: string): Promise<PresignedTransfer> {
+    const ttl = Math.min(3600, Math.max(60, this.config.uploadTtlSeconds || 900));
+    return { url: await this.presign("PUT", this.rawKey(hash), ttl), expiresAt: Date.now() + ttl * 1000 };
+  }
+
+  async outputDownload(hash: string): Promise<PresignedTransfer> {
+    const ttl = Math.min(604_800, Math.max(60, this.config.downloadTtlSeconds || 3600));
+    return { url: await this.presign("GET", this.outputKey(hash), ttl), expiresAt: Date.now() + ttl * 1000 };
   }
 
 

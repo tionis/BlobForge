@@ -5,13 +5,13 @@
 - [ ] Test heartbeat mechanism under load.
 
 ## Normal Priority
-- [ ] Add optional authenticated PDF upload and enqueue support to the Bunny management UI.
 - [ ] Update README.md with full configuration reference.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
 
 ## Low Priority
 
 ## Done
+- [x] Add Web UI PDF ingestion, paginated library search/filtering, PDF/ZIP downloads, and client-side result previews.
 - [x] Add application-level Bunny Database backups to S3 and a management UI trigger.
 - [x] Remove manifest/log/Telegram dependencies and add dry-run-first legacy S3 cleanup.
 - [x] Add per-worker UI enrollment/revocation, coordinator-issued S3 transfer URLs, and coordinator-backed worker/dashboard CLI views.

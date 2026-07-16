@@ -341,12 +341,14 @@ export class CoordinatorDatabase {
     return result.rowsAffected > 0;
   }
 
-  async snapshot(includeLeaseTokens = true): Promise<Record<string, unknown>> {
+  async snapshot(includeLeaseTokens = true, includeJobs = true): Promise<Record<string, unknown>> {
     await this.recoverExpiredLeases();
     const results = await this.client.batch([
       statement("SELECT status,COUNT(*) count FROM jobs GROUP BY status"),
       statement("SELECT priority,COUNT(*) count FROM jobs WHERE status IN ('todo','failed') GROUP BY priority"),
-      statement("SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash ORDER BY CASE j.status WHEN 'processing' THEN 1 WHEN 'dead' THEN 2 WHEN 'failed' THEN 3 WHEN 'todo' THEN 4 ELSE 5 END,j.updated_at DESC LIMIT 250"),
+      statement(includeJobs
+        ? "SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash ORDER BY CASE j.status WHEN 'processing' THEN 1 WHEN 'dead' THEN 2 WHEN 'failed' THEN 3 WHEN 'todo' THEN 4 ELSE 5 END,j.updated_at DESC LIMIT 250"
+        : "SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE 0"),
       statement("SELECT * FROM workers ORDER BY last_heartbeat DESC LIMIT 250"),
       statement("SELECT key,value_json FROM config"),
     ], "read");
@@ -363,6 +365,47 @@ export class CoordinatorDatabase {
     }));
     const config = Object.fromEntries(results[4].rows.map((row) => [String(row.key), JSON.parse(String(row.value_json))]));
     return { counts, priority, jobs, workers, config };
+  }
+
+  async listJobs(filters: {
+    query?: string;
+    status?: JobStatus;
+    priority?: Priority;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ jobs: Record<string, unknown>[]; total: number }> {
+    const where: string[] = [];
+    const args: InValue[] = [];
+    if (filters.status) { where.push("j.status=?"); args.push(filters.status); }
+    if (filters.priority) { where.push("j.priority=?"); args.push(filters.priority); }
+    if (filters.query?.trim()) {
+      const pattern = `%${filters.query.trim().toLowerCase()}%`;
+      where.push(`(LOWER(j.file_hash) LIKE ? OR LOWER(COALESCE(f.original_name,'')) LIKE ? OR LOWER(COALESCE(f.source,'')) LIKE ?
+        OR EXISTS(SELECT 1 FROM file_paths fp WHERE fp.file_hash=j.file_hash AND LOWER(fp.path) LIKE ?)
+        OR EXISTS(SELECT 1 FROM file_tags ft WHERE ft.file_hash=j.file_hash AND LOWER(ft.tag) LIKE ?))`);
+      args.push(pattern, pattern, pattern, pattern, pattern);
+    }
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const requestedLimit = Number.isFinite(filters.limit) ? Number(filters.limit) : 50;
+    const requestedOffset = Number.isFinite(filters.offset) ? Number(filters.offset) : 0;
+    const limit = Math.min(100, Math.max(1, Math.floor(requestedLimit)));
+    const offset = Math.max(0, Math.floor(requestedOffset));
+    const results = await this.client.batch([
+      statement(`SELECT COUNT(*) count FROM jobs j JOIN files f ON f.hash=j.file_hash ${clause}`, args),
+      statement(`SELECT j.*,f.original_name,f.size_bytes,f.source,
+        COALESCE((SELECT json_group_array(path) FROM file_paths WHERE file_hash=j.file_hash),'[]') paths_json,
+        COALESCE((SELECT json_group_array(tag) FROM file_tags WHERE file_hash=j.file_hash),'[]') tags_json
+        FROM jobs j JOIN files f ON f.hash=j.file_hash ${clause}
+        ORDER BY j.updated_at DESC,j.file_hash LIMIT ? OFFSET ?`, [...args, limit, offset]),
+    ], "read");
+    return {
+      total: numeric(results[0]!.rows[0]?.count),
+      jobs: results[1]!.rows.map((row) => ({
+        ...jobFromRow(row), hash: String(row.file_hash), lease_token: null,
+        progress: JSON.parse(String(row.progress_json || "{}")), source: row.source === null ? null : String(row.source),
+        paths: JSON.parse(String(row.paths_json || "[]")), tags: JSON.parse(String(row.tags_json || "[]")),
+      })),
+    };
   }
 
   async exportBackup(): Promise<Record<string, unknown>> {

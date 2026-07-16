@@ -727,3 +727,22 @@
     - `cd bunny && npm run build` -> successful Edge Script bundle (`208.9kb`).
     - `git diff --check` -> clean.
 - **Status:** Implemented and validated; ready to commit and push.
+
+## 2026-07-16 (Web File Library and Browser Ingestion)
+
+- **Objective:** Make the Bunny management console useful as a complete file library, including PDF ingestion, source/result downloads, rendered output previews, and discovery of completed jobs.
+- **Implementation:**
+    1. Added a transactional, paginated database query with status/priority filters and case-insensitive search across hash, filename, source, paths, and tags.
+    2. Added authenticated admin APIs for upload preparation/finalization and raw/output downloads. Upload finalization verifies raw-object existence before enqueue.
+    3. Added exact-key raw PUT and output GET signing plus raw-object HEAD checks to the coordinator object-store boundary.
+    4. Rebuilt the jobs panel as a paginated library, so done jobs are queried directly instead of falling behind the operational snapshot's 250-row limit.
+    5. Added multi-PDF upload with PDF signature validation, browser SHA-256, direct S3 transfer, and coordinator enqueue; large file bodies never pass through the Edge Script.
+    6. Added PDF/ZIP download actions and a dependency-free client-side ZIP/Markdown viewer with archive assets, escaped raw HTML, blob URL cleanup, and expanded-archive limits.
+    7. Documented the required exact-origin object-store CORS policy, preview compatibility boundaries, architecture, task status, and repository findings.
+- **Validation:**
+    - `cd bunny && npm run check` -> passed.
+    - `cd bunny && npm test -- --run` -> `11 passed`.
+    - `cd bunny && npm run build` -> successful Edge Script bundle (`225.5kb`).
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --offline --no-sync python -m pytest tests/ -q` -> `92 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
+    - `git diff --check` and source TODO/debug-marker scans -> clean.
+- **Status:** Implemented, documented, and validated.

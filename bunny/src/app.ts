@@ -1,4 +1,4 @@
-import { CoordinatorDatabase, PRIORITIES, type JobRecord, type Priority } from "./database";
+import { CoordinatorDatabase, PRIORITIES, type JobRecord, type JobStatus, type Priority } from "./database";
 import type { ObjectTransferStore } from "./object_store";
 import { APP_CSS, LOGIN_JS, renderHome } from "./ui";
 import { APP_JS } from "./management_ui";
@@ -27,7 +27,7 @@ function error(message: string, status = 400): Response {
 function html(body: string, status = 200): Response {
   const headers = new Headers({
     "content-type": "text/html; charset=utf-8",
-    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' https:; img-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
   });
   setPrivateNoCache(headers);
@@ -346,7 +346,57 @@ export class BlobForgeApp {
     if (!session) return error("Unauthorized", 401);
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
     if (url.pathname === "/api/v1/admin/snapshot" && request.method === "GET") {
-      return json({ ...await this.db.snapshot(), worker_enrollments: await this.db.listWorkerCredentials(), identity: session.me });
+      return json({ ...await this.db.snapshot(false, false), worker_enrollments: await this.db.listWorkerCredentials(), identity: session.me });
+    }
+    if (url.pathname === "/api/v1/admin/files" && request.method === "GET") {
+      const status = url.searchParams.get("status") || undefined;
+      const priority = url.searchParams.get("priority") || undefined;
+      if (status && !["todo", "processing", "failed", "dead", "done"].includes(status)) return error("Invalid status");
+      if (priority && !validPriority(priority)) return error("Invalid priority");
+      return json(await this.db.listJobs({
+        query: url.searchParams.get("q") || undefined,
+        status: status as JobStatus | undefined,
+        priority: priority as Priority | undefined,
+        limit: Number(url.searchParams.get("limit") || 50),
+        offset: Number(url.searchParams.get("offset") || 0),
+      }));
+    }
+    if (url.pathname === "/api/v1/admin/uploads" && request.method === "POST") {
+      const body = await this.body(request); const hash = String(body.hash || "");
+      if (!validHash(hash)) return error("Invalid PDF hash");
+      const transfer = await this.config.objectStore.rawUpload(hash);
+      return json({ hash, url: transfer.url, method: "PUT", expires_at: transfer.expiresAt, already_exists: await this.config.objectStore.rawExists(hash), headers: { "content-type": "application/pdf" } });
+    }
+    const uploadComplete = url.pathname.match(/^\/api\/v1\/admin\/uploads\/([a-f0-9]{64})\/complete$/);
+    if (uploadComplete && request.method === "POST") {
+      const hash = uploadComplete[1]!; const body = await this.body(request);
+      if (!(await this.config.objectStore.rawExists(hash))) return error("Uploaded PDF was not found", 409);
+      if (!validPriority(body.priority ?? "3_normal")) return error("Invalid priority");
+      const originalName = String(body.original_name || "").trim().slice(0, 500);
+      if (!originalName.toLowerCase().endsWith(".pdf")) return error("A PDF filename is required");
+      const job = await this.db.enqueue(hash, {
+        original_name: originalName, size_bytes: Math.max(0, Number(body.size_bytes || 0)),
+        paths: [String(body.path || originalName).slice(0, 2000)],
+        tags: Array.isArray(body.tags) ? body.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 50) : [],
+        source: "management-ui", priority: body.priority || "3_normal",
+      });
+      await this.db.audit(session.me, "upload.ingest", hash, { original_name: originalName, size_bytes: body.size_bytes || 0 });
+      return json(jobJson(job), { status: 201 });
+    }
+    const downloadMatch = url.pathname.match(/^\/api\/v1\/admin\/files\/([a-f0-9]{64})\/download$/);
+    if (downloadMatch && request.method === "GET") {
+      const hash = downloadMatch[1]!; const job = await this.db.getJob(hash);
+      if (!job) return error("File not found", 404);
+      const kind = url.searchParams.get("kind") || "raw";
+      if (kind === "raw") {
+        if (!(await this.config.objectStore.rawExists(hash))) return error("Source PDF not found", 404);
+        return json({ kind, ...await this.config.objectStore.download(hash) });
+      }
+      if (kind === "output") {
+        if (job.status !== "done" || !(await this.config.objectStore.outputExists(hash))) return error("Completed output not found", 404);
+        return json({ kind, ...await this.config.objectStore.outputDownload(hash) });
+      }
+      return error("Invalid download kind");
     }
     if (url.pathname === "/api/v1/admin/backups" && request.method === "POST") {
       const backup = await this.db.exportBackup();

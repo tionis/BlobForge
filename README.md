@@ -12,6 +12,7 @@ history.
 *   **Managed Coordination:** Bunny Database and Edge Scripting replace PostgreSQL, Redis, and message-broker infrastructure.
 *   **Management UI:** IndieAuth-protected queue, worker enrollment/revocation, retry, priority, cancellation, and runtime configuration controls.
 *   **Portable Backups:** Admin-triggered, transaction-consistent Bunny Database exports are stored privately in S3 with checksums.
+*   **Web Library:** Upload PDFs, search paths/tags/sources, filter and page through every job state, download source/result files, and render completed Markdown with its assets.
 *   **Least-Privilege Workers:** Per-worker tokens and lease-bound presigned transfers remove bucket credentials from conversion hosts.
 *   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
 *   **Fenced Leases:** Atomic SQLite statements assign expiring, opaque lease tokens and recover abandoned work on the next claim or management request.

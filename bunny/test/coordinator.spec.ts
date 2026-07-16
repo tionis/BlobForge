@@ -7,6 +7,7 @@ let client: Client;
 let app: BlobForgeApp;
 let database: CoordinatorDatabase;
 let outputExists = false;
+let rawExists = false;
 let backupBody = "";
 const workerToken = "bfw_test-worker-token";
 const workerHeaders = { authorization: `Bearer ${workerToken}`, "content-type": "application/json" };
@@ -30,12 +31,16 @@ beforeEach(async () => {
       download: async (hash) => ({ url: `https://s3.example/raw/${hash}`, expiresAt: Date.now() + 3600_000 }),
       upload: async (hash) => ({ url: `https://s3.example/out/${hash}`, expiresAt: Date.now() + 900_000 }),
       outputExists: async () => outputExists,
+      rawExists: async () => rawExists,
+      rawUpload: async (hash) => ({ url: `https://s3.example/raw-upload/${hash}`, expiresAt: Date.now() + 900_000 }),
+      outputDownload: async (hash) => ({ url: `https://s3.example/out-download/${hash}`, expiresAt: Date.now() + 3600_000 }),
       backup: async (name, body) => { backupBody = body; return { key: `pdf/backups/coordinator/${name}.json` }; },
     },
   });
   await database.ensureSchema();
   await database.createWorkerCredential("worker-1", "Test worker", await tokenHash(workerToken), "test-admin");
   outputExists = false;
+  rawExists = false;
   backupBody = "";
 });
 
@@ -142,6 +147,9 @@ describe("Bunny BlobForge coordinator", () => {
     expect(appBody).toContain("history.replaceState");
     expect(appBody).toContain("BlobForge-Session");
     expect(appBody).toContain("/api/v1/admin/workers");
+    expect(appBody).toContain("/api/v1/admin/files");
+    expect(appBody).toContain("/api/v1/admin/uploads");
+    expect(appBody).toContain("DecompressionStream");
   });
 
   it("rejects identities outside the multi-admin allowlist before discovery", async () => {
@@ -191,6 +199,29 @@ describe("Bunny BlobForge coordinator", () => {
     const snapshot = await app.fetch(new Request("https://blobforge.example/api/v1/admin/snapshot", { headers: authorizationHeader }));
     expect(snapshot.status).toBe(200);
     await expect(snapshot.json()).resolves.toMatchObject({ identity: "https://alice.example/" });
+
+    const uploadedHash = "d".repeat(64);
+    const prepare = await app.fetch(new Request("https://blobforge.example/api/v1/admin/uploads", {
+      method: "POST", headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: JSON.stringify({ hash: uploadedHash }),
+    }));
+    await expect(prepare.json()).resolves.toMatchObject({ hash: uploadedHash, already_exists: false, url: `https://s3.example/raw-upload/${uploadedHash}` });
+    rawExists = true;
+    const ingested = await app.fetch(new Request(`https://blobforge.example/api/v1/admin/uploads/${uploadedHash}/complete`, {
+      method: "POST", headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: JSON.stringify({ original_name: "Uploaded Rulebook.pdf", size_bytes: 456, path: "library/Uploaded Rulebook.pdf", tags: ["rulebook"], priority: "3_normal" }),
+    }));
+    expect(ingested.status).toBe(201);
+    const searched = await app.fetch(new Request("https://blobforge.example/api/v1/admin/files?q=rulebook&status=todo", { headers: authorizationHeader }));
+    await expect(searched.json()).resolves.toMatchObject({ total: 1, jobs: [expect.objectContaining({ hash: uploadedHash, original_name: "Uploaded Rulebook.pdf", tags: ["rulebook"] })] });
+    const rawDownload = await app.fetch(new Request(`https://blobforge.example/api/v1/admin/files/${uploadedHash}/download?kind=raw`, { headers: authorizationHeader }));
+    await expect(rawDownload.json()).resolves.toMatchObject({ kind: "raw", url: `https://s3.example/raw/${uploadedHash}` });
+    await client.execute({ sql: "UPDATE jobs SET status='done',completed_at=?,updated_at=? WHERE file_hash=?", args: [Date.now(), Date.now(), uploadedHash] });
+    outputExists = true;
+    const doneFiles = await app.fetch(new Request("https://blobforge.example/api/v1/admin/files?status=done", { headers: authorizationHeader }));
+    await expect(doneFiles.json()).resolves.toMatchObject({ total: 1, jobs: [expect.objectContaining({ hash: uploadedHash, status: "done" })] });
+    const zipDownload = await app.fetch(new Request(`https://blobforge.example/api/v1/admin/files/${uploadedHash}/download?kind=output`, { headers: authorizationHeader }));
+    await expect(zipDownload.json()).resolves.toMatchObject({ kind: "output", url: `https://s3.example/out-download/${uploadedHash}` });
 
     const backup = await app.fetch(new Request("https://blobforge.example/api/v1/admin/backups", {
       method: "POST",

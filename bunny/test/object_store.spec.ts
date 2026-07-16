@@ -39,6 +39,16 @@ describe("S3ObjectStore", () => {
     expect(url.pathname).toBe("/store/out/result.zip");
   });
 
+  it("scopes browser ingestion and result downloads to content-addressed keys", async () => {
+    const store = new S3ObjectStore({
+      endpointUrl: "https://s3.example.test", bucket: "blobforge", region: "us-east-1",
+      accessKeyId: "ACCESS123", secretAccessKey: "secret", prefix: "pdf/",
+    });
+    const hash = "f".repeat(64);
+    expect(new URL((await store.rawUpload(hash)).url).pathname).toBe(`/blobforge/pdf/store/raw/${hash}.pdf`);
+    expect(new URL((await store.outputDownload(hash)).url).pathname).toBe(`/blobforge/pdf/store/out/${hash}.zip`);
+  });
+
   it("uploads coordinator backups outside the legacy registry prefix", async () => {
     const upload = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 200 }));
     const store = new S3ObjectStore({

@@ -246,6 +246,47 @@ The destructive form requires typing `DELETE`; automation can add `--yes`.
 Only `{S3_PREFIX}queue/` and `{S3_PREFIX}registry/` are touched. Raw PDFs,
 converted outputs, and database backups remain intact.
 
+## Web library, uploads, and result preview
+
+The management console queries `GET /api/v1/admin/files` independently of the
+operational snapshot. Its database query supports pagination, status and
+priority filters, and case-insensitive matching across content hash, original
+filename, source, paths, and tags. Consequently, completed jobs remain
+discoverable even when the active/recent job list exceeds 250 entries.
+
+PDF ingestion is a two-step direct-to-object-store flow. The browser validates
+the `%PDF-` signature, computes SHA-256, requests an exact-key raw-object PUT
+URL from `POST /api/v1/admin/uploads`, and uploads without sending the PDF
+through Edge Scripting. It then calls
+`POST /api/v1/admin/uploads/<hash>/complete`; the coordinator verifies that the
+raw object exists before creating or updating the database job.
+
+Source PDF and completed ZIP downloads use short-lived exact-key GET URLs.
+Result preview downloads the ZIP in the administrator's browser, parses stored
+or deflated entries with browser APIs, escapes Markdown HTML, resolves
+`content.md` image references to archive-backed blob URLs, and renders a safe
+Markdown subset. Preview rejects archives with more than 10,000 entries or more
+than 1 GiB declared expanded data. ZIP64 and uncommon compression methods are
+downloadable but not previewable.
+
+Because browser uploads and previews contact the object store directly, set a
+CORS rule for the exact management-console origin. An AWS-compatible example is:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://blobforge.example"],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["Content-Type"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Replace the example origin with the deployed Edge Script/custom hostname. Do
+not use `*` for the origin on a private library.
+
 ## Efficiency and limits
 
 The coordination workload makes only short SQL calls. PDF conversion remains on
