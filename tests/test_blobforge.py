@@ -699,125 +699,43 @@ class TestSha256Computation(unittest.TestCase):
         self.assertEqual(result, expected)
 
 
-class TestMetadataRepairCommand(unittest.TestCase):
-    """Test raw metadata repair command behavior."""
-
-    def test_repair_metadata_repairs_missing_keys_from_manifest(self):
-        mock_s3 = MagicMock()
-        mock_s3.get_manifest.return_value = {
-            'entries': {
-                'abc123': {
-                    'paths': ['Books/Rulebook.pdf'],
-                    'tags': ['Books', 'Rulebook'],
-                    'size': 12345,
-                }
-            }
+class TestCoordinatorWorkerCommands(unittest.TestCase):
+    def test_workers_command_reads_coordinator_without_s3(self):
+        coordinator = MagicMock()
+        coordinator.snapshot.return_value = {
+            "workers": [{
+                "worker_id": "gpu-1", "hostname": "atlas", "status": "idle",
+                "last_heartbeat": 1_700_000_000_000, "metadata": {}, "metrics": {},
+            }]
         }
-        mock_s3.exists.return_value = True
-        mock_s3.get_object_metadata.return_value = {'src_last_modified_millis': '123'}
-        mock_s3.update_object_metadata.return_value = True
+        args = Mock(active=False, verbose=False, coordinator_url=None, token=None)
 
-        args = Mock(hashes=[], force=False, dry_run=False)
-
-        with patch('blobforge.cli.S3Client', return_value=mock_s3):
-            result = cli_module.cmd_repair_metadata(args)
+        with patch("blobforge.cli._coordinator_client", return_value=coordinator), patch("blobforge.cli.S3Client") as s3:
+            result = cli_module.cmd_workers(args)
 
         self.assertEqual(result, 0)
-        mock_s3.update_object_metadata.assert_called_once_with(
-            f"{S3_PREFIX_RAW}/abc123.pdf",
-            {
-                'original-name': 'Rulebook.pdf',
-                'tags': json.dumps(['Books', 'Rulebook']),
-                'size': '12345',
-            },
-            merge_existing=True,
+        coordinator.snapshot.assert_called_once_with()
+        s3.assert_not_called()
+
+    def test_enrolled_worker_cli_does_not_initialize_s3(self):
+        args = Mock(
+            run_window=[], abort_outside_window=False, isolate_conversion=False,
+            dry_run=False, run_once=True, coordinator_url="https://coord.example",
+            token="bfw_test",
         )
+        coordinator = MagicMock()
+        coordinator.available = True
+        worker = MagicMock()
 
-    def test_repair_metadata_skips_mismatched_values_without_force(self):
-        mock_s3 = MagicMock()
-        mock_s3.get_manifest.return_value = {
-            'entries': {
-                'abc123': {
-                    'paths': ['Books/Rulebook.pdf'],
-                    'tags': ['Books'],
-                    'size': 12345,
-                }
-            }
-        }
-        mock_s3.exists.return_value = True
-        mock_s3.get_object_metadata.return_value = {
-            'original-name': 'Wrong.pdf',
-            'tags': json.dumps(['Books']),
-            'size': '12345',
-        }
-
-        args = Mock(hashes=['abc123'], force=False, dry_run=False)
-
-        with patch('blobforge.cli.S3Client', return_value=mock_s3):
-            result = cli_module.cmd_repair_metadata(args)
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("blobforge.cli.CoordinatorClient", return_value=coordinator), patch("blobforge.cli.S3Client") as s3, \
+             patch("blobforge.worker.Worker", return_value=worker) as worker_class, \
+             patch("blobforge.worker.run_worker_loop", return_value=0):
+            result = cli_module.cmd_worker(args)
 
         self.assertEqual(result, 0)
-        mock_s3.update_object_metadata.assert_not_called()
-
-    def test_repair_metadata_force_overwrites_mismatched_values(self):
-        mock_s3 = MagicMock()
-        mock_s3.get_manifest.return_value = {
-            'entries': {
-                'abc123': {
-                    'paths': ['Books/Rulebook.pdf'],
-                    'tags': ['Books'],
-                    'size': 12345,
-                }
-            }
-        }
-        mock_s3.exists.return_value = True
-        mock_s3.get_object_metadata.return_value = {
-            'original-name': 'Wrong.pdf',
-            'tags': json.dumps(['OldTag']),
-            'size': '999',
-        }
-        mock_s3.update_object_metadata.return_value = True
-
-        args = Mock(hashes=['abc123'], force=True, dry_run=False)
-
-        with patch('blobforge.cli.S3Client', return_value=mock_s3):
-            result = cli_module.cmd_repair_metadata(args)
-
-        self.assertEqual(result, 0)
-        mock_s3.update_object_metadata.assert_called_once_with(
-            f"{S3_PREFIX_RAW}/abc123.pdf",
-            {
-                'original-name': 'Rulebook.pdf',
-                'tags': json.dumps(['Books']),
-                'size': '12345',
-            },
-            merge_existing=True,
-        )
-
-    def test_repair_metadata_dry_run_reports_without_writing(self):
-        mock_s3 = MagicMock()
-        mock_s3.get_manifest.return_value = {
-            'entries': {
-                'abc123': {
-                    'paths': ['Books/Rulebook.pdf'],
-                    'tags': ['Books'],
-                    'size': 12345,
-                }
-            }
-        }
-        mock_s3.exists.return_value = True
-        mock_s3.get_object_metadata.return_value = {}
-
-        args = Mock(hashes=['abc123'], force=False, dry_run=True)
-        stdout = io.StringIO()
-
-        with patch('blobforge.cli.S3Client', return_value=mock_s3):
-            with redirect_stdout(stdout):
-                result = cli_module.cmd_repair_metadata(args)
-
-        self.assertEqual(result, 0)
-        self.assertIn("[DRY-RUN]", stdout.getvalue())
-        mock_s3.update_object_metadata.assert_not_called()
+        s3.assert_not_called()
+        worker_class.assert_called_once_with(None, isolate_conversion=False, coordinator_client=coordinator)
 
 
 if __name__ == '__main__':

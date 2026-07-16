@@ -6,24 +6,45 @@ import { CoordinatorDatabase } from "../src/database";
 let client: Client;
 let app: BlobForgeApp;
 let database: CoordinatorDatabase;
-const workerHeaders = { authorization: "Bearer worker-secret", "content-type": "application/json" };
+let outputExists = false;
+let backupBody = "";
+const workerToken = "bfw_test-worker-token";
+const workerHeaders = { authorization: `Bearer ${workerToken}`, "content-type": "application/json" };
+const clientHeaders = { authorization: "Bearer client-secret", "content-type": "application/json" };
 
-beforeEach(() => {
+async function tokenHash(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+beforeEach(async () => {
   client = createClient({ url: "file::memory:" });
   database = new CoordinatorDatabase(client);
   app = new BlobForgeApp(database, {
-    workerApiToken: "worker-secret",
-    migrationApiToken: "migration-secret",
+    clientApiToken: "client-secret",
     sessionSigningSecret: "session-secret-that-is-different-from-worker-secret",
     adminMes: ["https://eric.wendland.dev/", "https://alice.example/"],
+    objectStore: {
+      rawKey: (hash) => `pdf/store/raw/${hash}.pdf`,
+      outputKey: (hash) => `pdf/store/out/${hash}.zip`,
+      download: async (hash) => ({ url: `https://s3.example/raw/${hash}`, expiresAt: Date.now() + 3600_000 }),
+      upload: async (hash) => ({ url: `https://s3.example/out/${hash}`, expiresAt: Date.now() + 900_000 }),
+      outputExists: async () => outputExists,
+      backup: async (name, body) => { backupBody = body; return { key: `pdf/backups/coordinator/${name}.json` }; },
+    },
   });
+  await database.ensureSchema();
+  await database.createWorkerCredential("worker-1", "Test worker", await tokenHash(workerToken), "test-admin");
+  outputExists = false;
+  backupBody = "";
 });
 
 afterEach(() => { vi.restoreAllMocks(); client.close(); });
 
-function call(path: string, method = "GET", body?: unknown, headers = workerHeaders): Promise<Response> {
+function call(path: string, method = "GET", body?: unknown, headers?: Record<string, string>): Promise<Response> {
+  const workerRoute = path.includes("/workers/") || path.endsWith("/jobs/claim") || /\/(heartbeat|complete|fail|release|upload-url)$/.test(path);
   return app.fetch(new Request(`https://blobforge.example${path}`, {
-    method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: headers || (workerRoute ? workerHeaders : clientHeaders), body: body === undefined ? undefined : JSON.stringify(body),
   }));
 }
 
@@ -37,6 +58,8 @@ describe("Bunny BlobForge coordinator", () => {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ worker_id: "worker-1" }),
     }));
     expect(denied.status).toBe(401);
+    expect((await call("/api/v1/workers/register", "POST", { worker_id: "worker-1" }, clientHeaders)).status).toBe(401);
+    expect((await call("/api/v1/workers/register", "POST", { worker_id: "another-worker" }, workerHeaders)).status).toBe(403);
   });
 
   it("enqueues, claims with a fenced lease, heartbeats, and completes", async () => {
@@ -51,6 +74,7 @@ describe("Bunny BlobForge coordinator", () => {
     const job = await claimed.json() as Record<string, unknown>;
     expect(job).toMatchObject({ hash, status: "processing", worker_id: "worker-1" });
     expect(job.lease_token).toEqual(expect.any(String));
+    expect(job).toMatchObject({ input: { url: `https://s3.example/raw/${hash}` }, output_exists: false, tags: ["books"] });
 
     const repeated = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
     await expect(repeated.json()).resolves.toMatchObject({ hash, lease_token: job.lease_token });
@@ -61,32 +85,29 @@ describe("Bunny BlobForge coordinator", () => {
     expect((await call(`/api/v1/jobs/${hash}/complete`, "POST", {
       worker_id: "worker-1", lease_token: "wrong",
     })).status).toBe(409);
+    const upload = await call(`/api/v1/jobs/${hash}/upload-url`, "POST", {
+      worker_id: "worker-1", lease_token: job.lease_token,
+    });
+    await expect(upload.json()).resolves.toMatchObject({ method: "PUT", url: `https://s3.example/out/${hash}` });
+    outputExists = true;
     expect((await call(`/api/v1/jobs/${hash}/complete`, "POST", {
       worker_id: "worker-1", lease_token: job.lease_token, result: { output_key: `store/out/${hash}.zip` },
     })).status).toBe(200);
     await expect((await call(`/api/v1/jobs/${hash}`)).json()).resolves.toMatchObject({ status: "done", lease_token: null });
   });
 
-  it("imports terminal state only with the separate migration token", async () => {
-    const hash = "b".repeat(64);
-    const payload = { items: [{ hash, status: "dead", priority: "4_low", retry_count: 5, max_retries: 5, original_name: "failed.pdf" }] };
-    expect((await call("/api/v1/migration/import", "POST", payload)).status).toBe(401);
-    const imported = await call("/api/v1/migration/import", "POST", payload, {
-      authorization: "Bearer migration-secret", "content-type": "application/json",
-    });
-    await expect(imported.json()).resolves.toMatchObject({ imported: 1 });
-    await expect((await call(`/api/v1/jobs/${hash}`)).json()).resolves.toMatchObject({ status: "dead", retry_count: 5 });
-  });
-
   it("recovers an expired lease lazily on the next claim", async () => {
     const hash = "c".repeat(64);
-    await call("/api/v1/workers/register", "POST", { worker_id: "worker-old", hostname: "old" });
-    await call("/api/v1/workers/register", "POST", { worker_id: "worker-new", hostname: "new" });
+    const newToken = "bfw_new-worker-token";
+    const newHeaders = { authorization: `Bearer ${newToken}`, "content-type": "application/json" };
+    await database.createWorkerCredential("worker-new", "New worker", await tokenHash(newToken), "test-admin");
+    await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "old" });
+    await call("/api/v1/workers/register", "POST", { worker_id: "worker-new", hostname: "new" }, newHeaders);
     await call(`/api/v1/jobs/${hash}`, "PUT", { original_name: "recover.pdf", priority: "3_normal" });
-    await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-old" });
+    await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
     await client.execute({ sql: "UPDATE jobs SET lease_expires_at=0 WHERE file_hash=?", args: [hash] });
 
-    const recovered = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-new" });
+    const recovered = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-new" }, newHeaders);
     await expect(recovered.json()).resolves.toMatchObject({
       hash, status: "processing", worker_id: "worker-new", retry_count: 1,
     });
@@ -104,7 +125,7 @@ describe("Bunny BlobForge coordinator", () => {
     const page = await app.fetch(new Request("https://blobforge.example/"));
     const body = await page.text();
     expect(body).toContain('name="me"');
-    expect(body).toContain('src="/login.js?v=2"');
+    expect(body).toContain('src="/login.js?v=3"');
     expect(normalizeProfileUrl("alice.example")).toBe("https://alice.example/");
     expect(() => normalizeProfileUrl("http://alice.example")).toThrow("must use HTTPS");
 
@@ -116,9 +137,11 @@ describe("Bunny BlobForge coordinator", () => {
     expect(await consolePage.text()).toContain("Coordination console");
     const appScript = await app.fetch(new Request("https://blobforge.example/app.js"));
     const appBody = await appScript.text();
+    expect(() => new Function(appBody)).not.toThrow();
     expect(appBody).toContain("localStorage.setItem");
     expect(appBody).toContain("history.replaceState");
     expect(appBody).toContain("BlobForge-Session");
+    expect(appBody).toContain("/api/v1/admin/workers");
   });
 
   it("rejects identities outside the multi-admin allowlist before discovery", async () => {
@@ -169,6 +192,15 @@ describe("Bunny BlobForge coordinator", () => {
     expect(snapshot.status).toBe(200);
     await expect(snapshot.json()).resolves.toMatchObject({ identity: "https://alice.example/" });
 
+    const backup = await app.fetch(new Request("https://blobforge.example/api/v1/admin/backups", {
+      method: "POST",
+      headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: "{}",
+    }));
+    expect(backup.status).toBe(201);
+    await expect(backup.json()).resolves.toMatchObject({ ok: true, key: expect.stringContaining("backups/coordinator/") });
+    expect(JSON.parse(backupBody)).toMatchObject({ format: "blobforge-coordinator-backup", version: 1 });
+
     const status = await app.fetch(new Request("https://blobforge.example/auth/status", { headers: authorizationHeader }));
     await expect(status.json()).resolves.toMatchObject({
       authenticated: true,
@@ -176,5 +208,31 @@ describe("Bunny BlobForge coordinator", () => {
       session_header_present: true,
       identity: "https://alice.example/",
     });
+
+    const enrollment = await app.fetch(new Request("https://blobforge.example/api/v1/admin/workers", {
+      method: "POST",
+      headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: JSON.stringify({ label: "GPU workstation" }),
+    }));
+    expect(enrollment.status).toBe(201);
+    const created = await enrollment.json() as Record<string, unknown>;
+    expect(created).toMatchObject({ label: "GPU workstation", coordinator_url: "https://blobforge.example" });
+    expect(created.token).toMatch(/^bfw_/);
+
+    const identity = await app.fetch(new Request("https://blobforge.example/api/v1/workers/me", {
+      headers: { authorization: `Bearer ${created.token}` },
+    }));
+    await expect(identity.json()).resolves.toMatchObject({ worker_id: created.worker_id });
+
+    const revoked = await app.fetch(new Request(`https://blobforge.example/api/v1/admin/workers/${created.worker_id}/revoke`, {
+      method: "POST",
+      headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: "{}",
+    }));
+    expect(revoked.status).toBe(200);
+    const deniedAfterRevoke = await app.fetch(new Request("https://blobforge.example/api/v1/workers/me", {
+      headers: { authorization: `Bearer ${created.token}` },
+    }));
+    expect(deniedAfterRevoke.status).toBe(401);
   });
 });

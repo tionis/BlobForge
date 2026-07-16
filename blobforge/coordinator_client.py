@@ -1,6 +1,6 @@
 """HTTP client for the Bunny BlobForge coordination backend.
 
-The coordinator owns manifests, persistent job state, leases, retries, worker
+The coordinator owns file metadata, persistent job state, leases, retries, worker
 registration, progress, and operational configuration. S3 remains responsible
 only for raw PDFs and converted output archives when this client is enabled.
 """
@@ -8,15 +8,14 @@ only for raw PDFs and converted output archives when this client is enabled.
 from __future__ import annotations
 
 import json
+import http.client
 import os
+import shutil
 import socket
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from typing import Any, Dict, Iterable, Optional
-
-
-COORDINATOR_URL = os.getenv("BLOBFORGE_COORDINATOR_URL", "").rstrip("/")
-COORDINATOR_TOKEN = os.getenv("BLOBFORGE_COORDINATOR_TOKEN", "")
 
 
 class CoordinatorError(RuntimeError):
@@ -36,8 +35,8 @@ class CoordinatorClient:
         token: Optional[str] = None,
         timeout: float = 30.0,
     ):
-        self.base_url = (base_url if base_url is not None else COORDINATOR_URL).rstrip("/")
-        self.token = token if token is not None else COORDINATOR_TOKEN
+        self.base_url = (base_url if base_url is not None else os.getenv("BLOBFORGE_COORDINATOR_URL", "")).rstrip("/")
+        self.token = token if token is not None else os.getenv("BLOBFORGE_COORDINATOR_TOKEN", "")
         self.timeout = timeout
 
     @property
@@ -94,16 +93,12 @@ class CoordinatorClient:
     def snapshot(self) -> Dict[str, Any]:
         return self._request("GET", "/api/v1/snapshot") or {}
 
-    def import_items(
-        self, items: Iterable[Dict[str, Any]], migration_token: str
-    ) -> Dict[str, Any]:
-        """Import a cutover batch using the separately scoped migration secret."""
-        return self._request(
-            "POST",
-            "/api/v1/migration/import",
-            {"items": list(items)},
-            token=migration_token,
-        ) or {}
+    def worker_identity(self) -> str:
+        payload = self._request("GET", "/api/v1/workers/me") or {}
+        worker_id = str(payload.get("worker_id") or "")
+        if not worker_id:
+            raise CoordinatorError("Coordinator did not return a worker identity")
+        return worker_id
 
     def enqueue(
         self,
@@ -160,6 +155,64 @@ class CoordinatorClient:
             {"worker_id": worker_id, "priorities": list(priorities)},
             allow_empty=True,
         )
+
+    def download_job_input(self, job: Dict[str, Any], local_path: str) -> None:
+        """Download the claimed PDF through its coordinator-issued signed URL."""
+        transfer = job.get("input") or {}
+        url = str(transfer.get("url") or "")
+        if not url:
+            raise CoordinatorError("Coordinator claim did not include an input URL")
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/pdf"})
+            with urllib.request.urlopen(request, timeout=self.timeout) as response, open(local_path, "wb") as target:
+                shutil.copyfileobj(response, target, length=1024 * 1024)
+        except (urllib.error.URLError, OSError) as exc:
+            raise CoordinatorError(f"Input download failed: {exc}") from exc
+
+    def upload_job_output(
+        self,
+        file_hash: str,
+        local_path: str,
+        *,
+        worker_id: str,
+        lease_token: str,
+    ) -> None:
+        """Request a fresh lease-bound signed URL and stream the result archive."""
+        transfer = self._request(
+            "POST",
+            f"/api/v1/jobs/{file_hash}/upload-url",
+            {"worker_id": worker_id, "lease_token": lease_token},
+        ) or {}
+        url = str(transfer.get("url") or "")
+        if not url:
+            raise CoordinatorError("Coordinator did not return an output upload URL")
+        self._stream_put(url, local_path, transfer.get("headers") or {})
+
+    def _stream_put(self, url: str, local_path: str, headers: Dict[str, Any]) -> None:
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise CoordinatorError("Coordinator returned an invalid output upload URL")
+        connection_class = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+        connection = connection_class(parsed.hostname, parsed.port, timeout=self.timeout)
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        size = os.path.getsize(local_path)
+        try:
+            connection.putrequest("PUT", path)
+            connection.putheader("Content-Length", str(size))
+            for name, value in headers.items():
+                connection.putheader(str(name), str(value))
+            connection.endheaders()
+            with open(local_path, "rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    connection.send(chunk)
+            response = connection.getresponse()
+            detail = response.read(4096).decode("utf-8", errors="replace")
+            if response.status < 200 or response.status >= 300:
+                raise CoordinatorError(f"Output upload failed ({response.status}): {detail or response.reason}", status=response.status)
+        except (OSError, http.client.HTTPException) as exc:
+            raise CoordinatorError(f"Output upload failed: {exc}") from exc
+        finally:
+            connection.close()
 
     def heartbeat(
         self,

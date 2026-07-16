@@ -1,14 +1,16 @@
-import { CoordinatorDatabase, PRIORITIES, type ImportItem, type JobRecord, type Priority } from "./database";
-import { APP_CSS, APP_JS, LOGIN_JS, renderHome } from "./ui";
+import { CoordinatorDatabase, PRIORITIES, type JobRecord, type Priority } from "./database";
+import type { ObjectTransferStore } from "./object_store";
+import { APP_CSS, LOGIN_JS, renderHome } from "./ui";
+import { APP_JS } from "./management_ui";
 
 export interface AppConfig {
-  workerApiToken: string;
-  migrationApiToken?: string;
+  clientApiToken: string;
   sessionSigningSecret: string;
   adminMes?: string[];
   adminMe?: string;
   sessionTtlSeconds?: number;
   leaseSeconds?: number;
+  objectStore: ObjectTransferStore;
 }
 
 function json(data: unknown, init: ResponseInit = {}): Response {
@@ -189,7 +191,6 @@ export class BlobForgeApp {
       if (url.pathname === "/auth/logout" && request.method === "POST") return this.logout(request);
       if (url.pathname === "/auth/status" && request.method === "GET") return this.authStatus(request);
       if (url.pathname === "/api/v1/health" && request.method === "GET") return json({ ok: true, service: "blobforge-bunny-coordinator", database: "connected" });
-      if (url.pathname === "/api/v1/migration/import" && request.method === "POST") return this.migrationImport(request);
       if (url.pathname.startsWith("/api/v1/admin/")) return this.adminApi(request, url);
       if (url.pathname.startsWith("/api/v1/")) return this.workerApi(request, url);
       if (url.pathname === "/console" && request.method === "GET") {
@@ -226,6 +227,12 @@ export class BlobForgeApp {
     return Boolean(expected && auth.startsWith("Bearer ") && await secureEqual(auth.slice(7), expected));
   }
 
+  private async workerIdentity(request: Request): Promise<string | null> {
+    const authorization = request.headers.get("authorization") || "";
+    if (!authorization.startsWith("Bearer ")) return null;
+    return this.db.authenticateWorkerToken(await sha256(authorization.slice(7)));
+  }
+
   private sameOrigin(request: Request): boolean {
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
     return request.headers.get("origin") === new URL(request.url).origin;
@@ -254,42 +261,72 @@ export class BlobForgeApp {
   }
 
   private async workerApi(request: Request, url: URL): Promise<Response> {
-    if (!(await this.bearerAuthorized(request, this.config.workerApiToken))) return error("Unauthorized", 401);
-    if (url.pathname === "/api/v1/config" && request.method === "GET") return json(await this.db.getConfig());
-    if (url.pathname === "/api/v1/snapshot" && request.method === "GET") return json(await this.db.snapshot(false));
-    if (url.pathname === "/api/v1/workers/register" && request.method === "POST") {
-      const body = await this.body(request); const workerId = String(body.worker_id || "");
-      if (!/^[A-Za-z0-9._:-]{1,128}$/.test(workerId)) return error("Invalid worker_id");
-      await this.db.registerWorker(body); return json({ ok: true, worker_id: workerId });
+    const clientAuthorized = await this.bearerAuthorized(request, this.config.clientApiToken);
+    const workerId = clientAuthorized ? null : await this.workerIdentity(request);
+    if (url.pathname === "/api/v1/config" && request.method === "GET") {
+      return clientAuthorized || workerId ? json(await this.db.getConfig()) : error("Unauthorized", 401);
     }
-    if (url.pathname === "/api/v1/workers/heartbeat" && request.method === "POST") return json({ ok: await this.db.workerHeartbeat(await this.body(request)) });
-    if (url.pathname === "/api/v1/workers/deregister" && request.method === "POST") { const body = await this.body(request); await this.db.deregisterWorker(String(body.worker_id || "")); return json({ ok: true }); }
+    if (url.pathname === "/api/v1/snapshot" && request.method === "GET") {
+      return clientAuthorized || workerId ? json(await this.db.snapshot(false)) : error("Unauthorized", 401);
+    }
+    const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url))?$/);
+    if (jobMatch && !jobMatch[2]) {
+      if (!clientAuthorized) return error("Unauthorized", 401);
+      const hash = jobMatch[1]!;
+      if (request.method === "PUT") {
+        const body = await this.body(request);
+        if (!validPriority(body.priority ?? "3_normal")) return error("Invalid priority");
+        return json(jobJson(await this.db.enqueue(hash, body)));
+      }
+      if (request.method === "GET") { const job = await this.db.getJob(hash); return job ? json(jobJson(job)) : error("Job not found", 404); }
+      return error("Method not allowed", 405);
+    }
+    if (!workerId) return error("Unauthorized", 401);
+    if (url.pathname === "/api/v1/workers/me" && request.method === "GET") return json({ worker_id: workerId });
+    if (url.pathname === "/api/v1/workers/register" && request.method === "POST") {
+      const body = await this.body(request);
+      if (body.worker_id && body.worker_id !== workerId) return error("Worker token does not match worker_id", 403);
+      await this.db.registerWorker({ ...body, worker_id: workerId }); return json({ ok: true, worker_id: workerId });
+    }
+    if (url.pathname === "/api/v1/workers/heartbeat" && request.method === "POST") {
+      const body = await this.body(request); return json({ ok: await this.db.workerHeartbeat({ ...body, worker_id: workerId }) });
+    }
+    if (url.pathname === "/api/v1/workers/deregister" && request.method === "POST") { await this.db.deregisterWorker(workerId); return json({ ok: true }); }
     if (url.pathname === "/api/v1/jobs/claim" && request.method === "POST") {
-      const body = await this.body(request); const workerId = String(body.worker_id || "");
-      if (!/^[A-Za-z0-9._:-]{1,128}$/.test(workerId)) return error("Invalid worker_id");
+      const body = await this.body(request);
+      if (body.worker_id && body.worker_id !== workerId) return error("Worker token does not match worker_id", 403);
       const priorities = Array.isArray(body.priorities) ? body.priorities.filter(validPriority) : [...PRIORITIES];
       if (!priorities.length) return error("No valid priorities");
       const runtime = await this.db.getConfig();
       const job = await this.db.claim(workerId, priorities, randomToken(), this.leaseSeconds(runtime));
-      return job ? json(jobJson(job)) : new Response(null, { status: 204 });
+      if (!job) return new Response(null, { status: 204 });
+      const [metadata, input, outputExists] = await Promise.all([
+        this.db.getFileMetadata(job.file_hash), this.config.objectStore.download(job.file_hash), this.config.objectStore.outputExists(job.file_hash),
+      ]);
+      return json({ ...jobJson(job), ...metadata, input: { url: input.url, expires_at: input.expiresAt }, output_exists: outputExists });
     }
-    const match = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release))?$/);
-    if (!match) return error("Not found", 404);
-    const hash = match[1]!; const action = match[2];
-    if (!action && request.method === "PUT") {
-      const body = await this.body(request);
-      if (!validPriority(body.priority ?? "3_normal")) return error("Invalid priority");
-      return json(jobJson(await this.db.enqueue(hash, body)));
-    }
-    if (!action && request.method === "GET") { const job = await this.db.getJob(hash); return job ? json(jobJson(job)) : error("Job not found", 404); }
+    if (!jobMatch) return error("Not found", 404);
+    const hash = jobMatch[1]!; const action = jobMatch[2];
     if (request.method !== "POST") return error("Method not allowed", 405);
-    const body = await this.body(request); const workerId = String(body.worker_id || ""); const leaseToken = String(body.lease_token || "");
+    const body = await this.body(request);
+    if (body.worker_id && body.worker_id !== workerId) return error("Worker token does not match worker_id", 403);
+    const leaseToken = String(body.lease_token || "");
+    if (action === "upload-url") {
+      if (!(await this.db.validLease(hash, workerId, leaseToken))) return error("Lease is no longer valid", 409);
+      const upload = await this.config.objectStore.upload(hash);
+      return json({ url: upload.url, method: "PUT", expires_at: upload.expiresAt, headers: { "content-type": "application/zip" } });
+    }
     if (action === "heartbeat") {
       const ok = await this.db.jobHeartbeat(hash, workerId, leaseToken, body.progress, body.metrics, this.leaseSeconds(await this.db.getConfig()));
       return ok ? json({ ok: true }) : error("Lease is no longer valid", 409);
     }
     if (action === "complete") {
-      const outcome = await this.db.complete(hash, workerId, leaseToken, body.result, body.metrics);
+      const current = await this.db.getJob(hash);
+      if (current?.status === "done") return json({ ok: true, already_completed: true });
+      if (!(await this.db.validLease(hash, workerId, leaseToken))) return error("Lease is no longer valid", 409);
+      if (!(await this.config.objectStore.outputExists(hash))) return error("Output object does not exist", 409);
+      const result = body.result && typeof body.result === "object" && !Array.isArray(body.result) ? body.result as Record<string, unknown> : {};
+      const outcome = await this.db.complete(hash, workerId, leaseToken, { ...result, output_key: this.config.objectStore.outputKey(hash) }, body.metrics);
       return outcome === "conflict" ? error("Lease is no longer valid", 409) : json({ ok: true, already_completed: outcome === "done" });
     }
     if (action === "fail") {
@@ -304,25 +341,35 @@ export class BlobForgeApp {
     return error("Not found", 404);
   }
 
-  private async migrationImport(request: Request): Promise<Response> {
-    if (!(await this.bearerAuthorized(request, this.config.migrationApiToken))) return error("Unauthorized", 401);
-    const items = (await this.body(request)).items;
-    if (!Array.isArray(items) || items.length < 1 || items.length > 250) return error("items must contain between 1 and 250 records");
-    for (const item of items) {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return error("Invalid migration record");
-      const record = item as Record<string, unknown>;
-      if (!validHash(String(record.hash || "")) || !validPriority(record.priority || "3_normal")) return error("Invalid migration record");
-      if (record.status && !["todo", "processing", "failed", "dead", "done"].includes(String(record.status))) return error("Invalid migration status");
-    }
-    return json({ ok: true, imported: await this.db.importItems(items as ImportItem[]) });
-  }
-
   private async adminApi(request: Request, url: URL): Promise<Response> {
     const session = await this.session(request);
     if (!session) return error("Unauthorized", 401);
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
     if (url.pathname === "/api/v1/admin/snapshot" && request.method === "GET") {
-      return json({ ...await this.db.snapshot(), identity: session.me });
+      return json({ ...await this.db.snapshot(), worker_enrollments: await this.db.listWorkerCredentials(), identity: session.me });
+    }
+    if (url.pathname === "/api/v1/admin/backups" && request.method === "POST") {
+      const backup = await this.db.exportBackup();
+      const body = JSON.stringify(backup);
+      const checksum = await sha256(body);
+      const name = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomToken(6)}`;
+      const stored = await this.config.objectStore.backup(name, body);
+      const tables = backup.tables as Record<string, unknown[]>;
+      const rows = Object.fromEntries(Object.entries(tables).map(([table, values]) => [table, values.length]));
+      await this.db.audit(session.me, "backup.create", stored.key, { bytes: new TextEncoder().encode(body).byteLength, checksum });
+      return json({ ok: true, key: stored.key, bytes: new TextEncoder().encode(body).byteLength, checksum_sha256_base64url: checksum, rows }, { status: 201 });
+    }
+    if (url.pathname === "/api/v1/admin/workers" && request.method === "POST") {
+      const body = await this.body(request); const label = String(body.label || "").trim();
+      if (!label || label.length > 80) return error("Worker label must contain 1 to 80 characters");
+      const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "worker";
+      const workerId = `${slug}-${randomToken(6)}`; const token = `bfw_${randomToken(32)}`;
+      await this.db.createWorkerCredential(workerId, label, await sha256(token), session.me);
+      return json({ worker_id: workerId, label, token, coordinator_url: new URL(request.url).origin }, { status: 201 });
+    }
+    const workerMatch = url.pathname.match(/^\/api\/v1\/admin\/workers\/([A-Za-z0-9._:-]{1,128})\/revoke$/);
+    if (workerMatch && request.method === "POST") {
+      return await this.db.revokeWorkerCredential(workerMatch[1]!, session.me) ? json({ ok: true }) : error("Worker is already revoked or does not exist", 409);
     }
     if (url.pathname === "/api/v1/admin/config" && request.method === "PUT") {
       const body = await this.body(request);

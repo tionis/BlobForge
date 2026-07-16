@@ -389,7 +389,7 @@ def get_system_metrics() -> Dict[str, Any]:
 class HeartbeatThread(threading.Thread):
     """Background thread that periodically updates the heartbeat for active jobs."""
     
-    def __init__(self, s3_client: S3Client, worker_id: str,
+    def __init__(self, s3_client: Optional[S3Client], worker_id: str,
                  coordinator: Optional[CoordinatorClient] = None):
         super().__init__(daemon=True)
         self.s3 = s3_client
@@ -518,6 +518,9 @@ class HeartbeatThread(threading.Thread):
                     except CoordinatorError as e:
                         logger.warning(f"Failed to update coordinator heartbeat for {job}: {e}")
                 else:
+                    if not self.s3:
+                        logger.error("Legacy worker heartbeat requires an S3 client")
+                        continue
                     success = self.s3.update_heartbeat(job, self.worker_id, progress_data)
                     if not success:
                         logger.warning(f"Failed to update heartbeat for {job}")
@@ -533,6 +536,9 @@ class HeartbeatThread(threading.Thread):
                 except CoordinatorError as e:
                     logger.warning(f"Failed to update coordinator worker heartbeat: {e}")
             else:
+                if not self.s3:
+                    logger.error("Legacy worker registration requires an S3 client")
+                    continue
                 self.s3.update_worker_heartbeat(current_job=job, system_metrics=get_system_metrics())
 
 
@@ -558,7 +564,7 @@ class Worker:
     POLL_BATCH_SIZE = 50  # Max jobs to fetch per priority in broad scan
     MAX_LOCK_ATTEMPTS = 5  # Max attempts to lock before moving to next priority
     
-    def __init__(self, s3_client: S3Client, isolate_conversion: bool = False,
+    def __init__(self, s3_client: Optional[S3Client], isolate_conversion: bool = False,
                  coordinator_client: Optional[CoordinatorClient] = None):
         self.s3 = s3_client
         self.id = WORKER_ID
@@ -567,8 +573,11 @@ class Worker:
         self.isolate_conversion = isolate_conversion
         candidate = coordinator_client or CoordinatorClient()
         self.coordinator = candidate if candidate.available else None
+        if self.coordinator:
+            self.id = self.coordinator.worker_identity()
         self.current_lease_token: Optional[str] = None
         self.current_retry_count = 0
+        self.current_job_data: Optional[dict] = None
         
         # Polling optimization state
         self._empty_poll_count = 0  # Track consecutive empty polls for backoff
@@ -586,8 +595,10 @@ class Worker:
         logger.info(f"Registering worker {self.id}...")
         if self.coordinator:
             self.coordinator.register_worker(self.id, get_worker_metadata())
-            logger.info("Using Bunny coordination backend; S3 is blob storage only.")
+            logger.info("Using Bunny coordination backend with coordinator-issued blob transfer URLs.")
         else:
+            if not self.s3:
+                raise ValueError("Legacy worker mode requires an S3 client")
             self.s3.register_worker()
         
         # Start heartbeat thread
@@ -696,6 +707,7 @@ class Worker:
             self.current_priority = job.get("priority", DEFAULT_PRIORITY)
             self.current_lease_token = job.get("lease_token")
             self.current_retry_count = _safe_int(job.get("retry_count", 0))
+            self.current_job_data = job
             self.heartbeat.set_job(
                 self.current_job,
                 original_filename=job.get("original_name"),
@@ -842,7 +854,7 @@ class Worker:
         # Upload can succeed immediately before the coordinator completion call
         # is lost. A later lease holder can safely finalize that existing result
         # instead of spending hours converting the same PDF again.
-        if self.coordinator and self.s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
+        if self.coordinator and self.current_job_data and self.current_job_data.get("output_exists"):
             logger.info("Existing output found; finalizing the coordinator job without reconversion")
             self._complete_job(job_hash)
             return
@@ -855,8 +867,17 @@ class Worker:
             # 1. Download & Metadata
             raw_key = f"{S3_PREFIX_RAW}/{job_hash}.pdf"
             try:
-                self.s3.download_file(raw_key, pdf_path)
-                s3_meta = self.s3.get_object_metadata(raw_key)
+                if self.coordinator:
+                    self.coordinator.download_job_input(self.current_job_data or {}, pdf_path)
+                    job_data = self.current_job_data or {}
+                    s3_meta = {
+                        "original-name": str(job_data.get("original_name") or "unknown.pdf"),
+                        "tags": json.dumps(job_data.get("tags") or []),
+                        "size": str(job_data.get("size_bytes") or os.path.getsize(pdf_path)),
+                    }
+                else:
+                    self.s3.download_file(raw_key, pdf_path)
+                    s3_meta = self.s3.get_object_metadata(raw_key)
                 
                 # Get file info for heartbeat
                 original_filename = s3_meta.get("original-name", "unknown.pdf")
@@ -896,7 +917,7 @@ class Worker:
                 if run_schedule and run_schedule.abort_running and not run_schedule.is_allowed():
                     raise ScheduleWindowClosed("Worker schedule window closed before conversion started")
 
-                if self.s3.mock:
+                if self.s3 and self.s3.mock:
                     # Mock marker output
                     logger.info("[MOCK] Skipping actual conversion")
                     md_text = "# Mock Conversion\n\nThis is mock content."
@@ -996,7 +1017,15 @@ class Worker:
                         zf.write(p, os.path.relpath(p, out_dir))
             
             self.heartbeat.update_progress({"stage": "uploading"})
-            self.s3.upload_file(zip_path, f"{S3_PREFIX_DONE}/{job_hash}.zip")
+            if self.coordinator:
+                self.coordinator.upload_job_output(
+                    job_hash,
+                    zip_path,
+                    worker_id=self.id,
+                    lease_token=self.current_lease_token or "",
+                )
+            else:
+                self.s3.upload_file(zip_path, f"{S3_PREFIX_DONE}/{job_hash}.zip")
             
             # Calculate processing time
             processing_time = time.time() - job_start_time
@@ -1037,6 +1066,7 @@ class Worker:
             self.current_priority = None
             self.current_lease_token = None
             self.current_retry_count = 0
+            self.current_job_data = None
             return
         
         # Delete todo marker from all priorities (it should only be in one)
@@ -1128,15 +1158,9 @@ class Worker:
             self.current_priority = None
             self.current_lease_token = None
             self.current_retry_count = 0
+            self.current_job_data = None
             return
 
-        self.s3.save_job_error_detail(
-            job_hash,
-            error=reason,
-            traceback=traceback_str,
-            context=error_context
-        )
-        
         if retry_count >= max_retries:
             logger.error(f"Job {job_hash} exceeded max retries. Moving to dead-letter queue.")
             self.s3.mark_dead(job_hash, reason, retry_count)
@@ -1393,6 +1417,7 @@ class Worker:
             self.current_priority = None
             self.current_lease_token = None
             self.current_retry_count = 0
+            self.current_job_data = None
             return requeued
         
         lock_info = self.s3.get_lock_info(job_hash) or {}

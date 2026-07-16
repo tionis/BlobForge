@@ -8,17 +8,13 @@ Supports:
 """
 import os
 import re
-import sys
 import argparse
 import subprocess
 import hashlib
 import json
 from typing import Optional, List
 
-from .config import (
-    S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_DONE, S3_PREFIX_FAILED,
-    S3_PREFIX_PROCESSING, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
-)
+from .config import S3_PREFIX_RAW, PRIORITIES, DEFAULT_PRIORITY
 from .s3_client import S3Client
 from .coordinator_client import CoordinatorClient
 from .utils import compute_sha256_with_cache, get_cached_hash
@@ -97,18 +93,16 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         original_name: Optional original filename to use for metadata.
                        Useful when ingesting renamed/temporary files.
     
-    This function is state-aware and checks all queue states before adding a job:
-    - Skips if already done (output exists)
-    - Skips if currently processing
-    - Skips if already queued (any priority)
-    - Skips if in failed queue (will be retried by janitor)
-    - Skips if in dead-letter queue (permanently failed)
-    
-    Also updates the manifest with file metadata for lookup.
+    The Bunny coordinator is the sole source of job and file metadata. S3 stores
+    only raw PDFs, conversion results, and coordinator backups.
     """
     s3 = S3Client(dry_run=dry_run)
-    coordinator_candidate = CoordinatorClient()
-    coordinator = coordinator_candidate if coordinator_candidate.available else None
+    coordinator = CoordinatorClient()
+    if not coordinator.available:
+        raise RuntimeError(
+            "Ingestion requires BLOBFORGE_COORDINATOR_URL and "
+            "BLOBFORGE_COORDINATOR_TOKEN"
+        )
     
     # Expand paths into list of (full_path, base_path) tuples
     # base_path is used to compute relative paths for tags
@@ -138,28 +132,17 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     
     print(f"Found {len(files_to_process)} PDF(s) to process...")
     
-    # Fetch manifest once for efficient duplicate detection
-    if coordinator:
-        known_hashes = set()
-        print("Using Bunny coordinator for persistent manifest and queue state.")
-    else:
-        print("Fetching manifest for duplicate detection...")
-        manifest = s3.get_manifest()
-        known_hashes = set(manifest.get('entries', {}).keys())
-        print(f"Manifest contains {len(known_hashes)} known files.")
+    known_hashes = set()
+    print("Using Bunny coordinator for persistent file and queue state.")
     
     stats = {"found": 0, "skipped": 0, "uploaded": 0, "queued": 0}
-    
-    # Batch manifest entries for efficient updates
-    manifest_batch = []
-    MANIFEST_BATCH_SIZE = 50
     
     for full_path, base_path in files_to_process:
         file = os.path.basename(full_path)
         rel_path = os.path.relpath(full_path, base_path)
         stats["found"] += 1
         
-        # Use original_name if provided (e.g., from telegram upload), else use detected filename
+        # Use an explicitly supplied name (for example a Web upload), else the detected filename.
         display_name = original_name if original_name else file
         
         # Metadata Prep
@@ -189,9 +172,9 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         
         print(f"Found: {rel_path} -> {file_hash[:8]}...")
         
-        # 2. Check if already known (manifest is source of truth)
-        if not coordinator and file_hash in known_hashes:
-            print(f"  [SKIP] Already ingested")
+        # 2. Avoid duplicate entries within this ingestion run.
+        if file_hash in known_hashes:
+            print(f"  [SKIP] Already encountered in this run")
             stats["skipped"] += 1
             continue
         
@@ -229,98 +212,44 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             print(f"  [OK] Raw PDF exists.")
         
         # 4. Queue the job in the authoritative coordination backend.
-        if coordinator:
-            if dry_run:
-                print(f"  [DRY-RUN] Would enqueue with priority {priority}")
-                stats["queued"] += 1
-                continue
-            try:
-                if not size:
-                    raw_meta = s3.get_object_metadata(raw_key)
-                    size = int(raw_meta.get("size", 0))
-                job = coordinator.enqueue(
-                    file_hash,
-                    priority=priority,
-                    original_name=display_name,
-                    size_bytes=size,
-                    paths=[rel_path],
-                    tags=tags,
-                    source=os.path.basename(base_path),
-                )
-                job_status = job.get("status", "todo")
-                if job_status == "todo":
-                    print(f"  [QUEUED] Added with priority {job.get('priority', priority)}")
-                    stats["queued"] += 1
-                else:
-                    print(f"  [SKIP] Coordinator already has job in state: {job_status}")
-                    stats["skipped"] += 1
-            except Exception as e:
-                print(f"  [ERROR] Coordinator enqueue failed: {e}")
-                continue
-        else:
-            s3.create_todo_marker(priority, file_hash)
-            print(f"  [QUEUED] Added with priority {priority}")
+        if dry_run:
+            print(f"  [DRY-RUN] Would enqueue with priority {priority}")
             stats["queued"] += 1
+            known_hashes.add(file_hash)
+            continue
+        try:
+            if not size:
+                raw_meta = s3.get_object_metadata(raw_key)
+                size = int(raw_meta.get("size", 0))
+            job = coordinator.enqueue(
+                file_hash,
+                priority=priority,
+                original_name=display_name,
+                size_bytes=size,
+                paths=[rel_path],
+                tags=tags,
+                source=os.path.basename(base_path),
+            )
+            job_status = job.get("status", "todo")
+            if job_status == "todo":
+                print(f"  [QUEUED] Added with priority {job.get('priority', priority)}")
+                stats["queued"] += 1
+            else:
+                print(f"  [SKIP] Coordinator already has job in state: {job_status}")
+                stats["skipped"] += 1
+        except Exception as e:
+            print(f"  [ERROR] Coordinator enqueue failed: {e}")
+            continue
         
         # Add to known hashes so duplicates in same run are caught
         known_hashes.add(file_hash)
         
-        # 5. Collect manifest entry
-        try:
-            size = os.path.getsize(full_path)
-        except Exception:
-            size = 0
-        
-        if coordinator:
-            continue
-
-        manifest_batch.append({
-            'hash': file_hash,
-            'path': rel_path,
-            'size': size,
-            'tags': tags,
-            'source': os.path.basename(base_path)
-        })
-        
-        # Batch update manifest
-        if len(manifest_batch) >= MANIFEST_BATCH_SIZE:
-            print(f"  [MANIFEST] Updating with {len(manifest_batch)} entries...")
-            s3.update_manifest(manifest_batch)
-            manifest_batch = []
-    
-    # Final manifest update for remaining entries
-    failed_manifest_entries = []
-    
-    if manifest_batch:
-        print(f"  [MANIFEST] Updating with {len(manifest_batch)} remaining entries...")
-        if not s3.update_manifest(manifest_batch):
-            failed_manifest_entries.extend(manifest_batch)
-    
-    # If manifest update failed, save entries for later recovery
-    if failed_manifest_entries:
-        recovery_file = "/tmp/blobforge_manifest_recovery.json"
-        try:
-            # Append to existing recovery file if it exists
-            existing = []
-            if os.path.exists(recovery_file):
-                with open(recovery_file, 'r') as f:
-                    existing = json.load(f)
-            existing.extend(failed_manifest_entries)
-            with open(recovery_file, 'w') as f:
-                json.dump(existing, f, indent=2)
-            print(f"\n  [WARNING] Manifest update failed for {len(failed_manifest_entries)} entries.")
-            print(f"  Saved to {recovery_file} for recovery.")
-            print(f"  Run 'blobforge manifest --repair' to retry, or 'blobforge manifest --rebuild' to rebuild from S3.")
-        except Exception as e:
-            print(f"\n  [ERROR] Could not save recovery file: {e}")
-            print(f"  Failed entries: {[e['hash'][:12] for e in failed_manifest_entries]}")
-    
     # Print summary
     print("\n--- Ingest Summary ---")
     print(f"  Found:    {stats['found']} PDFs")
     print(f"  Uploaded: {stats['uploaded']}")
     print(f"  Queued:   {stats['queued']}")
-    print(f"  Skipped:  {stats['skipped']} (already in manifest)")
+    print(f"  Skipped:  {stats['skipped']}")
 
 
 if __name__ == "__main__":

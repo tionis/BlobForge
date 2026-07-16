@@ -228,20 +228,6 @@ def _build_done_hash_index(client: Any) -> Optional[Set[str]]:
         return None
 
 
-def _resolve_manifest_hashes(client: Any) -> Optional[Set[str]]:
-    """Load manifest hashes once for prefiltering. Returns None on fallback."""
-    if not hasattr(client, "get_manifest"):
-        return None
-
-    try:
-        manifest = client.get_manifest()
-        entries = manifest.get("entries", {}) if isinstance(manifest, dict) else {}
-        return set(entries.keys())
-    except Exception as exc:
-        print(f"[WARN] Could not load manifest for prefiltering: {exc}")
-        return None
-
-
 def _resolve_done_availability(
     client: Any,
     candidate_hashes: Set[str],
@@ -344,23 +330,8 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, s3: Op
         f"{len(unique_hashes)} unique hash(es)."
     )
 
-    manifest_hashes = _resolve_manifest_hashes(client)
-    if manifest_hashes is not None:
-        candidate_hashes = unique_hashes & manifest_hashes
-        prefiltered_missing = unique_hashes - candidate_hashes
-        print(
-            f"Preflight: manifest filter kept {len(candidate_hashes)} hash(es), "
-            f"prefiltered {len(prefiltered_missing)} as missing."
-        )
-    else:
-        candidate_hashes = set(unique_hashes)
-        prefiltered_missing = set()
-        print("Preflight: manifest unavailable; checking all local hashes against done store.")
-
-    conversion_available: Dict[str, bool] = {
-        file_hash: False for file_hash in prefiltered_missing
-    }
-    conversion_available.update(_resolve_done_availability(client, candidate_hashes))
+    print("Preflight: checking local hashes against the completed-output store.")
+    conversion_available = _resolve_done_availability(client, unique_hashes)
 
     archive_cache: Dict[str, str] = {}
 

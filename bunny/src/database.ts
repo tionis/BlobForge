@@ -24,20 +24,6 @@ export interface JobRecord {
   size_bytes: number;
 }
 
-export interface ImportItem {
-  hash: string;
-  status?: JobStatus;
-  priority?: Priority;
-  retry_count?: number;
-  max_retries?: number;
-  original_name?: string | null;
-  size_bytes?: number;
-  source?: string | null;
-  paths?: string[];
-  tags?: string[];
-  error?: string | null;
-}
-
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS files (hash TEXT PRIMARY KEY CHECK(length(hash)=64), original_name TEXT, size_bytes INTEGER NOT NULL DEFAULT 0, source TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS file_paths (file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(file_hash,path))`,
@@ -46,8 +32,8 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,available_at,priority,created_at)`,
   `CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status,lease_expires_at)`,
   `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}')`,
-  `CREATE TABLE IF NOT EXISTS job_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, level TEXT NOT NULL, message TEXT NOT NULL, detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
-  `CREATE INDEX IF NOT EXISTS job_logs_hash_idx ON job_logs(file_hash,created_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS worker_credentials (worker_id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, revoked_at INTEGER, last_used_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS worker_credentials_token_idx ON worker_credentials(token_hash)`,
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, subject TEXT, detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
 ];
@@ -69,6 +55,13 @@ function numeric(value: unknown): number {
 
 function nullableNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : numeric(value);
+}
+
+function serializableRow(row: Row): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(row).map(([key, value]) => [
+    key,
+    typeof value === "bigint" ? value.toString() : value,
+  ]));
 }
 
 function jobFromRow(row: Row): JobRecord {
@@ -163,6 +156,68 @@ export class CoordinatorDatabase {
     return result.rows[0] ? jobFromRow(result.rows[0]) : null;
   }
 
+  async getFileMetadata(hash: string): Promise<{ tags: string[]; paths: string[] }> {
+    const results = await this.client.batch([
+      statement("SELECT tag FROM file_tags WHERE file_hash=? ORDER BY tag", [hash]),
+      statement("SELECT path FROM file_paths WHERE file_hash=? ORDER BY path", [hash]),
+    ], "read");
+    return {
+      tags: results[0].rows.map((row) => String(row.tag)),
+      paths: results[1].rows.map((row) => String(row.path)),
+    };
+  }
+
+  async createWorkerCredential(workerId: string, label: string, tokenHash: string, actor: string): Promise<void> {
+    const timestamp = Date.now();
+    await this.client.execute(statement(
+      "INSERT INTO worker_credentials(worker_id,label,token_hash,created_at,created_by,revoked_at,last_used_at) VALUES(?,?,?,?,?,NULL,NULL)",
+      [workerId, label, tokenHash, timestamp, actor],
+    ));
+    await this.audit(actor, "worker.create", workerId, { label });
+  }
+
+  async authenticateWorkerToken(tokenHash: string): Promise<string | null> {
+    const result = await this.client.execute(statement(
+      "SELECT worker_id,last_used_at FROM worker_credentials WHERE token_hash=? AND revoked_at IS NULL",
+      [tokenHash],
+    ));
+    if (!result.rows[0]) return null;
+    const workerId = String(result.rows[0].worker_id);
+    const timestamp = Date.now();
+    if (numeric(result.rows[0].last_used_at) < timestamp - 300_000) {
+      await this.client.execute(statement("UPDATE worker_credentials SET last_used_at=? WHERE worker_id=?", [timestamp, workerId]));
+    }
+    return workerId;
+  }
+
+  async revokeWorkerCredential(workerId: string, actor: string): Promise<boolean> {
+    const timestamp = Date.now();
+    const results = await this.client.batch([
+      statement("UPDATE worker_credentials SET revoked_at=? WHERE worker_id=? AND revoked_at IS NULL", [timestamp, workerId]),
+      statement("UPDATE jobs SET status='todo',available_at=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE status='processing' AND worker_id=?", [timestamp, timestamp, workerId]),
+      statement("UPDATE workers SET status='stopped',current_job=NULL,last_heartbeat=? WHERE worker_id=?", [timestamp, workerId]),
+    ], "write");
+    if (!results[0].rowsAffected) return false;
+    await this.audit(actor, "worker.revoke", workerId, {});
+    return true;
+  }
+
+  async listWorkerCredentials(): Promise<Record<string, unknown>[]> {
+    const result = await this.client.execute(statement(
+      `SELECT c.worker_id,c.label,c.created_at,c.created_by,c.revoked_at,c.last_used_at,
+              w.hostname,w.status,w.current_job,w.last_heartbeat,w.registered_at
+       FROM worker_credentials c LEFT JOIN workers w ON w.worker_id=c.worker_id
+       ORDER BY c.created_at DESC LIMIT 250`,
+    ));
+    return result.rows.map((row) => ({
+      worker_id: String(row.worker_id), label: String(row.label), created_at: numeric(row.created_at),
+      created_by: String(row.created_by), revoked_at: nullableNumber(row.revoked_at), last_used_at: nullableNumber(row.last_used_at),
+      hostname: row.hostname === null ? null : String(row.hostname), status: row.status === null ? "never_connected" : String(row.status),
+      current_job: row.current_job === null ? null : String(row.current_job), last_heartbeat: nullableNumber(row.last_heartbeat),
+      registered_at: nullableNumber(row.registered_at),
+    }));
+  }
+
   async registerWorker(body: Record<string, unknown>): Promise<void> {
     const timestamp = Date.now();
     await this.client.execute(statement(`INSERT INTO workers(worker_id,hostname,status,current_job,last_heartbeat,registered_at,metadata_json,metrics_json) VALUES(?,?,'idle',NULL,?,?,?,'{}')
@@ -227,6 +282,14 @@ export class CoordinatorDatabase {
     return results[0].rowsAffected > 0;
   }
 
+  async validLease(hash: string, workerId: string, leaseToken: string): Promise<boolean> {
+    const result = await this.client.execute(statement(
+      "SELECT 1 valid FROM jobs WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? AND lease_expires_at>=?",
+      [hash, workerId, leaseToken, Date.now()],
+    ));
+    return Boolean(result.rows[0]);
+  }
+
   async complete(hash: string, workerId: string, leaseToken: string, result: unknown, metrics: unknown): Promise<"completed" | "done" | "conflict"> {
     const timestamp = Date.now();
     const results = await this.client.batch([
@@ -243,11 +306,10 @@ export class CoordinatorDatabase {
   async fail(hash: string, workerId: string, leaseToken: string, message: string, detail: unknown, metrics: unknown): Promise<JobRecord | null> {
     const timestamp = Date.now();
     const results = await this.client.batch([
-      statement("INSERT INTO job_logs(file_hash,level,message,detail_json,created_at) SELECT ?,'error',?,?,? WHERE EXISTS(SELECT 1 FROM jobs WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?)", [hash, message, JSON.stringify(detail || {}), timestamp, hash, workerId, leaseToken]),
       statement(`UPDATE jobs SET status=CASE WHEN retry_count+1>max_retries THEN 'dead' ELSE 'failed' END,retry_count=retry_count+1,available_at=?+MIN(3600000,60000*(1 << retry_count)),error_message=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? RETURNING file_hash`, [timestamp, message, timestamp, hash, workerId, leaseToken]),
       statement("UPDATE workers SET status='idle',current_job=NULL,last_heartbeat=?,metrics_json=? WHERE worker_id=? AND current_job=?", [timestamp, JSON.stringify(metrics || {}), workerId, hash]),
     ], "write");
-    return results[1].rowsAffected ? this.getJob(hash) : null;
+    return results[0].rowsAffected ? this.getJob(hash) : null;
   }
 
   async release(hash: string, workerId: string, leaseToken: string): Promise<"released" | "todo" | "conflict"> {
@@ -303,22 +365,26 @@ export class CoordinatorDatabase {
     return { counts, priority, jobs, workers, config };
   }
 
-  async importItems(items: ImportItem[]): Promise<number> {
-    const config = await this.getConfig();
-    const timestamp = Date.now();
-    const statements: InStatement[] = [];
-    for (const item of items) {
-      const status = item.status === "processing" ? "todo" : (item.status || "todo");
-      const retry = Math.max(0, Math.floor(item.retry_count || 0));
-      const maxRetries = Math.max(retry, Math.floor(item.max_retries || Number(config.max_retries || 3)));
-      statements.push(statement(`INSERT INTO files(hash,original_name,size_bytes,source,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(hash) DO UPDATE SET original_name=COALESCE(excluded.original_name,files.original_name),size_bytes=CASE WHEN excluded.size_bytes>0 THEN excluded.size_bytes ELSE files.size_bytes END,source=COALESCE(excluded.source,files.source),updated_at=excluded.updated_at`, [item.hash, item.original_name || null, Math.max(0, item.size_bytes || 0), item.source || null, timestamp, timestamp]));
-      statements.push(statement(`INSERT INTO jobs(file_hash,status,priority,retry_count,max_retries,created_at,updated_at,completed_at,available_at,error_message) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(file_hash) DO UPDATE SET status=excluded.status,priority=excluded.priority,retry_count=excluded.retry_count,max_retries=excluded.max_retries,updated_at=excluded.updated_at,completed_at=excluded.completed_at,available_at=excluded.available_at,error_message=excluded.error_message,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}'`, [item.hash, status, item.priority || "3_normal", retry, maxRetries, timestamp, timestamp, status === "done" ? timestamp : null, timestamp, item.error || null]));
-      for (const path of item.paths || []) statements.push(statement("INSERT OR IGNORE INTO file_paths(file_hash,path) VALUES(?,?)", [item.hash, path]));
-      for (const tag of item.tags || []) statements.push(statement("INSERT OR IGNORE INTO file_tags(file_hash,tag) VALUES(?,?)", [item.hash, tag]));
-    }
-    await this.client.batch(statements, "write");
-    await this.audit("migration-api", "import", null, { imported: items.length });
-    return items.length;
+  async exportBackup(): Promise<Record<string, unknown>> {
+    const tableNames = ["files", "file_paths", "file_tags", "jobs", "workers", "worker_credentials", "config", "audit_log"];
+    const results = await this.client.batch([
+      statement(
+        `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND tbl_name IN (${tableNames.map(() => "?").join(",")}) ORDER BY type,name`,
+        tableNames,
+      ),
+      ...tableNames.map((name) => statement(`SELECT * FROM ${name}`)),
+    ], "read");
+    const tables = Object.fromEntries(tableNames.map((name, index) => [
+      name,
+      results[index + 1]!.rows.map(serializableRow),
+    ]));
+    return {
+      format: "blobforge-coordinator-backup",
+      version: 1,
+      created_at: new Date().toISOString(),
+      schema: results[0]!.rows.map(serializableRow),
+      tables,
+    };
   }
 
   async audit(actor: string, action: string, subject: string | null, detail: unknown): Promise<void> {

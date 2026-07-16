@@ -1,5 +1,17 @@
 # Work Log
 
+## 2026-07-16 (Least-privilege worker enrollment and transfers)
+- **Objective:** Remove bucket credentials from conversion workers, move terminal worker views to the coordinator, and add UI-managed per-worker enrollment.
+- **Design:**
+    1. Split the former shared worker credential into a trusted ingestor/CLI `CLIENT_API_TOKEN` and individually enrolled worker tokens.
+    2. Store only SHA-256 worker-token hashes, bind each token to a server-generated worker ID, show plaintext only in the creation response, and support immediate UI revocation.
+    3. Issue the raw PDF GET URL at claim time but issue the output PUT URL only immediately before upload because conversions may outlive a claim-time upload URL.
+    4. Bind output URL issuance to the authenticated worker plus its active fenced lease, and verify object existence before database completion.
+    5. Keep trusted ingestion on S3 for raw uploads; defer optional browser PDF upload as a tracked follow-up.
+- **Implementation:** Added WebCrypto SigV4 presigning, S3 path/virtual-host addressing, database worker credentials and audits, worker identity enforcement, create/revoke admin APIs, enrollment UI, streamed Python signed-URL transfers, coordinator-only worker startup, CLI coordinator overrides, and coordinator-backed worker listing.
+- **Validation:** Bunny TypeScript checks pass; Bunny/libSQL/SigV4/UI tests pass (`10 passed`); the complete Python suite passes (`94 passed, 5 subtests passed`). The Edge Script production build succeeds at 210.2 KiB, and the shipped browser module is syntax-checked by the UI test.
+- **Status:** Implementation, rollout guidance, architecture documentation, focused security boundaries, and full regression verification are complete. Changes are ready to review and commit.
+
 ## 2026-07-16 (Cookie-independent Bunny session commit)
 - **Objective:** Commit the validated cookie-independent IndieAuth session transport at the user's request.
 - **Actions:** Confirmed the scope contains the fragment bootstrap, browser-stored signed session, authenticated admin API header, rollout cache bust, focused tests, and required documentation/protocol updates.
@@ -697,3 +709,21 @@
     - `uv run python -m pytest tests/ -q` -> `76 passed, 5 subtests passed`.
     - Module imports verified for `blobforge.status` and `blobforge.s3_client`.
 - **Status:** Dashboard I/O parallelized. Expected speedup is roughly the number of independent S3 calls (e.g., ~5-8x faster depending on queue sizes and active job counts).
+## 2026-07-16 (Coordinator Backup and Legacy-State Retirement)
+
+- **Objective:** Add administrator-triggered Bunny Database backups, remove the retired manifest/log/Telegram stack, and safely clean obsolete S3 coordination objects.
+- **Actions:**
+    1. Reviewed the current Bunny Edge Script, libSQL schema, object-store signer, Python coordinator paths, CLI surface, tests, and documentation; verified Bunny's documented snapshot behavior and transactional batch semantics.
+    2. Added `CoordinatorDatabase.exportBackup()`, which reads the application schema and all active tables in one read transaction and serializes bigint values safely.
+    3. Added authenticated `POST /api/v1/admin/backups`, an IndieAuth management-console button, SHA-256/size/row-count reporting, audit recording, and private S3 uploads under `{prefix}backups/coordinator/`.
+    4. Removed the S3 manifest implementation and CLI commands, registry job-log implementation and CLI viewer, Telegram bot/package extra, one-time coordinator migration module/API, metadata-repair documentation/tests, and hydrate manifest prefilter.
+    5. Made ingestion, workers, dashboards, worker listing, and runtime config coordinator-authoritative; conversion workers continue to use only enrollment tokens and signed object URLs.
+    6. Added `S3Client.purge_prefix()` with paginator and 1,000-object delete batching plus `blobforge cleanup-legacy`, which previews by default and deletes only `{prefix}queue/` and `{prefix}registry/` after explicit confirmation.
+    7. Regenerated `uv.lock`, updated architecture/user documentation, TODO tracking, and repository findings, and ran whitespace/reference audits.
+- **Tooling:** Used `rg`/`sed` for repository discovery and mechanical removal, `apply_patch` for implementation edits, `uv lock` for dependency resolution, Vitest/esbuild for Bunny validation, and pytest through `uv` for Python validation.
+- **Validation:**
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --offline --no-sync python -m pytest tests/ -q` -> `92 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
+    - `cd bunny && npm test -- --run` -> `10 passed`.
+    - `cd bunny && npm run build` -> successful Edge Script bundle (`208.9kb`).
+    - `git diff --check` -> clean.
+- **Status:** Implemented and validated; ready to commit and push.

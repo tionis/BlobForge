@@ -15,10 +15,10 @@ import json
 import argparse
 
 from .config import (
-    S3_BUCKET, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
-    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_REGISTRY,
+    S3_BUCKET, S3_PREFIX, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
+    S3_PREFIX_DONE, S3_PREFIX_FAILED, S3_PREFIX_DEAD,
     PRIORITIES, DEFAULT_PRIORITY,
-    get_remote_config, save_remote_config, refresh_remote_config, WORKER_ID,
+    WORKER_ID,
     get_stale_timeout_minutes
 )
 from .s3_client import S3Client
@@ -26,7 +26,6 @@ from . import ingestor
 from . import janitor as janitor_module
 from . import status as status_module
 from . import hydrator as hydrator_module
-from . import coordinator_migration
 from .coordinator_client import CoordinatorClient, CoordinatorError
 
 
@@ -35,14 +34,25 @@ def _coordinator_client():
     return client if client.available else None
 
 
+def _apply_coordinator_overrides(args):
+    """Apply optional command-line coordinator credentials for this process."""
+    url = getattr(args, "coordinator_url", None)
+    token = getattr(args, "token", None)
+    if bool(url) != bool(token):
+        print("Error: --coordinator-url and --token must be provided together")
+        return False
+    if url:
+        os.environ["BLOBFORGE_COORDINATOR_URL"] = url
+        os.environ["BLOBFORGE_COORDINATOR_TOKEN"] = token
+    return True
+
+
 def _require_management_ui(action):
-    if _coordinator_client():
-        print(
-            f"'{action}' is managed by the Bunny coordinator. "
-            "Use its authenticated management UI."
-        )
-        return True
-    return False
+    print(
+        f"'{action}' is managed by the Bunny coordinator. "
+        "Use its authenticated management UI."
+    )
+    return True
 
 
 def cmd_ingest(args):
@@ -54,16 +64,35 @@ def cmd_ingest(args):
     ingestor.ingest(args.paths, priority=args.priority, dry_run=args.dry_run)
 
 
-def cmd_coordinator_migrate(args):
-    """Import legacy S3 queue state into Bunny Database."""
-    try:
-        return coordinator_migration.migrate(
-            dry_run=args.dry_run,
-            batch_size=args.batch_size,
-        )
-    except Exception as exc:
-        print(f"Migration failed: {exc}", file=sys.stderr)
-        return 1
+def cmd_cleanup_legacy(args):
+    """Preview or delete obsolete S3 queue and registry objects."""
+    prefixes = [f"{S3_PREFIX}queue/", f"{S3_PREFIX}registry/"]
+    execute = bool(args.execute)
+    if execute and not args.yes:
+        print(f"This permanently deletes all objects under these prefixes in {S3_BUCKET}:")
+        for prefix in prefixes:
+            print(f"  {prefix}")
+        if input("Type DELETE to continue: ").strip() != "DELETE":
+            print("Cancelled.")
+            return 1
+
+    s3 = S3Client()
+    total = 0
+    deleted = 0
+    for prefix in prefixes:
+        result = s3.purge_prefix(prefix, dry_run=not execute)
+        total += result["count"]
+        deleted += result["deleted"]
+        verb = "Deleted" if execute else "Found"
+        print(f"{verb} {result['deleted'] if execute else result['count']} object(s) under {prefix}")
+        if not execute:
+            for key in result["preview"]:
+                print(f"  {key}")
+    if execute:
+        print(f"Deleted {deleted} legacy object(s). Raw PDFs, outputs, and backups were untouched.")
+    else:
+        print(f"Dry run: {total} legacy object(s) would be deleted. Re-run with --execute.")
+    return 0
 
 
 def cmd_reprioritize(args):
@@ -470,9 +499,17 @@ def cmd_worker(args):
         print(f"Error: {exc}")
         return 1
 
-    client = S3Client(dry_run=args.dry_run)
+    coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
+    coordinator_token = args.token or os.getenv("BLOBFORGE_COORDINATOR_TOKEN", "")
+    if not coordinator_url or not coordinator_token:
+        print("Error: a coordinator URL and enrolled worker token are required")
+        return 1
+    if coordinator_url:
+        os.environ["BLOBFORGE_COORDINATOR_URL"] = coordinator_url
+        os.environ["BLOBFORGE_COORDINATOR_TOKEN"] = coordinator_token
+    coordinator = CoordinatorClient(coordinator_url, coordinator_token)
     isolate_conversion = args.isolate_conversion or args.abort_outside_window
-    w = worker_module.Worker(client, isolate_conversion=isolate_conversion)
+    w = worker_module.Worker(None, isolate_conversion=isolate_conversion, coordinator_client=coordinator)
     return worker_module.run_worker_loop(
         w,
         run_once=args.run_once,
@@ -483,440 +520,57 @@ def cmd_worker(args):
 
 def cmd_dashboard(args):
     """Show system status dashboard."""
+    if not _apply_coordinator_overrides(args):
+        return 1
     status_module.show_status(verbose=args.verbose)
 
 
-def cmd_lookup(args):
-    """Look up files in the manifest."""
-    s3 = S3Client()
-    
-    if args.hash:
-        # Look up by hash
-        entry = s3.lookup_by_hash(args.hash)
-        if entry:
-            print(f"Hash: {args.hash}")
-            print(f"Paths: {', '.join(entry.get('paths', ['?']))}")
-            print(f"Size: {entry.get('size', 0):,} bytes")
-            print(f"Tags: {', '.join(entry.get('tags', []))}")
-            print(f"Ingested: {entry.get('ingested_at', '?')}")
-            print(f"Source: {entry.get('source', '?')}")
-        else:
-            print(f"Hash {args.hash} not found in manifest.")
-            return 1
-    elif args.path:
-        # Look up by path
-        file_hash = s3.lookup_by_path(args.path)
-        if file_hash:
-            print(f"Path: {args.path}")
-            print(f"Hash: {file_hash}")
-            entry = s3.lookup_by_hash(file_hash)
-            if entry:
-                print(f"Size: {entry.get('size', 0):,} bytes")
-                print(f"Tags: {', '.join(entry.get('tags', []))}")
-        else:
-            print(f"Path '{args.path}' not found in manifest.")
-            return 1
-    return 0
-
-
-def cmd_search(args):
-    """Search the manifest by filename or tag."""
-    s3 = S3Client()
-    
-    results = s3.search_manifest(args.query)
-    
-    if not results:
-        print(f"No matches found for '{args.query}'")
-        return 1
-    
-    print(f"Found {len(results)} matches for '{args.query}':\n")
-    
-    for entry in results[:args.limit]:
-        print(f"  Hash: {entry['hash'][:16]}...")
-        paths = entry.get('paths', [])
-        if paths:
-            print(f"  Path: {paths[0]}")
-            if len(paths) > 1:
-                print(f"        (+{len(paths) - 1} more)")
-        print(f"  Tags: {', '.join(entry.get('tags', [])[:5])}")
-        print()
-    
-    if len(results) > args.limit:
-        print(f"... and {len(results) - args.limit} more results")
-    
-    return 0
-
-
-def cmd_manifest_stats(args):
-    """Show manifest statistics, repair, or rebuild."""
-    s3 = S3Client(dry_run=args.dry_run if hasattr(args, 'dry_run') else False)
-    
-    # Handle repair from recovery file
-    if args.repair:
-        recovery_file = "/tmp/blobforge_manifest_recovery.json"
-        if not os.path.exists(recovery_file):
-            print("No recovery file found at /tmp/blobforge_manifest_recovery.json")
-            print("Nothing to repair.")
-            return 0
-        
-        with open(recovery_file, 'r') as f:
-            entries = json.load(f)
-        
-        if not entries:
-            print("Recovery file is empty.")
-            os.remove(recovery_file)
-            return 0
-        
-        print(f"Found {len(entries)} entries to repair...")
-        
-        if args.force:
-            # Force update without optimistic locking
-            print("Using force update (no locking)...")
-            if s3.force_update_manifest(entries):
-                print("Manifest repaired successfully.")
-                os.remove(recovery_file)
-                return 0
-            else:
-                print("Force update failed.")
-                return 1
-        else:
-            # Try normal update with retries
-            if s3.update_manifest(entries, max_retries=20):
-                print("Manifest repaired successfully.")
-                os.remove(recovery_file)
-                return 0
-            else:
-                print("Repair failed. Try again with --force if no other processes are running.")
-                return 1
-    
-    # Handle full rebuild from S3
-    if args.rebuild:
-        print("Rebuilding manifest from S3 store/raw/...")
-        print("WARNING: This will replace the current manifest.")
-        
-        if not args.force:
-            confirm = input("Continue? [y/N] ").strip().lower()
-            if confirm != 'y':
-                print("Aborted.")
-                return 1
-        
-        manifest = s3.rebuild_manifest_from_raw()
-        
-        if args.dry_run:
-            print(f"[DRY-RUN] Would save manifest with {len(manifest['entries'])} entries")
-            return 0
-        
-        if s3.save_manifest(manifest):
-            print("Manifest rebuilt and saved successfully.")
-            return 0
-        else:
-            print("Failed to save rebuilt manifest.")
-            return 1
-    
-    # Handle sync (update manifest with metadata from already-ingested files)
-    if args.sync:
-        return cmd_manifest_sync(args, s3)
-    
-    # Default: show stats
-    manifest = s3.get_manifest()
-    entries = manifest.get('entries', {})
-    
-    print("--- Manifest Statistics ---")
-    print(f"Version: {manifest.get('version', '?')}")
-    print(f"Last updated: {manifest.get('updated_at', 'Never')}")
-    print(f"Total entries: {len(entries)}")
-    
-    if entries:
-        total_size = sum(e.get('size', 0) for e in entries.values())
-        total_paths = sum(len(e.get('paths', [])) for e in entries.values())
-        all_tags = set()
-        for e in entries.values():
-            all_tags.update(e.get('tags', []))
-        
-        print(f"Total size: {total_size / (1024*1024*1024):.2f} GB")
-        print(f"Total paths: {total_paths}")
-        print(f"Unique tags: {len(all_tags)}")
-        
-        if args.verbose:
-            print("\nTop 10 tags:")
-            from collections import Counter
-            tag_counts = Counter()
-            for e in entries.values():
-                tag_counts.update(e.get('tags', []))
-            for tag, count in tag_counts.most_common(10):
-                print(f"  {tag}: {count}")
-    
-    # Check for recovery file
-    recovery_file = "/tmp/blobforge_manifest_recovery.json"
-    if os.path.exists(recovery_file):
-        try:
-            with open(recovery_file, 'r') as f:
-                pending = json.load(f)
-            if pending:
-                print(f"\n⚠️  {len(pending)} entries pending in recovery file.")
-                print(f"   Run 'blobforge manifest --repair' to retry.")
-        except:
-            pass
-    
-    return 0
-
-
-def cmd_manifest_sync(args, s3):
-    """Sync manifest with files that are already ingested but missing from manifest."""
-    print("Syncing manifest with ingested files...")
-    
-    # Get current manifest
-    manifest = s3.get_manifest()
-    manifest_hashes = set(manifest.get('entries', {}).keys())
-    
-    # List all raw files
-    raw_files = s3.list_objects(f"{S3_PREFIX_RAW}/")
-    raw_hashes = set()
-    
-    for obj in raw_files:
-        key = obj['Key']
-        if key.endswith('.pdf'):
-            file_hash = key.split('/')[-1].replace('.pdf', '')
-            raw_hashes.add(file_hash)
-    
-    # Find files in raw that are not in manifest
-    missing = raw_hashes - manifest_hashes
-    
-    if not missing:
-        print("Manifest is in sync. No missing entries.")
-        return 0
-    
-    print(f"Found {len(missing)} files in S3 not in manifest.")
-    
-    # Build entries for missing files
-    entries = []
-    for file_hash in missing:
-        key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
-        metadata = s3.get_object_metadata(key)
-        
-        original_name = metadata.get('original-name', f'{file_hash[:8]}.pdf')
-        tags_str = metadata.get('tags', '[]')
-        try:
-            tags = json.loads(tags_str)
-        except:
-            tags = []
-        
-        size_str = metadata.get('size', '0')
-        try:
-            size = int(size_str)
-        except:
-            size = 0
-        
-        entries.append({
-            'hash': file_hash,
-            'path': original_name,
-            'size': size,
-            'tags': tags,
-            'source': 'synced'
-        })
-    
-    print(f"Adding {len(entries)} entries to manifest...")
-    
-    if args.force:
-        if s3.force_update_manifest(entries):
-            print("Manifest synced successfully.")
-            return 0
-        else:
-            print("Sync failed.")
-            return 1
-    else:
-        if s3.update_manifest(entries, max_retries=20):
-            print("Manifest synced successfully.")
-            return 0
-        else:
-            print("Sync failed. Try again with --force if no other processes are running.")
-            return 1
-
-
-def _build_raw_metadata_from_manifest_entry(file_hash, entry):
-    """Reconstruct BlobForge raw-object metadata from a manifest entry."""
-    paths = entry.get('paths', []) or []
-    original_name = os.path.basename(paths[0]) if paths else f"{file_hash[:8]}.pdf"
-
-    return {
-        "original-name": original_name,
-        "tags": json.dumps(entry.get('tags', [])),
-        "size": str(entry.get('size', 0)),
-    }
-
-
-def cmd_repair_metadata(args):
-    """
-    Restore BlobForge raw-object metadata from the manifest.
-
-    This is intended for provider migrations where object bodies were copied
-    successfully but custom S3 metadata was dropped.
-    """
-    s3 = S3Client(dry_run=args.dry_run)
-    manifest_entries = s3.get_manifest().get('entries', {})
-
-    if args.hashes:
-        target_hashes = args.hashes
-        print(f"Repairing raw metadata for {len(target_hashes)} requested hash(es)...")
-    else:
-        target_hashes = sorted(manifest_entries.keys())
-        print(f"Repairing raw metadata for all {len(target_hashes)} manifest entries...")
-
-    if not target_hashes:
-        print("Nothing to repair.")
-        return 0
-
-    stats = {
-        "scanned": 0,
-        "repaired": 0,
-        "unchanged": 0,
-        "missing_manifest": 0,
-        "missing_raw": 0,
-        "failed": 0,
-    }
-
-    for file_hash in target_hashes:
-        stats["scanned"] += 1
-
-        entry = manifest_entries.get(file_hash)
-        if not entry:
-            print(f"  [SKIP] {file_hash[:16]}... not found in manifest")
-            stats["missing_manifest"] += 1
-            continue
-
-        raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
-        if not s3.exists(raw_key):
-            print(f"  [SKIP] {file_hash[:16]}... raw PDF missing from store/raw/")
-            stats["missing_raw"] += 1
-            continue
-
-        desired = _build_raw_metadata_from_manifest_entry(file_hash, entry)
-        existing = s3.get_object_metadata(raw_key)
-
-        missing_keys = [key for key in desired if not existing.get(key)]
-        mismatched_keys = [
-            key for key, value in desired.items()
-            if existing.get(key) and existing.get(key) != value
-        ]
-
-        if args.force:
-            update_payload = desired if (missing_keys or mismatched_keys) else {}
-        else:
-            update_payload = {key: desired[key] for key in missing_keys}
-
-        if not update_payload:
-            stats["unchanged"] += 1
-            continue
-
-        reason_parts = []
-        if missing_keys:
-            reason_parts.append("missing " + ",".join(missing_keys))
-        if mismatched_keys and args.force:
-            reason_parts.append("overwriting " + ",".join(mismatched_keys))
-        reason = "; ".join(reason_parts) if reason_parts else "updating metadata"
-        filename = desired.get("original-name", f"{file_hash[:8]}.pdf")
-
-        if args.dry_run:
-            print(f"  [DRY-RUN] {file_hash[:16]}... {reason} -> {filename}")
-            stats["repaired"] += 1
-            continue
-
-        if s3.update_object_metadata(raw_key, update_payload, merge_existing=True):
-            print(f"  [REPAIRED] {file_hash[:16]}... {reason} -> {filename}")
-            stats["repaired"] += 1
-        else:
-            print(f"  [FAILED] {file_hash[:16]}... could not update metadata")
-            stats["failed"] += 1
-
-    print("\n--- Repair Summary ---")
-    print(f"  Scanned:          {stats['scanned']}")
-    print(f"  Repaired:         {stats['repaired']}")
-    print(f"  Already correct:  {stats['unchanged']}")
-    print(f"  Missing manifest: {stats['missing_manifest']}")
-    print(f"  Missing raw PDF:  {stats['missing_raw']}")
-    print(f"  Failed:           {stats['failed']}")
-    if args.dry_run:
-        print("  [DRY-RUN] No changes were made")
-
-    return 1 if stats["failed"] else 0
-
-
 def cmd_config(args):
-    """View or update remote configuration."""
-    s3 = S3Client()
-    
-    if args.show:
-        # Show current config
-        refresh_remote_config()
-        config = get_remote_config()
-        print("--- Remote Configuration ---")
-        print(f"(Stored in S3: {S3_BUCKET}/registry/config.json)")
-        print()
-        for key, value in sorted(config.items()):
-            print(f"  {key}: {value}")
-        return 0
-    
-    if args.set:
-        # Parse key=value pairs
-        updates = {}
-        for kv in args.set:
-            if '=' not in kv:
-                print(f"Error: Invalid format '{kv}'. Use key=value")
-                return 1
-            key, value = kv.split('=', 1)
-            # Try to convert to appropriate type
-            # Boolean
-            if value.lower() in ('true', 'yes', '1'):
-                value = True
-            elif value.lower() in ('false', 'no', '0'):
-                value = False
-            else:
-                # Try int
-                try:
-                    value = int(value)
-                except ValueError:
-                    # Try float
-                    try:
-                        value = float(value)
-                    except ValueError:
-                        pass  # Keep as string
-            updates[key] = value
-        
-        # Get current config and merge
-        refresh_remote_config()
-        config = get_remote_config()
-        config.update(updates)
-        
-        if save_remote_config(config):
-            print("Configuration updated:")
-            for key, value in updates.items():
-                value_type = type(value).__name__
-                print(f"  {key} = {value} ({value_type})")
-            return 0
-        else:
-            print("Error: Failed to save configuration")
-            return 1
-    
-    # Default: show config
-    refresh_remote_config()
-    config = get_remote_config()
-    print("--- Remote Configuration ---")
-    for key, value in sorted(config.items()):
+    """Read coordinator configuration; mutations belong in the Web UI."""
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: coordinator URL and token are required")
+        return 1
+    print("--- Coordinator Configuration ---")
+    for key, value in sorted(coordinator.get_config().items()):
         print(f"  {key}: {value}")
     return 0
 
 
 def cmd_workers(args):
     """List registered workers."""
-    s3 = S3Client()
-    
-    if args.active:
-        stale_timeout = get_stale_timeout_minutes()
-        workers = s3.get_active_workers(stale_minutes=stale_timeout)
-        title = f"Active Workers (heartbeat < {stale_timeout}m ago)"
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    stale_timeout = get_stale_timeout_minutes()
+    if not coordinator:
+        print("Error: coordinator URL and token are required")
+        return 1
+    if coordinator:
+        workers = coordinator.snapshot().get("workers", [])
+        workers = [
+            {
+                **(worker.get("metadata") or {}),
+                **worker,
+                "metrics": worker.get("metrics") or {},
+                "system": (worker.get("metrics") or {}).get("system", {}),
+            }
+            for worker in workers
+        ]
+        if args.active:
+            cutoff = __import__("time").time() * 1000 - stale_timeout * 60 * 1000
+            workers = [worker for worker in workers if float(worker.get("last_heartbeat") or 0) >= cutoff and worker.get("status") not in {"stopped", "stale"}]
+            title = f"Active Workers (coordinator heartbeat < {stale_timeout}m ago)"
+        else:
+            title = "All Coordinator Workers"
     else:
-        workers = s3.list_workers()
-        title = "All Registered Workers"
+        s3 = S3Client()
+        if args.active:
+            workers = s3.get_active_workers(stale_minutes=stale_timeout)
+            title = f"Active Workers (heartbeat < {stale_timeout}m ago)"
+        else:
+            workers = s3.list_workers()
+            title = "All Registered Workers"
     
     print(f"{'=' * 70}")
     print(f"  {title}")
@@ -1249,11 +903,10 @@ def cmd_test_s3(args):
         print("     s3_supports_conditional_writes: true")
     elif basic_ok and results['conditional_if_none_match']:
         print("⚠️  PARTIALLY COMPATIBLE (no If-Match)")
-        print("   Distributed locking works, but manifest updates may have race conditions.")
+        print("   Conditional object creation works, but conditional replacement does not.")
         print()
         print("   Recommended config:")
         print("     s3_supports_conditional_writes: true")
-        print("   Note: Run only one ingestor at a time, or use --force for manifest updates.")
     elif basic_ok:
         print("✅ COMPATIBLE (with soft locking)")
         print("   Basic operations work. BlobForge will use timestamp-based soft locking")
@@ -1266,10 +919,6 @@ def cmd_test_s3(args):
         print("   - Workers write lock claims with timestamps")
         print("   - After a brief delay, the earliest timestamp wins")
         print("   - Provides probabilistic mutual exclusion (very rare collisions)")
-        print()
-        print("   For manifest updates:")
-        print("   - Run only one ingestor at a time, OR")
-        print("   - Use 'blobforge manifest --sync --force' to merge changes")
     else:
         print("❌ NOT COMPATIBLE")
         print("   Basic S3 operations failed. Check credentials and endpoint URL.")
@@ -1296,76 +945,6 @@ def cmd_test_s3(args):
 # =============================================================================
 # New CLI Commands: Logs, Watch, Download, Preview, Queue Management
 # =============================================================================
-
-def cmd_logs(args):
-    """View logs for a job."""
-    s3 = S3Client()
-    job_hash = args.hash
-    
-    # List available logs
-    logs = s3.list_job_logs(job_hash)
-    
-    if not logs:
-        print(f"No logs found for job {job_hash}")
-        
-        # Check if job exists
-        if s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
-            print("(Job completed successfully - no error logs)")
-        elif s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
-            # Show dead-letter info
-            data = s3.get_object_json(f"{S3_PREFIX_DEAD}/{job_hash}")
-            if data:
-                print(f"\nDead-letter info:")
-                print(f"  Error: {data.get('error', 'Unknown')}")
-                print(f"  Retries: {data.get('total_retries', '?')}")
-        elif s3.exists(f"{S3_PREFIX_FAILED}/{job_hash}"):
-            data = s3.get_object_json(f"{S3_PREFIX_FAILED}/{job_hash}")
-            if data:
-                print(f"\nFailed job info:")
-                print(f"  Error: {data.get('error', 'Unknown')}")
-                print(f"  Retries: {data.get('retries', 0)}")
-        return 1
-    
-    print(f"Available logs for {job_hash}:")
-    for log_type in logs:
-        print(f"  - {log_type}")
-    
-    # Show specific log or error.json by default
-    log_type = args.type or ("error" if "error" in logs else logs[0])
-    
-    print(f"\n--- {log_type} log ---")
-    
-    if log_type == "error":
-        # Show structured error
-        error_data = s3.get_job_error_detail(job_hash)
-        if error_data:
-            print(f"Timestamp: {error_data.get('timestamp', '?')}")
-            print(f"Error: {error_data.get('error', '?')}")
-            
-            context = error_data.get('context', {})
-            if context:
-                print(f"\nContext:")
-                for k, v in context.items():
-                    print(f"  {k}: {v}")
-            
-            traceback_str = error_data.get('traceback')
-            if traceback_str and traceback_str != 'NoneType: None\n':
-                print(f"\nTraceback:")
-                print(traceback_str)
-        else:
-            # Fall back to text log
-            content = s3.get_job_log(job_hash, log_type)
-            if content:
-                print(content)
-    else:
-        content = s3.get_job_log(job_hash, log_type)
-        if content:
-            print(content)
-        else:
-            print(f"Log '{log_type}' not found")
-    
-    return 0
-
 
 def cmd_watch(args):
     """Watch system status in real-time (simple refresh mode)."""
@@ -1601,69 +1180,6 @@ def cmd_clear_dead(args):
     return 0
 
 
-def cmd_search_queue(args):
-    if _require_management_ui("search-queue"):
-        return 1
-    """Search queue by filename pattern."""
-    s3 = S3Client()
-    query = args.query.lower()
-    
-    results = []
-    
-    # Search todo queues
-    for prio in PRIORITIES:
-        keys = s3.list_keys(f"{S3_PREFIX_TODO}/{prio}/")
-        for key in keys:
-            job_hash = key.split('/')[-1]
-            # Get manifest entry to find filename
-            entry = s3.lookup_by_hash(job_hash)
-            if entry:
-                paths = entry.get('paths', [])
-                for path in paths:
-                    if query in path.lower():
-                        results.append({
-                            'hash': job_hash,
-                            'path': path,
-                            'status': 'queued',
-                            'priority': prio
-                        })
-                        break
-    
-    # Search processing
-    for job in s3.list_processing():
-        key = job['Key']
-        if key.endswith("/"):
-            continue
-        job_hash = key.split('/')[-1]
-        entry = s3.lookup_by_hash(job_hash)
-        if entry:
-            paths = entry.get('paths', [])
-            for path in paths:
-                if query in path.lower():
-                    results.append({
-                        'hash': job_hash,
-                        'path': path,
-                        'status': 'processing'
-                    })
-                    break
-    
-    if not results:
-        print(f"No jobs found matching '{args.query}'")
-        return 1
-    
-    print(f"Found {len(results)} jobs matching '{args.query}':\n")
-    for r in results[:args.limit]:
-        status = r.get('status', '?')
-        prio = r.get('priority', '')
-        prio_str = f" [{prio}]" if prio else ""
-        print(f"  [{status.upper()}{prio_str}] {r['hash'][:16]}... - {r['path']}")
-    
-    if len(results) > args.limit:
-        print(f"\n... and {len(results) - args.limit} more")
-    
-    return 0
-
-
 def cmd_cancel(args):
     if _require_management_ui("cancel"):
         return 1
@@ -1700,101 +1216,6 @@ def cmd_cancel(args):
     return 0
 
 
-def cmd_remove(args):
-    if _require_management_ui("remove"):
-        return 1
-    """Remove a job from the system completely."""
-    s3 = S3Client(dry_run=args.dry_run)
-    job_hash = args.hash
-    
-    # 1. Check if currently processing - ERROR
-    if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
-        print(f"Error: Job {job_hash} is currently being processed.")
-        print("Use 'blobforge cancel' first to stop the job, then remove.")
-        return 1
-    
-    # 2. Check if already done - ERROR (unless --force)
-    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
-    if s3.exists(done_key):
-        if not args.force:
-            print(f"Error: Job {job_hash} has already been processed.")
-            print("The converted output exists in the done store.")
-            print("Use --force to remove anyway (will delete converted output too).")
-            return 1
-        print(f"Warning: Removing completed job and its output...")
-    
-    removed = []
-    not_found = []
-    
-    # 3. Remove from todo queues (all priorities)
-    for priority in PRIORITIES:
-        todo_key = f"{S3_PREFIX_TODO}/{priority}/{job_hash}"
-        if s3.exists(todo_key):
-            print(f"  Removing from todo queue ({priority})...")
-            s3.delete_object(todo_key)
-            removed.append(f"todo/{priority}")
-    
-    # 4. Remove from failed queue
-    failed_key = f"{S3_PREFIX_FAILED}/{job_hash}"
-    if s3.exists(failed_key):
-        print(f"  Removing from failed queue...")
-        s3.delete_object(failed_key)
-        removed.append("failed")
-    
-    # 5. Remove from dead-letter queue
-    dead_key = f"{S3_PREFIX_DEAD}/{job_hash}"
-    if s3.exists(dead_key):
-        print(f"  Removing from dead-letter queue...")
-        s3.delete_object(dead_key)
-        removed.append("dead")
-    
-    # 6. Remove from done (if --force)
-    if args.force and s3.exists(done_key):
-        print(f"  Removing completed output...")
-        s3.delete_object(done_key)
-        removed.append("done")
-    
-    # 7. Remove from raw store
-    raw_key = f"{S3_PREFIX_RAW}/{job_hash}.pdf"
-    if s3.exists(raw_key):
-        print(f"  Removing source PDF from raw store...")
-        s3.delete_object(raw_key)
-        removed.append("raw")
-    else:
-        not_found.append("raw")
-    
-    # 8. Remove from manifest
-    print(f"  Removing from manifest...")
-    if not s3.remove_from_manifest([job_hash]):
-        print("  Warning: Failed to update manifest. Entry may still exist.")
-    else:
-        removed.append("manifest")
-    
-    # 9. Remove logs if they exist
-    logs_prefix = f"{S3_PREFIX_REGISTRY}/logs/{job_hash}/"
-    try:
-        logs = s3.list_objects(logs_prefix)
-        if logs:
-            print(f"  Removing {len(logs)} log file(s)...")
-            for log_obj in logs:
-                s3.delete_object(log_obj['Key'])
-            removed.append("logs")
-    except Exception:
-        pass  # Logs are optional
-    
-    if not removed and not_found:
-        print(f"\nJob {job_hash} was not found in any queue or store.")
-        return 1
-    
-    print(f"\n--- Remove Summary ---")
-    print(f"  Job: {job_hash[:16]}...")
-    print(f"  Removed from: {', '.join(removed) if removed else 'nothing'}")
-    if args.dry_run:
-        print("  [DRY-RUN] No changes were made")
-    
-    return 0
-
-
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
@@ -1810,13 +1231,13 @@ def main():
     p_ingest.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_ingest.set_defaults(func=cmd_ingest)
 
-    p_migrate = subparsers.add_parser(
-        "coordinator-migrate",
-        help="Import legacy S3 queue state into Bunny Database",
+    p_cleanup = subparsers.add_parser(
+        "cleanup-legacy",
+        help="Remove obsolete S3 queue and registry objects",
     )
-    p_migrate.add_argument("--dry-run", action="store_true", help="Scan and summarize without importing")
-    p_migrate.add_argument("--batch-size", type=int, default=200, help="Import records per request (maximum 250)")
-    p_migrate.set_defaults(func=cmd_coordinator_migrate)
+    p_cleanup.add_argument("--execute", action="store_true", help="Delete objects; the default is a dry run")
+    p_cleanup.add_argument("--yes", action="store_true", help="Skip the DELETE confirmation when used with --execute")
+    p_cleanup.set_defaults(func=cmd_cleanup_legacy)
     
     # Convert (local)
     p_convert = subparsers.add_parser("convert", help="Convert a PDF file locally (offline)")
@@ -1882,83 +1303,39 @@ def main():
         action="store_true",
         help="Run marker conversion in a child process so native crashes do not kill the worker."
     )
+    p_worker.add_argument(
+        "--coordinator-url",
+        help="Coordinator base URL. Can also be set with BLOBFORGE_COORDINATOR_URL."
+    )
+    p_worker.add_argument(
+        "--token",
+        help="Worker enrollment token created in the management UI. Can also be set with BLOBFORGE_COORDINATOR_TOKEN."
+    )
     p_worker.set_defaults(func=cmd_worker)
     
     # Dashboard
     p_dash = subparsers.add_parser("dashboard", help="Show system status dashboard")
     p_dash.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
+    p_dash.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_dash.add_argument("--token", help="Worker or client API token")
     p_dash.set_defaults(func=cmd_dashboard)
     
-    # Lookup (manifest)
-    p_lookup = subparsers.add_parser("lookup", help="Look up a file in the manifest")
-    p_lookup.add_argument("--hash", help="Look up by SHA256 hash")
-    p_lookup.add_argument("--path", help="Look up by file path")
-    p_lookup.set_defaults(func=cmd_lookup)
-    
-    # Search (manifest)
-    p_search = subparsers.add_parser("search", help="Search manifest by filename or tag")
-    p_search.add_argument("query", help="Search query (filename or tag)")
-    p_search.add_argument("--limit", type=int, default=20, help="Max results to show")
-    p_search.set_defaults(func=cmd_search)
-    
-    # Manifest stats/repair/rebuild
-    p_manifest = subparsers.add_parser("manifest", help="Manifest operations: stats, repair, rebuild, sync")
-    p_manifest.add_argument("--verbose", "-v", action="store_true", help="Show tag breakdown")
-    p_manifest.add_argument("--repair", action="store_true", 
-                            help="Retry failed manifest updates from recovery file")
-    p_manifest.add_argument("--rebuild", action="store_true",
-                            help="Rebuild manifest by scanning S3 store/raw/")
-    p_manifest.add_argument("--sync", action="store_true",
-                            help="Add files in S3 that are missing from manifest")
-    p_manifest.add_argument("--force", action="store_true",
-                            help="Skip confirmation and use non-locking update")
-    p_manifest.add_argument("--dry-run", action="store_true", help="Don't make changes")
-    p_manifest.set_defaults(func=cmd_manifest_stats)
-
-    # Repair stripped raw-object metadata from the manifest
-    p_repair_metadata = subparsers.add_parser(
-        "repair-metadata",
-        help="Restore raw PDF S3 metadata from manifest entries"
-    )
-    p_repair_metadata.add_argument(
-        "hashes",
-        nargs="*",
-        help="Optional SHA256 hash(es) to repair. Defaults to all manifest entries."
-    )
-    p_repair_metadata.add_argument(
-        "--force",
-        action="store_true",
-        help="Overwrite mismatched BlobForge metadata values, not just missing keys"
-    )
-    p_repair_metadata.add_argument("--dry-run", action="store_true", help="Preview repairs without writing")
-    p_repair_metadata.set_defaults(func=cmd_repair_metadata)
-
     # Config
-    p_config = subparsers.add_parser("config", help="View or update remote configuration")
+    p_config = subparsers.add_parser("config", help="View coordinator configuration")
     p_config.add_argument("--show", action="store_true", help="Show current configuration")
-    p_config.add_argument("--set", nargs="+", metavar="KEY=VALUE",
-                          help="Set configuration values (e.g., max_retries=5)")
     p_config.set_defaults(func=cmd_config)
     
     # Workers
     p_workers = subparsers.add_parser("workers", help="List registered workers")
     p_workers.add_argument("--active", action="store_true", help="Show only active workers")
     p_workers.add_argument("--verbose", "-v", action="store_true", help="Show detailed info")
+    p_workers.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_workers.add_argument("--token", help="Worker or client API token")
     p_workers.set_defaults(func=cmd_workers)
     
     # Test S3
     p_test_s3 = subparsers.add_parser("test-s3", help="Test S3 endpoint capabilities")
     p_test_s3.set_defaults(func=cmd_test_s3)
-    
-    # =========================================================================
-    # New Commands: Logs, Watch, Download, Preview, Queue Management
-    # =========================================================================
-    
-    # Logs
-    p_logs = subparsers.add_parser("logs", help="View logs for a job")
-    p_logs.add_argument("hash", help="SHA256 hash of the PDF")
-    p_logs.add_argument("--type", "-t", help="Log type to view (default: error)")
-    p_logs.set_defaults(func=cmd_logs)
     
     # Watch
     p_watch = subparsers.add_parser("watch", help="Watch system status in real-time")
@@ -1994,32 +1371,12 @@ def main():
     p_clear_dead.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_clear_dead.set_defaults(func=cmd_clear_dead)
     
-    # Search-queue
-    p_search_queue = subparsers.add_parser("search-queue", help="Search queue by filename")
-    p_search_queue.add_argument("query", help="Filename pattern to search")
-    p_search_queue.add_argument("--limit", type=int, default=20, help="Max results to show")
-    p_search_queue.set_defaults(func=cmd_search_queue)
-    
     # Cancel
     p_cancel = subparsers.add_parser("cancel", help="Cancel a running job")
     p_cancel.add_argument("hash", help="SHA256 hash of the PDF")
     p_cancel.add_argument("--priority", choices=PRIORITIES, help="Priority when re-queued")
     p_cancel.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_cancel.set_defaults(func=cmd_cancel)
-    
-    # Remove
-    p_remove = subparsers.add_parser("remove", help="Remove a job from queues, raw store, and manifest")
-    p_remove.add_argument("hash", help="SHA256 hash of the PDF")
-    p_remove.add_argument("--force", action="store_true", 
-                          help="Also remove completed jobs (deletes converted output)")
-    p_remove.add_argument("--dry-run", action="store_true", help="Don't make changes")
-    p_remove.set_defaults(func=cmd_remove)
-    
-    # =========================================================================
-    # Telegram Bot
-    # =========================================================================
-    p_telegram = subparsers.add_parser("telegram", help="Run the Telegram bot for remote management")
-    p_telegram.set_defaults(func=cmd_telegram)
     
     if len(sys.argv) == 1:
         parser.print_help()
@@ -2028,20 +1385,6 @@ def main():
     args = parser.parse_args()
     result = args.func(args)
     sys.exit(result if result else 0)
-
-
-def cmd_telegram(args):
-    """Run the Telegram bot for remote management."""
-    try:
-        from .telegram_bot import run_bot
-    except ImportError as e:
-        print("Error: Telegram bot dependencies not installed.")
-        print("Install with: uv pip install -e '.[telegram]'")
-        print(f"\nMissing module: {e}")
-        return 1
-    
-    run_bot()
-    return 0
 
 
 if __name__ == "__main__":

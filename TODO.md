@@ -5,14 +5,16 @@
 - [ ] Test heartbeat mechanism under load.
 
 ## Normal Priority
+- [ ] Add optional authenticated PDF upload and enqueue support to the Bunny management UI.
 - [ ] Update README.md with full configuration reference.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
-- [ ] Add runtime fallback to manifest metadata when raw-object metadata is missing, so dashboards/output metadata stay readable even before repair.
 
 ## Low Priority
-- [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Add application-level Bunny Database backups to S3 and a management UI trigger.
+- [x] Remove manifest/log/Telegram dependencies and add dry-run-first legacy S3 cleanup.
+- [x] Add per-worker UI enrollment/revocation, coordinator-issued S3 transfer URLs, and coordinator-backed worker/dashboard CLI views.
 - [x] Replace unavailable Bunny admin session cookies with a fragment-bootstrap, browser-stored signed session and authenticated API header.
 - [x] Make Bunny admin session cookies scheme-independent, disable CDN auth caching, and add an auth transport diagnostic endpoint.
 - [x] Preserve strict CSP while allowing the IndieAuth form redirect through script-driven top-level navigation.

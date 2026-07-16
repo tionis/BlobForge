@@ -23,10 +23,11 @@ Official platform references:
 
 - `bunny/src/index.ts`: Bunny runtime entry point and database connection.
 - `bunny/src/app.ts`: HTTP API, IndieAuth, signed state/sessions, validation, and UI routes.
+- `bunny/src/object_store.ts`: WebCrypto AWS SigV4 presigning and output existence checks.
+- `bunny/src/management_ui.ts`: authenticated queue and worker-enrollment console behavior.
 - `bunny/src/database.ts`: schema and atomic queue operations.
 - `bunny/src/ui.ts`: dependency-free management console.
 - `blobforge/coordinator_client.py`: worker/ingestor HTTP client.
-- `blobforge/coordinator_migration.py`: one-time legacy S3 state importer.
 - Bunny/S3: content-addressed raw PDFs and output ZIPs.
 
 The queue transition model is:
@@ -51,9 +52,25 @@ claim, before a UI/API snapshot, or through the UI recovery button. The next
 worker poll therefore makes abandoned work available immediately. The Edge
 Script scales to zero between requests and does not run PDF conversions itself.
 
-If an output upload succeeds but the completion call is lost, a later worker
-detects the content-addressed ZIP and finalizes the database job without
-repeating conversion.
+If an output upload succeeds but the completion call is lost, the coordinator
+detects the content-addressed ZIP on the next claim and lets the worker finalize
+the database job without repeating conversion.
+
+## Least-privilege object transfers
+
+Conversion workers do not receive bucket credentials and do not initialize an
+S3 client. On claim, the coordinator returns a short-lived SigV4 `GET` URL for
+exactly `store/raw/<hash>.pdf` plus metadata already held in Bunny Database.
+Because conversion can take hours, no upload URL is issued at claim time. The
+lease holder requests a fresh `PUT` URL for exactly `store/out/<hash>.zip`
+immediately before upload. That request requires the current worker token,
+worker identity, file hash, and fenced lease token.
+
+The coordinator performs a signed `HEAD` before completion and will not mark a
+job done unless its output exists. It also checks for an already-uploaded output
+when a job is claimed, preserving idempotency when an upload succeeds but the
+completion response is lost. URLs are content-addressed and expire according to
+`DOWNLOAD_URL_TTL_SECONDS` and `UPLOAD_URL_TTL_SECONDS`.
 
 ## Create and deploy
 
@@ -67,9 +84,10 @@ repeating conversion.
 6. Add these Edge Script secrets:
 
 ```text
-WORKER_API_TOKEN=<long random worker secret>
-MIGRATION_API_TOKEN=<different long random migration secret>
+CLIENT_API_TOKEN=<long random ingestor/CLI secret>
 SESSION_SIGNING_SECRET=<third independent long random secret>
+S3_ACCESS_KEY_ID=<coordinator object-store access key>
+S3_SECRET_ACCESS_KEY=<coordinator object-store secret key>
 ```
 
 7. Add these non-secret environment variables:
@@ -78,6 +96,13 @@ SESSION_SIGNING_SECRET=<third independent long random secret>
 ADMIN_MES=https://eric.wendland.dev/,https://another-admin.example/
 SESSION_TTL_SECONDS=43200
 LEASE_SECONDS=900
+S3_ENDPOINT_URL=https://s3.example.com
+S3_BUCKET=blobforge
+S3_REGION=us-east-1
+S3_PREFIX=pdf/
+S3_FORCE_PATH_STYLE=true
+DOWNLOAD_URL_TTL_SECONDS=3600
+UPLOAD_URL_TTL_SECONDS=900
 ```
 
 Use a stable HTTPS custom hostname before testing IndieAuth. The request origin
@@ -124,55 +149,102 @@ headers. `GET /auth/status` reports cookie and session-header presence plus
 signed-session validity without returning the token. A normal address-bar
 request does not include the application-managed session header.
 
-The worker secret can enqueue and operate leases, but cannot call admin or
-migration routes and cannot forge admin sessions. The migration secret can
-import state but cannot operate workers or UI routes. All three secrets must be
-independent. Rotate or remove the migration secret after cutover.
+`CLIENT_API_TOKEN` is used by trusted ingestors and command-line readers. It can
+enqueue/read jobs and read coordinator snapshots, but cannot operate worker
+leases or call admin routes. `WORKER_API_TOKEN` remains a temporary deployment
+fallback name for `CLIENT_API_TOKEN`; new deployments should use the latter.
+
+Worker credentials are created in the IndieAuth management UI. Each token is
+bound to one generated worker ID, returned only once, stored only as a SHA-256
+hash, and immediately rejected after revocation. The token can register and
+heartbeat its own worker, claim one fenced lease, operate that lease, request
+its exact transfer URL, and read dashboard/config data. It cannot enqueue jobs,
+act as another worker, call admin routes, or forge admin sessions.
+Revocation requeues its active lease and marks the runtime worker stopped.
 
 ## Configure BlobForge clients
 
-Set these variables on every ingestor, CLI host, and conversion worker:
+Trusted ingestors and administrative CLI hosts use:
 
 ```bash
 BLOBFORGE_COORDINATOR_URL=https://blobforge.example
-BLOBFORGE_COORDINATOR_TOKEN=<WORKER_API_TOKEN value>
+BLOBFORGE_COORDINATOR_TOKEN=<CLIENT_API_TOKEN value>
 ```
 
-Keep the existing `BLOBFORGE_S3_*` variables. Source and result traffic still
-goes to object storage. When the coordinator variables are absent, BlobForge
-uses its legacy S3 coordination paths for compatibility.
-
-Runtime settings are edited in the management UI. The UI displays queue counts,
-recent jobs, progress, workers, and supports retry, cancellation,
-reprioritization, and immediate expired-lease recovery.
-
-## Cut over the existing queue
-
-The migration preserves todo, failed, dead, and done states, retry counts, file
-paths, tags, sources, and sizes. Old processing locks become todo because their
-S3 locks cannot authorize Bunny Database updates. Done output takes precedence
-over every legacy marker.
-
-1. Deploy the Edge Script and verify `/api/v1/health` reports the database as
-   connected.
-2. Stop every legacy worker and janitor. Pause ingestion during the snapshot.
-3. Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` on the
-   migration host.
-4. Export `BLOBFORGE_MIGRATION_TOKEN` with the Edge Script migration secret.
-5. Preview and import:
+Ingestors keep their existing `BLOBFORGE_S3_*` variables so they can write raw
+PDFs. Conversion workers do not need any `BLOBFORGE_S3_*` variable. Create a
+worker in the management UI and run the one-time command it displays:
 
 ```bash
-uv run blobforge coordinator-migrate --dry-run
-uv run blobforge coordinator-migrate
+blobforge worker --coordinator-url https://blobforge.example --token bfw_...
 ```
 
-6. Compare UI totals with the dry-run summary and sample completed/dead jobs.
-7. Start only coordinator-configured workers and resume ingestion.
-8. Rotate or delete `MIGRATION_API_TOKEN` after validation.
+The same credential can read coordinator-backed terminal dashboards:
 
-Do not delete the old S3 queue prefixes during initial validation. They are a
-read-only rollback reference, but must not be consumed alongside Bunny
-Database.
+```bash
+blobforge dashboard --coordinator-url https://blobforge.example --token bfw_...
+blobforge workers --coordinator-url https://blobforge.example --token bfw_...
+```
+
+Environment variables remain supported for long-running services. Ingestion and
+distributed workers require the coordinator variables; the old S3 coordination
+fallback is no longer supported.
+
+### Upgrade an existing shared-token deployment
+
+This is an intentional worker-authentication cutover: the old shared
+`WORKER_API_TOKEN` no longer authorizes lease operations. Plan a brief worker
+pause, then:
+
+1. Add the coordinator's S3 variables and `CLIENT_API_TOKEN` (the old shared
+   value may be reused temporarily as the client token) and deploy the script.
+2. Sign in to the UI and create one enrollment for each conversion worker.
+3. Upgrade BlobForge on each worker and start it with the displayed command.
+4. Remove all bucket credentials and obsolete worker-ID configuration from
+   conversion hosts after their enrolled startup succeeds.
+
+Schema initialization creates `worker_credentials` automatically. Existing
+queue, runtime worker, and job records are retained; old runtime records remain
+visible in coordinator snapshots until replaced or stale.
+
+Runtime settings are edited in the management UI. The UI displays queue counts,
+recent jobs, progress, enrolled/runtime workers, and supports worker creation
+and revocation, retry, cancellation, reprioritization, and immediate
+expired-lease recovery. Browser PDF upload is intentionally deferred; ingestion
+continues through trusted BlobForge ingestors.
+
+## Database backups
+
+An IndieAuth administrator can click **Back up database** or call
+`POST /api/v1/admin/backups` with the normal signed admin session. The Edge
+Script reads all application tables in one libSQL read transaction, writes a
+versioned JSON document containing the schema and rows, and uploads it to
+`{S3_PREFIX}backups/coordinator/<timestamp>-<random>.json`.
+
+The response includes the object key, byte size, per-table row counts, and a
+SHA-256 checksum. Backups include worker credential hashes and administrator
+audit identities, so the backup prefix must remain private. The coordinator S3
+credential needs read access to raw PDFs, write access to output ZIPs and the
+backup prefix, and metadata-read access to outputs. It does not need bucket
+listing or deletion rights.
+
+Bunny Database also maintains platform-level recovery snapshots. The S3 JSON
+export is the application-controlled, portable copy and is deliberately stored
+outside `registry/` so legacy cleanup cannot remove it.
+
+## Remove legacy object state
+
+Once the Bunny UI totals have been validated, preview the obsolete queue and
+registry objects from a trusted host with list/delete bucket credentials:
+
+```bash
+uv run blobforge cleanup-legacy
+uv run blobforge cleanup-legacy --execute
+```
+
+The destructive form requires typing `DELETE`; automation can add `--yes`.
+Only `{S3_PREFIX}queue/` and `{S3_PREFIX}registry/` are touched. Raw PDFs,
+converted outputs, and database backups remain intact.
 
 ## Efficiency and limits
 

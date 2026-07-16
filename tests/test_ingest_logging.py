@@ -12,10 +12,13 @@ def test_ingest_logging():
     
     try:
         # Mock S3Client to avoid network calls
-        with patch('blobforge.ingestor.S3Client') as MockS3Client:
+        with patch('blobforge.ingestor.S3Client') as MockS3Client, \
+             patch('blobforge.ingestor.CoordinatorClient') as MockCoordinatorClient:
             mock_s3 = MockS3Client.return_value
-            mock_s3.get_manifest.return_value = {'entries': {}}
             mock_s3.exists.return_value = False
+            coordinator = MockCoordinatorClient.return_value
+            coordinator.available = True
+            coordinator.enqueue.return_value = {'status': 'todo', 'priority': '3_normal'}
             
             # Capture stdout
             captured_output = io.StringIO()
@@ -35,9 +38,6 @@ def test_ingest_logging():
             sys.stdout = captured_output
             
             print("--- SECOND INGEST ---", file=sys.stderr)
-            # Ensure it's not in manifest so it doesn't skip too early
-            mock_s3.get_manifest.return_value = {'entries': {}}
-            
             ingest([test_file])
             
             sys.stdout = sys.__stdout__

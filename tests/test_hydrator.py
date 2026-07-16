@@ -8,20 +8,10 @@ from blobforge.utils import compute_sha256_with_cache
 
 
 class FakeS3:
-    def __init__(self, archives_by_hash, manifest_hashes=None):
+    def __init__(self, archives_by_hash):
         self.archives_by_hash = archives_by_hash
-        self.manifest_hashes = set(manifest_hashes) if manifest_hashes is not None else set(archives_by_hash.keys())
         self.exists_calls = []
         self.download_calls = []
-        self.manifest_calls = 0
-
-    def get_manifest(self):
-        self.manifest_calls += 1
-        return {
-            "version": 1,
-            "updated_at": None,
-            "entries": {h: {"paths": []} for h in self.manifest_hashes},
-        }
 
     def exists(self, key):
         self.exists_calls.append(key)
@@ -119,7 +109,7 @@ def test_hydrate_downloads_once_for_duplicate_hashes(tmp_path):
     assert (tmp_path / "beta.assets" / "image.png").read_bytes() == b"same-image"
 
 
-def test_hydrate_prefilters_hashes_using_manifest(tmp_path):
+def test_hydrate_checks_each_unique_hash_for_completed_output(tmp_path):
     pdf_known = tmp_path / "known.pdf"
     pdf_unknown = tmp_path / "unknown.pdf"
     _write_pdf(pdf_known, b"%PDF-1.4\nknown\n%%EOF\n")
@@ -132,19 +122,14 @@ def test_hydrate_prefilters_hashes_using_manifest(tmp_path):
         markdown_text="![img](assets/p.png)\n",
         assets={"p.png": b"pixel"},
     )
-    s3 = FakeS3(
-        {known_hash: archive_data},
-        manifest_hashes={known_hash},  # unknown_hash intentionally excluded
-    )
+    s3 = FakeS3({known_hash: archive_data})
 
     result = hydrate([str(tmp_path)], s3=s3)
     assert result == 0
 
-    # Exists check should only happen for the manifest-known hash.
-    assert len(s3.exists_calls) == 1
-    assert known_hash in s3.exists_calls[0]
-    assert unknown_hash not in s3.exists_calls[0]
-    assert s3.manifest_calls == 1
+    assert len(s3.exists_calls) == 2
+    assert any(known_hash in key for key in s3.exists_calls)
+    assert any(unknown_hash in key for key in s3.exists_calls)
 
     assert (tmp_path / "known.md").exists()
     assert not (tmp_path / "unknown.md").exists()

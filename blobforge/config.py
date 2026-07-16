@@ -3,14 +3,14 @@ BlobForge Configuration
 
 Configuration is split into two categories:
 1. Local config (env vars) - Required for S3 connectivity, cannot be stored in S3
-2. Remote config - Bunny coordinator when configured, otherwise legacy S3
+2. Runtime config - Bunny coordinator, with local defaults before connection
 
 Local env vars (BLOBFORGE_S3_*):
 - BLOBFORGE_S3_BUCKET, BLOBFORGE_S3_PREFIX, BLOBFORGE_S3_REGION
 - BLOBFORGE_S3_ACCESS_KEY_ID, BLOBFORGE_S3_SECRET_ACCESS_KEY, BLOBFORGE_S3_ENDPOINT_URL
 - BLOBFORGE_WORKER_ID, BLOBFORGE_LOG_LEVEL
 
-Remote config (stored in S3 at {prefix}registry/config.json):
+Runtime config (stored in Bunny Database and fetched through the coordinator):
 - max_retries, heartbeat_interval, stale_timeout_minutes, conversion_timeout
 """
 import os
@@ -18,7 +18,6 @@ import hashlib
 import socket
 import logging
 import time
-import json
 import platform
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -118,7 +117,7 @@ def get_worker_metadata() -> Dict[str, Any]:
 # =============================================================================
 class RemoteConfig:
     """
-    Fetches and caches configuration from S3.
+    Fetches and caches configuration from the Bunny coordinator.
     
     Defaults are used until first successful fetch.
     Config is refreshed when TTL expires (checked on get()).
@@ -138,34 +137,12 @@ class RemoteConfig:
     def __init__(self):
         self._config: Dict[str, Any] = self.DEFAULTS.copy()
         self._last_fetch: float = 0
-        self._s3_client = None
-    
-    def _get_s3_client(self):
-        """Lazy-load S3 client to avoid circular imports."""
-        if self._s3_client is None:
-            try:
-                import boto3
-                
-                # Build client kwargs
-                kwargs = {
-                    "region_name": S3_REGION,
-                }
-                if S3_ACCESS_KEY_ID:
-                    kwargs["aws_access_key_id"] = S3_ACCESS_KEY_ID
-                if S3_SECRET_ACCESS_KEY:
-                    kwargs["aws_secret_access_key"] = S3_SECRET_ACCESS_KEY
-                if S3_ENDPOINT_URL:
-                    kwargs["endpoint_url"] = S3_ENDPOINT_URL
-                
-                self._s3_client = boto3.client("s3", **kwargs)
-            except ImportError:
-                logger.warning("boto3 not available, using default config")
-                return None
-        return self._s3_client
-    
-    def _fetch_from_s3(self) -> bool:
-        """Fetch config from S3. Returns True if successful."""
-        if COORDINATOR_URL and COORDINATOR_TOKEN:
+
+    def _fetch_remote(self) -> bool:
+        """Fetch config from the coordinator, retaining defaults on failure."""
+        coordinator_url = os.getenv("BLOBFORGE_COORDINATOR_URL", COORDINATOR_URL).rstrip("/")
+        coordinator_token = os.getenv("BLOBFORGE_COORDINATOR_TOKEN", COORDINATOR_TOKEN)
+        if coordinator_url and coordinator_token:
             try:
                 from .coordinator_client import CoordinatorClient
 
@@ -180,34 +157,12 @@ class RemoteConfig:
                 logger.warning(f"Could not fetch coordinator config: {e}")
                 return False
 
-        s3 = self._get_s3_client()
-        if s3 is None:
-            return False
-        
-        key = f"{S3_PREFIX_REGISTRY}/config.json"
-        try:
-            response = s3.get_object(Bucket=S3_BUCKET, Key=key)
-            data = json.loads(response["Body"].read().decode("utf-8"))
-            
-            # Merge with defaults (remote overrides defaults)
-            for k, v in data.items():
-                if k in self.DEFAULTS:
-                    self._config[k] = v
-            
-            self._last_fetch = time.time()
-            logger.debug(f"Fetched remote config: {self._config}")
-            return True
-            
-        except Exception as e:
-            # Config doesn't exist yet or error - use defaults
-            if "NoSuchKey" not in str(e):
-                logger.debug(f"Could not fetch remote config: {e}")
-            return False
+        return False
     
     def _maybe_refresh(self):
         """Refresh config if TTL has expired."""
         if time.time() - self._last_fetch > self.TTL_SECONDS:
-            self._fetch_from_s3()
+            self._fetch_remote()
     
     def get(self, key: str) -> Any:
         """Get a config value, refreshing from S3 if TTL expired."""
@@ -222,34 +177,8 @@ class RemoteConfig:
     def force_refresh(self):
         """Force a refresh from S3."""
         self._last_fetch = 0
-        self._fetch_from_s3()
+        self._fetch_remote()
     
-    def save_to_s3(self, config: Dict[str, Any]) -> bool:
-        """Save config to S3 (for admin/CLI use)."""
-        if COORDINATOR_URL and COORDINATOR_TOKEN:
-            logger.error("Coordinator config is managed through the authenticated web UI")
-            return False
-        s3 = self._get_s3_client()
-        if s3 is None:
-            return False
-        
-        key = f"{S3_PREFIX_REGISTRY}/config.json"
-        try:
-            s3.put_object(
-                Bucket=S3_BUCKET,
-                Key=key,
-                Body=json.dumps(config, indent=2),
-                ContentType="application/json"
-            )
-            self._config = {**self.DEFAULTS, **config}
-            self._last_fetch = time.time()
-            logger.info(f"Saved remote config to S3: {config}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save remote config: {e}")
-            return False
-
-
 # Global instance
 _remote_config = RemoteConfig()
 
@@ -285,10 +214,6 @@ def get_remote_config() -> Dict[str, Any]:
 
 def refresh_remote_config():
     _remote_config.force_refresh()
-
-def save_remote_config(config: Dict[str, Any]) -> bool:
-    return _remote_config.save_to_s3(config)
-
 
 # =============================================================================
 # Legacy constants (for backward compatibility, read from remote config)

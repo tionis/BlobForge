@@ -160,6 +160,49 @@ class TestConversionTimeout(unittest.TestCase):
         self.assertTrue(fake_proc.killed)
 
 
+class TestCoordinatorObjectTransfers(unittest.TestCase):
+    def test_worker_uses_enrollment_identity_and_signed_transfers(self):
+        job_hash = "a" * 64
+        s3 = MagicMock()
+        s3.mock = True
+        coordinator = MagicMock()
+        coordinator.available = True
+        coordinator.worker_identity.return_value = "enrolled-worker"
+        coordinator.claim_job.return_value = {
+            "hash": job_hash,
+            "priority": "3_normal",
+            "lease_token": "lease-1",
+            "retry_count": 0,
+            "original_name": "source.pdf",
+            "size_bytes": 123,
+            "tags": ["test"],
+            "input": {"url": "https://s3.example/signed-input"},
+            "output_exists": False,
+        }
+
+        def download(_job, path):
+            with open(path, "wb") as target:
+                target.write(b"%PDF-1.4 mock")
+
+        coordinator.download_job_input.side_effect = download
+        heartbeat = MagicMock()
+        heartbeat._format_duration.return_value = "1s"
+
+        with patch("blobforge.worker.HeartbeatThread", return_value=heartbeat), patch("blobforge.worker.get_pdf_page_count", return_value=1):
+            worker = Worker(s3, coordinator_client=coordinator)
+            self.assertEqual(worker.id, "enrolled-worker")
+            self.assertEqual(worker.acquire_job(), job_hash)
+            worker.process(job_hash)
+
+        coordinator.download_job_input.assert_called_once()
+        coordinator.upload_job_output.assert_called_once()
+        coordinator.complete.assert_called_once()
+        s3.download_file.assert_not_called()
+        s3.get_object_metadata.assert_not_called()
+        s3.upload_file.assert_not_called()
+        s3.exists.assert_not_called()
+
+
 class TestWorkerSchedule(unittest.TestCase):
     """Validate local-time worker run window parsing and gating."""
 

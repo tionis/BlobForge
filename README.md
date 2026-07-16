@@ -5,17 +5,18 @@
 It uses **Bunny Database** for persistent coordination, a **Bunny Edge Script**
 for the API and management UI, and an **S3-compatible object store** for raw PDFs and completed artifacts. The queue
 can remain idle for months without losing leases, retries, metadata, or worker
-history. A legacy S3-only coordination mode remains available when Bunny
-coordinator settings are absent.
+history.
 
 ## 🚀 Key Features
 
 *   **Managed Coordination:** Bunny Database and Edge Scripting replace PostgreSQL, Redis, and message-broker infrastructure.
-*   **Management UI:** IndieAuth-protected queue, worker, retry, priority, cancellation, and runtime configuration controls.
+*   **Management UI:** IndieAuth-protected queue, worker enrollment/revocation, retry, priority, cancellation, and runtime configuration controls.
+*   **Portable Backups:** Admin-triggered, transaction-consistent Bunny Database exports are stored privately in S3 with checksums.
+*   **Least-Privilege Workers:** Per-worker tokens and lease-bound presigned transfers remove bucket credentials from conversion hosts.
 *   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
 *   **Fenced Leases:** Atomic SQLite statements assign expiring, opaque lease tokens and recover abandoned work on the next claim or management request.
 *   **Priority Queues:** 5 levels: `critical`, `high`, `normal`, `low`, `background`.
-*   **Persistent Manifest:** SQLite tracks paths, tags, size, source, and content hash.
+*   **Persistent Metadata:** Bunny Database tracks paths, tags, size, source, and content hash.
 *   **Heartbeat Mechanism:** Workers send periodic heartbeats (60s), enabling fast stale detection (15 min vs 2 hours).
 *   **Retry & Dead-Letter:** Failed jobs are retried up to 3 times, then moved to dead-letter queue for manual review.
 *   **Resilient:** Expired leases are recovered automatically without a continuously running janitor.
@@ -29,28 +30,16 @@ The current architecture and deployment/cutover guide are documented in
 [docs/bunny_coordination_backend.md](docs/bunny_coordination_backend.md).
 
 Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` to use it.
-When unset, the following legacy S3 coordination layout is used for backward
-compatibility:
-
-The system uses a directory structure within S3 to manage state:
+Trusted ingestors use the deployment's client token. Conversion workers use a
+per-worker token created in the management UI.
+The object store contains only immutable inputs, outputs, and portable
+coordinator backups:
 
 ```text
 s3://my-bucket/
-├── store/
-│   ├── raw/           # Source blobs (PDFs) with metadata
-│   └── out/           # Processed artifacts (Zips)
-├── queue/
-│   ├── todo/          # Pending jobs (with retry count)
-│   │   ├── 1_critical/
-│   │   ├── 2_high/
-│   │   ├── 3_normal/
-│   │   ├── 4_low/
-│   │   └── 5_background/
-│   ├── processing/    # Active locks (JSON with heartbeat)
-│   ├── failed/        # Jobs pending retry
-│   └── dead/          # Jobs that exceeded MAX_RETRIES
-└── registry/
-    └── manifest.json  # File metadata index (path→hash, tags, size)
+├── store/raw/                    # Source PDFs
+├── store/out/                    # Processed ZIP artifacts
+└── backups/coordinator/          # Versioned JSON database exports
 ```
 
 ### State Transitions
@@ -59,10 +48,10 @@ s3://my-bucket/
 [Ingest] ──► todo ──► processing ──► done
               ▲            │
               │            ▼
-              └──────── failed (janitor retries)
+              └──────── failed (next claim retries)
                            │
                            ▼ (after MAX_RETRIES)
-                         dead ──► (manual retry)
+                         dead ──► (Web UI retry)
 ```
 
 ## 📦 Installation
@@ -75,24 +64,16 @@ The container image includes all dependencies for PDF processing (`marker-pdf`, 
 # Build the image (or pull from ghcr.io/tionis/blobforge:latest)
 podman build -t blobforge .
 
-# Run a Worker (set BLOBFORGE_WORKER_ID for stable identity across restarts)
+# Create the worker in the management UI, then run its displayed command.
 podman run -d \
   -v blobforge-cache:/root/.cache \
-  -e BLOBFORGE_S3_BUCKET=my-forge-bucket \
-  -e BLOBFORGE_WORKER_ID=worker-01 \
-  -e AWS_ACCESS_KEY_ID=... \
-  -e AWS_SECRET_ACCESS_KEY=... \
-  blobforge worker
-```
-
-# Or if you want to store the config secrets in a file and pass a stable and meaningful id
-```
-podman run --rm -it -e "BLOBFORGE_WORKER_ID=$(hostname)" -v blobforge-cache:/root/.cache --env-file ~/.blobforge.env ghcr.io/tionis/blobforge:latest blobforge worker
+  ghcr.io/tionis/blobforge:latest \
+  blobforge worker --coordinator-url https://blobforge.example --token bfw_...
 ```
 
 **Important notes:**
 - **Model Cache:** Mount `/root/.cache` as a volume to persist the ~3GB marker/torch models across container restarts. Without this, models are re-downloaded on every container start.
-- **Worker ID:** Always set `BLOBFORGE_WORKER_ID` for containerized workers. Without it, the worker ID changes on every restart, leaving orphaned locks that the janitor must clean up.
+- **Worker Identity:** Coordinator workers derive their stable identity from the UI-issued token.
 
 ### Option B: uv (Recommended for CLI)
 
@@ -232,6 +213,9 @@ blobforge dashboard
 # Detailed dashboard
 blobforge dashboard -v
 
+# A worker token can query the coordinator without S3 credentials
+blobforge dashboard --coordinator-url https://blobforge.example --token bfw_...
+
 # Queue statistics
 blobforge list -v
 
@@ -239,84 +223,21 @@ blobforge list -v
 blobforge status <SHA256_HASH>
 ```
 
-### 4. Maintenance (Janitor)
+### 4. Manage jobs and configuration
 
-The Janitor detects stale locks (no heartbeat for 15+ minutes) and failed jobs, then re-queues them.
-Jobs exceeding MAX_RETRIES are moved to the dead-letter queue.
+Use the IndieAuth management UI to retry or reprioritize jobs, recover expired
+leases, revoke workers, and edit runtime configuration.
 
-Use janitor for crash/ungraceful-stop recovery; graceful worker shutdown requeues active jobs immediately.
-
-```bash
-# Run janitor
-blobforge janitor
-
-# Preview what janitor would do
-blobforge janitor --dry-run
-
-# Verbose output
-blobforge janitor -v
-```
-
-### 5. Retry Failed Jobs
-
-Manually retry jobs from the failed or dead-letter queue:
-
-```bash
-# Retry a failed job
-blobforge retry <SHA256_HASH>
-
-# Retry with higher priority
-blobforge retry <SHA256_HASH> --priority 1_critical
-
-# Reset retry counter (for dead-letter jobs)
-blobforge retry <SHA256_HASH> --reset-retries
-```
-
-### 6. Search & Lookup (Manifest)
-
-The manifest tracks all ingested files with metadata for fast lookups:
-
-```bash
-# Search by filename or tag
-blobforge search "Call of Cthulhu"
-
-# Look up by hash
-blobforge lookup --hash <SHA256_HASH>
-
-# Look up by path
-blobforge lookup --path "DnD/Players Handbook.pdf"
-
-# Show manifest statistics
-blobforge manifest -v
-
-# Preview raw metadata repair after an S3 migration
-blobforge repair-metadata --dry-run
-
-# Restore missing raw-object metadata from the manifest
-blobforge repair-metadata
-```
-
-### 7. Reprioritize Jobs
-
-Change the priority of queued jobs:
-
-```bash
-blobforge reprioritize <SHA256_HASH> 1_critical
-```
-
-### 8. Manage Remote Configuration
-
-Operational settings are stored in S3 and cached with a 1-hour TTL. This allows updating configuration without restarting workers.
+Operational settings are stored in Bunny Database. Update them in the Web UI
+without restarting workers.
 
 ```bash
 # View current config
 blobforge config --show
 
-# Update settings
-blobforge config --set max_retries=5 stale_timeout_minutes=20
 ```
 
-### 9. List Workers
+### 5. List Workers
 
 View all registered workers and their status:
 
@@ -331,7 +252,7 @@ blobforge workers --active
 blobforge workers -v
 ```
 
-### 10. Offline Conversion
+### 6. Offline Conversion
 
 Convert a PDF locally without using the distributed queue. Useful for testing or single-file processing.
 
@@ -343,7 +264,7 @@ blobforge convert document.pdf
 blobforge convert document.pdf --output ./results/
 ```
 
-### 11. Hydrate Existing PDFs
+### 7. Hydrate Existing PDFs
 
 Materialize converted markdown/assets next to local PDFs by matching on file hash.
 This is useful when conversions already exist in BlobForge and you want local `.md` files.
@@ -363,37 +284,18 @@ blobforge hydrate ./library --dry-run
 blobforge hydrate ./library --force
 ```
 
-### 12. Telegram Bot
+### 8. Remove legacy coordination objects
 
-Run an interactive Telegram bot for remote management. Supports all major operations through an inline keyboard interface.
+After confirming the Bunny coordinator contains the full backlog, preview and
+then remove the obsolete S3 queue and registry trees:
 
-**Setup:**
 ```bash
-# Install telegram dependencies
-uv pip install -e '.[telegram]'
-
-# Set required environment variables
-export BLOBFORGE_TELEGRAM_TOKEN="your-bot-token-from-botfather"
-export BLOBFORGE_TELEGRAM_ALLOWED_USERS="123456789,987654321"  # Comma-separated user IDs
-
-# Start the bot
-blobforge telegram
+blobforge cleanup-legacy
+blobforge cleanup-legacy --execute
 ```
 
-**Features:**
-- 📊 **Dashboard** - View system status, queue counts, active jobs
-- 📤 **Upload PDFs** - Send PDF files directly to the bot for ingestion
-- 📋 **Queue Stats** - Browse pending jobs by priority with pagination
-- 👷 **Workers** - View registered workers and their metrics
-- ⚙️ **Config** - View remote configuration
-- 🔍 **Search** - Find jobs by filename pattern
-- 🧹 **Janitor** - Trigger cleanup of stale jobs
-- 📦 **Manifest** - View tag statistics and counts
-- 🔄 **Retry/Cancel** - Manage individual jobs with confirmation dialogs
-- 📥 **Download** - Retrieve completed job results
-
-**Getting your Telegram User ID:**
-Message [@userinfobot](https://t.me/userinfobot) on Telegram to get your user ID.
+The command never touches `store/raw/`, `store/out/`, or
+`backups/coordinator/`.
 
 ## ⚙️ Configuration
 
@@ -401,7 +303,8 @@ Configuration is split into two categories:
 
 ### Local Configuration (Environment Variables)
 
-These **must** be set as environment variables (required for S3 connectivity).
+Ingestors use S3 variables to upload raw PDFs. Conversion workers need only the
+coordinator URL and their enrolled token.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
@@ -411,12 +314,13 @@ These **must** be set as environment variables (required for S3 connectivity).
 | `BLOBFORGE_S3_ACCESS_KEY_ID` | - | S3 access key (overrides AWS_ACCESS_KEY_ID) |
 | `BLOBFORGE_S3_SECRET_ACCESS_KEY` | - | S3 secret key (overrides AWS_SECRET_ACCESS_KEY) |
 | `BLOBFORGE_S3_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
-| `BLOBFORGE_WORKER_ID` | *(auto)* | Worker identifier. Auto-generated from machine fingerprint if not set. **Required for containers** to maintain stable identity across restarts |
+| `BLOBFORGE_COORDINATOR_URL` | - | Bunny coordinator base URL |
+| `BLOBFORGE_COORDINATOR_TOKEN` | - | Client token for ingestion/CLI or a UI-issued `bfw_...` worker token |
 | `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
-### Remote Configuration (Stored in S3)
+### Remote Configuration
 
-These settings are stored in S3 at `{prefix}registry/config.json` and cached for 1 hour. Update via CLI:
+These settings are stored in Bunny Database and edited in the management UI.
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
@@ -480,71 +384,11 @@ uv run python -m unittest tests.test_blobforge -v
 python -m pytest tests/ -v
 ```
 
-## � Telegram Bot Integration
-
-BlobForge includes a fully interactive Telegram bot for remote monitoring and management.
-
-### Setup
-
-1. Create a bot via [@BotFather](https://t.me/BotFather) and get your bot token
-2. Get your Telegram user ID (send `/start` to [@userinfobot](https://t.me/userinfobot))
-3. Set environment variables:
-
-```bash
-export BLOBFORGE_TELEGRAM_TOKEN="your-bot-token"
-export BLOBFORGE_TELEGRAM_ALLOWED_USERS="123456789,987654321"  # Comma-separated user IDs
-```
-
-4. Install with Telegram support and run:
-
-```bash
-uv pip install -e ".[telegram]"
-blobforge telegram
-```
-
-### Features
-
-| Feature | Description |
-| :--- | :--- |
-| **Dashboard** | Real-time system overview with queue stats, active jobs, progress |
-| **PDF Upload** | Send a PDF file to ingest it directly into the queue |
-| **Job Status** | Look up any job by hash - see stage, ETA, CPU usage |
-| **Search** | Find jobs by filename or tag |
-| **Priority** | Change job priority (critical → background) |
-| **Workers** | View active workers with throughput metrics |
-| **Config** | View and update remote configuration |
-| **Janitor** | Trigger stale job recovery |
-| **Download** | Get converted results directly in chat |
-| **Preview** | Peek at markdown output without downloading |
-| **Retry/Cancel** | Manage failed or stuck jobs |
-| **Dead Letter** | Review and retry jobs that exceeded max retries |
-
-### Commands
-
-```
-/start      - Main menu with inline keyboard navigation
-/dashboard  - System status overview
-/queue      - Detailed queue statistics
-/workers    - List active workers
-/config     - View remote configuration
-/search     - Search by filename
-/status     - Check job status by hash
-/janitor    - Run stale job recovery
-/help       - Show help
-```
-
-### Security
-
-- Only users listed in `BLOBFORGE_TELEGRAM_ALLOWED_USERS` can interact with the bot
-- Unauthorized users receive no response
-- All actions are logged with user ID
-
 ## �🔮 Future Roadmap
 
 *   **Metrics/Monitoring:** Prometheus metrics export for job duration, success rate
 *   **Batching:** Support for tarball ingestion to process thousands of small files efficiently
 *   **Vector Embeddings:** Worker modules for generating embeddings from images/text
-*   **SQLite + Litestream:** Optional fast manifest storage for filename→hash lookups
 
 ## 📄 License
 
