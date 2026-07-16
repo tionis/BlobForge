@@ -13,6 +13,7 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Make Bunny admin session cookies scheme-independent, disable CDN auth caching, and add an auth transport diagnostic endpoint.
 - [x] Preserve strict CSP while allowing the IndieAuth form redirect through script-driven top-level navigation.
 - [x] Fix Bunny IndieAuth cross-edge login sessions and add normalized profile input with a multi-admin allowlist.
 - [x] Replace S3 queue coordination with Bunny Edge Scripting + Bunny Database, IndieAuth management UI, fenced leases, and legacy-state migration.

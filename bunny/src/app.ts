@@ -14,7 +14,7 @@ export interface AppConfig {
 function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json; charset=utf-8");
-  headers.set("cache-control", "no-store");
+  setPrivateNoCache(headers);
   return new Response(JSON.stringify(data), { ...init, headers });
 }
 
@@ -23,11 +23,21 @@ function error(message: string, status = 400): Response {
 }
 
 function html(body: string, status = 200): Response {
-  return new Response(body, { status, headers: {
-    "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+  const headers = new Headers({
+    "content-type": "text/html; charset=utf-8",
     "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
-  } });
+  });
+  setPrivateNoCache(headers);
+  headers.set("vary", "Cookie");
+  return new Response(body, { status, headers });
+}
+
+function setPrivateNoCache(headers: Headers): void {
+  headers.set("cache-control", "private, no-store, no-cache, max-age=0, must-revalidate");
+  headers.set("cdn-cache-control", "no-store");
+  headers.set("surrogate-control", "no-store");
+  headers.set("pragma", "no-cache");
 }
 
 function canonicalUrl(value: string): string {
@@ -95,16 +105,14 @@ async function secureEqual(left: string, right: string): Promise<boolean> {
   return diff === 0;
 }
 
-function cookieName(url: URL): string {
-  return url.protocol === "https:" ? "__Host-blobforge_session" : "blobforge_session";
+const SESSION_COOKIE = "__Host-blobforge_session";
+
+function sessionCookie(token: string, maxAge: number): string {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`;
 }
 
-function sessionCookie(url: URL, token: string, maxAge: number): string {
-  return `${cookieName(url)}=${token}; Path=/; HttpOnly; SameSite=Lax${url.protocol === "https:" ? "; Secure" : ""}; Max-Age=${maxAge}`;
-}
-
-function clearSessionCookie(url: URL): string {
-  return `${cookieName(url)}=; Path=/; HttpOnly; SameSite=Lax${url.protocol === "https:" ? "; Secure" : ""}; Max-Age=0`;
+function clearSessionCookie(): string {
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0`;
 }
 
 function linkRelations(htmlText: string, rel: string): string[] {
@@ -183,6 +191,7 @@ export class BlobForgeApp {
       if (url.pathname === "/auth/login" && request.method === "GET") return this.login(request);
       if (url.pathname === "/auth/callback" && request.method === "GET") return this.callback(request);
       if (url.pathname === "/auth/logout" && request.method === "POST") return this.logout(request);
+      if (url.pathname === "/auth/status" && request.method === "GET") return this.authStatus(request);
       if (url.pathname === "/api/v1/health" && request.method === "GET") return json({ ok: true, service: "blobforge-bunny-coordinator", database: "connected" });
       if (url.pathname === "/api/v1/migration/import" && request.method === "POST") return this.migrationImport(request);
       if (url.pathname.startsWith("/api/v1/admin/")) return this.adminApi(request, url);
@@ -361,19 +370,34 @@ export class BlobForgeApp {
     const ttl = Math.max(300, this.config.sessionTtlSeconds || 43_200);
     const token = await this.signPayload({ me: returnedMe, exp: Date.now() + ttl * 1000 });
     await this.db.audit(returnedMe, "login", returnedMe, {});
-    return new Response(null, { status: 302, headers: { location: "/", "set-cookie": sessionCookie(url, token, ttl) } });
+    const headers = new Headers({ location: "/", "set-cookie": sessionCookie(token, ttl) });
+    setPrivateNoCache(headers);
+    return new Response(null, { status: 302, headers });
   }
 
   private async logout(request: Request): Promise<Response> {
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
-    const url = new URL(request.url);
-    return new Response(null, { status: 302, headers: { location: "/", "set-cookie": clearSessionCookie(url) } });
+    const headers = new Headers({ location: "/", "set-cookie": clearSessionCookie() });
+    setPrivateNoCache(headers);
+    return new Response(null, { status: 302, headers });
   }
 
   private async session(request: Request): Promise<{ me: string } | null> {
-    const url = new URL(request.url); const token = parseCookies(request).get(cookieName(url));
+    const token = parseCookies(request).get(SESSION_COOKIE);
     if (!token) return null;
     const session = await this.verifyPayload(token);
     return session && typeof session.me === "string" && Number(session.exp) >= Date.now() && this.isAdmin(session.me) ? { me: session.me } : null;
+  }
+
+  private async authStatus(request: Request): Promise<Response> {
+    const cookiePresent = parseCookies(request).has(SESSION_COOKIE);
+    const session = await this.session(request);
+    return json({
+      authenticated: Boolean(session),
+      cookie_present: cookiePresent,
+      identity: session?.me || null,
+      request_protocol: new URL(request.url).protocol,
+      forwarded_protocol: request.headers.get("x-forwarded-proto"),
+    });
   }
 }

@@ -145,11 +145,17 @@ describe("Bunny BlobForge coordinator", () => {
       `https://blobforge.example/auth/callback?code=test-code&state=${encodeURIComponent(authorization.searchParams.get("state")!)}`,
     ));
     expect(callback.status).toBe(302);
+    expect(callback.headers.get("cache-control")).toContain("no-store");
+    expect(callback.headers.get("set-cookie")).toContain("__Host-blobforge_session=");
+    expect(callback.headers.get("set-cookie")).toContain("; Secure;");
     const cookie = callback.headers.get("set-cookie")!.split(";", 1)[0]!;
 
     const dashboard = await app.fetch(new Request("https://blobforge.example/", { headers: { cookie } }));
     const body = await dashboard.text();
     expect(body).toContain("Coordination console");
     expect(body).toContain("https://alice.example/");
+
+    const status = await app.fetch(new Request("https://blobforge.example/auth/status", { headers: { cookie } }));
+    await expect(status.json()).resolves.toMatchObject({ authenticated: true, cookie_present: true, identity: "https://alice.example/" });
   });
 });

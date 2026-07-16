@@ -107,6 +107,12 @@ cookies are `Secure`, `HttpOnly`, and `SameSite=Lax`; UI writes also require a
 same-origin request. Rotating the signing secret immediately logs out every
 administrator.
 
+The production cookie is always named `__Host-blobforge_session`; it does not
+depend on the internal protocol Bunny presents to a particular edge instance.
+Authenticated and HTML responses send browser/CDN/surrogate no-store headers.
+`GET /auth/status` provides safe transport diagnostics: it reports whether the
+cookie arrived and whether it validates, but never returns the signed token.
+
 The worker secret can enqueue and operate leases, but cannot call admin or
 migration routes and cannot forge admin sessions. The migration secret can
 import state but cannot operate workers or UI routes. All three secrets must be

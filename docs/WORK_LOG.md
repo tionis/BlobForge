@@ -1,5 +1,26 @@
 # Work Log
 
+## 2026-07-16 (Bunny session transport fix commit)
+- **Objective:** Commit the validated session-cookie and CDN-cache hardening so Bunny can publish the fix.
+- **Actions:** Confirmed the scope contains the scheme-independent host cookie, explicit CDN no-store controls, `/auth/status`, focused tests, and required documentation updates.
+- **Status:** Prepared for publication commit.
+
+## 2026-07-16 (Bunny session-cookie transport hardening)
+- **Objective:** Fix a successful IndieAuth callback still returning to the unauthenticated login view.
+- **Investigation:**
+    1. Confirmed the remaining failure boundary was callback `Set-Cookie` delivery or validation on the next root request; authorization, signed state, and identity validation had completed.
+    2. Reviewed Bunny's current standalone scripting, request/response, pull-zone, environment, and caching documentation.
+    3. Probed the live deployment headers with `curl -fsSI`. Bunny returned `cache-control: no-cache`, `cdn-cache: MISS`, and did not retain the application's intended `Vary: Cookie`, showing that explicit CDN-facing cache directives were warranted.
+- **Implementation:**
+    1. Removed request-protocol-dependent cookie naming. Production now always uses `__Host-blobforge_session` with `Secure`, `HttpOnly`, `SameSite=Lax`, and `Path=/`, preventing callback/root mismatches if Bunny edge instances expose different internal schemes.
+    2. Added `private, no-store, no-cache, max-age=0, must-revalidate`, `CDN-Cache-Control: no-store`, `Surrogate-Control: no-store`, `Pragma: no-cache`, and `Vary: Cookie` where appropriate.
+    3. Applied the same no-cache controls to the callback and logout redirects.
+    4. Added `GET /auth/status`, which safely reports cookie presence, signed-session validity, identity, request protocol, and forwarded protocol without exposing the token.
+    5. Extended the full callback test to assert the exact host cookie, Secure attribute, no-store response, and authenticated `/auth/status` result.
+- **Validation:** `npm run check` passed; all Bunny/libSQL tests passed (`8 passed`).
+- **Final validation:** Production bundle built successfully at 194.2 KiB; `git diff --check` is clean.
+- **Status:** Cookie naming/cache hardening and diagnostics are implemented and validated. Deployment remains.
+
 ## 2026-07-16 (IndieAuth CSP fix commit)
 - **Objective:** Commit the validated script-driven IndieAuth navigation fix at the user's request.
 - **Actions:**
