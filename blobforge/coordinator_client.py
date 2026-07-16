@@ -1,4 +1,4 @@
-"""HTTP client for the Cloudflare BlobForge coordination backend.
+"""HTTP client for the Bunny BlobForge coordination backend.
 
 The coordinator owns manifests, persistent job state, leases, retries, worker
 registration, progress, and operational configuration. S3 remains responsible
@@ -56,7 +56,7 @@ class CoordinatorClient:
         request_token = token if token is not None else self.token
         if not self.base_url or not request_token:
             raise CoordinatorError(
-                "Cloudflare coordinator is not configured; set "
+                "Bunny coordinator is not configured; set "
                 "BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN"
             )
         data = json.dumps(body).encode("utf-8") if body is not None else None

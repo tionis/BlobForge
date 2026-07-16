@@ -256,7 +256,7 @@ def show_status(verbose: bool = False):
 
 
 def _show_coordinator_status(coordinator: CoordinatorClient, verbose: bool = False):
-    """Display the Cloudflare coordinator snapshot without consulting S3 state."""
+    """Display the Bunny coordinator snapshot without consulting S3 state."""
     snapshot = coordinator.snapshot()
     counts = snapshot.get("counts", {})
     priority = snapshot.get("priority", {})
@@ -266,7 +266,7 @@ def _show_coordinator_status(coordinator: CoordinatorClient, verbose: bool = Fal
     print(f"{'=' * 60}")
     print("  BlobForge Status Dashboard")
     print(f"{'=' * 60}")
-    print("  Coordination: Cloudflare Worker + Durable Object")
+    print("  Coordination: Bunny Edge Script + Bunny Database")
     print(f"  Blob store:   s3://{S3_BUCKET}")
 
     print(f"\n{'─' * 60}\n[QUEUE]\n{'─' * 60}")

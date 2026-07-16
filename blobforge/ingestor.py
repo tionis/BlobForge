@@ -141,7 +141,7 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     # Fetch manifest once for efficient duplicate detection
     if coordinator:
         known_hashes = set()
-        print("Using Cloudflare coordinator for persistent manifest and queue state.")
+        print("Using Bunny coordinator for persistent manifest and queue state.")
     else:
         print("Fetching manifest for duplicate detection...")
         manifest = s3.get_manifest()

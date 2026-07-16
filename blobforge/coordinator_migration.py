@@ -1,4 +1,4 @@
-"""One-time import of the legacy S3 coordination state into Cloudflare."""
+"""One-time import of the legacy S3 coordination state into Bunny Database."""
 
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def migrate(*, dry_run: bool = False, batch_size: int = 200) -> int:
     summary = ", ".join(f"{key}={value}" for key, value in sorted(counts.items())) or "empty"
     print(f"Discovered {len(items)} legacy jobs ({summary}).")
     if dry_run:
-        print("Dry run: no Cloudflare state was changed.")
+        print("Dry run: no Bunny Database state was changed.")
         return 0
 
     token = os.getenv("BLOBFORGE_MIGRATION_TOKEN", "")

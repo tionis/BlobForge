@@ -38,7 +38,7 @@ def _coordinator_client():
 def _require_management_ui(action):
     if _coordinator_client():
         print(
-            f"'{action}' is managed by the Cloudflare coordinator. "
+            f"'{action}' is managed by the Bunny coordinator. "
             "Use its authenticated management UI."
         )
         return True
@@ -55,7 +55,7 @@ def cmd_ingest(args):
 
 
 def cmd_coordinator_migrate(args):
-    """Import legacy S3 queue state into the Cloudflare coordinator."""
+    """Import legacy S3 queue state into Bunny Database."""
     try:
         return coordinator_migration.migrate(
             dry_run=args.dry_run,
@@ -1812,7 +1812,7 @@ def main():
 
     p_migrate = subparsers.add_parser(
         "coordinator-migrate",
-        help="Import legacy S3 queue state into the Cloudflare coordinator",
+        help="Import legacy S3 queue state into Bunny Database",
     )
     p_migrate.add_argument("--dry-run", action="store_true", help="Scan and summarize without importing")
     p_migrate.add_argument("--batch-size", type=int, default=200, help="Import records per request (maximum 250)")

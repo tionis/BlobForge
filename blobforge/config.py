@@ -3,7 +3,7 @@ BlobForge Configuration
 
 Configuration is split into two categories:
 1. Local config (env vars) - Required for S3 connectivity, cannot be stored in S3
-2. Remote config - Cloudflare coordinator when configured, otherwise legacy S3
+2. Remote config - Bunny coordinator when configured, otherwise legacy S3
 
 Local env vars (BLOBFORGE_S3_*):
 - BLOBFORGE_S3_BUCKET, BLOBFORGE_S3_PREFIX, BLOBFORGE_S3_REGION

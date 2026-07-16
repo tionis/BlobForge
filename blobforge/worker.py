@@ -586,7 +586,7 @@ class Worker:
         logger.info(f"Registering worker {self.id}...")
         if self.coordinator:
             self.coordinator.register_worker(self.id, get_worker_metadata())
-            logger.info("Using Cloudflare coordination backend; S3 is blob storage only.")
+            logger.info("Using Bunny coordination backend; S3 is blob storage only.")
         else:
             self.s3.register_worker()
         

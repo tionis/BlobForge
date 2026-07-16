@@ -1,5 +1,44 @@
 # Work Log
 
+## 2026-07-16 (Bunny backend commit)
+- **Objective:** Commit the completed migration from Cloudflare coordination to Bunny Edge Scripting and Bunny Database at the user's request.
+- **Actions:**
+    1. Reviewed the final working-tree scope with `git status --short`.
+    2. Confirmed the commit replaces the complete Cloudflare project and documentation with the tested Bunny service, database state machine, UI, tests, Python terminology updates, and deployment guide.
+- **Status:** Prepared for a single focused Git commit.
+
+## 2026-07-16 (Rebuild coordination backend on Bunny)
+- **Objective:** Remove the Cloudflare implementation and rebuild the coordination service so it runs efficiently on bunny.net.
+- **Platform research:**
+    1. Reviewed current official Bunny Database, SQL API, Edge Scripting, limits, secrets, pricing, GitHub integration, deployment, and database-to-script connection documentation.
+    2. Confirmed Bunny Database launched in February 2026 as a managed libSQL/SQLite service, integrates directly with Edge Scripts, scales down while idle, and remains in public preview.
+    3. Confirmed standalone Edge Scripts support TypeScript/JavaScript, Web APIs, secrets, external HTTP calls, and dynamic UI/API responses within 30 seconds CPU, 128 MB active memory, and 50 subrequests per invocation.
+    4. Determined that the workload does not need an always-on Magic Container: PDF conversion stays external and lease recovery can run atomically on the next worker poll or UI request.
+- **Implementation:**
+    1. Removed the `cloudflare/` Wrangler, Durable Object, test-runtime, generated dependency, and deployment artifacts.
+    2. Added `bunny/` with the Bunny Edge Script SDK, web libSQL client, esbuild single-file output, TypeScript checks, Vitest, environment template, and gitignored build/secrets.
+    3. Split the service into a Bunny runtime entry point, HTTP/IndieAuth application, database layer, and reusable management UI.
+    4. Recreated file metadata, job states, priority ordering, retry/dead-letter handling, workers, progress, config, logs, IndieAuth attempts/sessions, and audit tables in Bunny Database.
+    5. Implemented claims as atomic SQLite `UPDATE ... RETURNING` operations with opaque lease tokens and a same-worker exclusion. Repeated claims return the existing lease, preserving request-loss safety.
+    6. Replaced Durable Object alarms with atomic lazy lease recovery before claims and snapshots plus explicit UI recovery. Recovery increments retry state, clears stale workers, and permits immediate reclaim.
+    7. Preserved authenticated enqueue/read/claim/heartbeat/complete/fail/release APIs, exponential failure backoff, migration import, worker/admin token separation, IndieAuth + PKCE admin restriction for `https://eric.wendland.dev/`, same-origin checks, secure cookies, and CSP.
+    8. Tightened stale-request fencing so an old heartbeat/completion/failure/release cannot mark a worker idle after it has acquired a different job.
+    9. Kept the generic Python coordinator URL/token contract and replaced Cloudflare-specific operator messages with Bunny terminology.
+    10. Replaced the architecture/deployment guide with `docs/bunny_coordination_backend.md`, including dashboard setup, secrets, build entry file, safe backlog migration, public-preview caveat, and efficiency analysis; updated README, TODO, and findings.
+- **Tool executions and validation so far:**
+    1. Used official web documentation/search plus `rg`, `sed`, `git show`, and Git status/diff inspection to map the existing implementation and platform constraints.
+    2. Installed 79 Bunny/libSQL/build/test packages with `npm install`; npm reported no vulnerabilities.
+    3. Ran `npm run check` successfully.
+    4. Built a 191.3 KiB single-file Edge Script with `npm run build`, well below Bunny's documented script-size limit.
+    5. Ran local libSQL API tests: health/database initialization, worker-token rejection, enqueue/claim/repeated-claim/lease fencing/heartbeat/completion, separately authenticated terminal-state import, lazy expired-lease recovery, and IndieAuth client metadata all pass (`5 passed`).
+- **Final validation:**
+    1. Re-ran Python compilation through uv; all changed Python modules compiled.
+    2. Ran the complete Python suite: `88 passed, 5 subtests passed`.
+    3. Rebuilt the final Edge Script at 192.0 KiB and verified the bundle contains no Node built-in imports; the Bunny SDK remains the only runtime external.
+    4. Re-ran the production dependency audit with registry access: `0 vulnerabilities`.
+    5. Ran `git diff --check`: clean.
+- **Status:** Bunny-native implementation, tests, security audit, deployment/cutover documentation, and repository protocol updates are complete. Live Bunny resource creation, secrets, hostname setup, deployment, and backlog migration remain explicit operator actions.
+
 ## 2026-07-16 (Cloudflare backend commit)
 - **Objective:** Commit the completed Cloudflare coordination backend implementation at the user's request.
 - **Actions:**

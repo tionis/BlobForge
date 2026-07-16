@@ -2,23 +2,23 @@
 
 **BlobForge** is a distributed, infrastructure-agnostic ingestion pipeline designed to process massive datasets (starting with RPG Rulebooks) into usable formats (Markdown/Assets).
 
-It uses a **Cloudflare Durable Object** for persistent coordination and an
-**S3-compatible object store** for raw PDFs and completed artifacts. The queue
+It uses **Bunny Database** for persistent coordination, a **Bunny Edge Script**
+for the API and management UI, and an **S3-compatible object store** for raw PDFs and completed artifacts. The queue
 can remain idle for months without losing leases, retries, metadata, or worker
-history. A legacy S3-only coordination mode remains available when Cloudflare
+history. A legacy S3-only coordination mode remains available when Bunny
 coordinator settings are absent.
 
 ## 🚀 Key Features
 
-*   **Managed Coordination:** A Cloudflare Worker and SQLite Durable Object replace PostgreSQL, Redis, and message-broker infrastructure.
+*   **Managed Coordination:** Bunny Database and Edge Scripting replace PostgreSQL, Redis, and message-broker infrastructure.
 *   **Management UI:** IndieAuth-protected queue, worker, retry, priority, cancellation, and runtime configuration controls.
 *   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
-*   **Fenced Leases:** Durable Object transactions assign expiring, opaque lease tokens and recover abandoned work with alarms.
+*   **Fenced Leases:** Atomic SQLite statements assign expiring, opaque lease tokens and recover abandoned work on the next claim or management request.
 *   **Priority Queues:** 5 levels: `critical`, `high`, `normal`, `low`, `background`.
 *   **Persistent Manifest:** SQLite tracks paths, tags, size, source, and content hash.
 *   **Heartbeat Mechanism:** Workers send periodic heartbeats (60s), enabling fast stale detection (15 min vs 2 hours).
 *   **Retry & Dead-Letter:** Failed jobs are retried up to 3 times, then moved to dead-letter queue for manual review.
-*   **Resilient:** Durable Object alarms recover jobs from crashed workers automatically.
+*   **Resilient:** Expired leases are recovered automatically without a continuously running janitor.
 *   **Graceful Shutdown:** Catchable worker signals requeue active jobs immediately before exit.
 *   **Conversion Timeout:** Long conversions honor `conversion_timeout` with hard timeout support on compatible platforms.
 *   **Hash-Addressed:** Deduplication built-in. Processing is idempotent based on file content (SHA256).
@@ -26,7 +26,7 @@ coordinator settings are absent.
 ## 🛠 Architecture
 
 The current architecture and deployment/cutover guide are documented in
-[docs/cloudflare_coordination_backend.md](docs/cloudflare_coordination_backend.md).
+[docs/bunny_coordination_backend.md](docs/bunny_coordination_backend.md).
 
 Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` to use it.
 When unset, the following legacy S3 coordination layout is used for backward
