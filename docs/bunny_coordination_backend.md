@@ -95,6 +95,11 @@ The login page asks for an IndieAuth profile URL. A value without a protocol is
 normalized to `https://`; explicitly non-HTTPS profiles are rejected. Discovery
 only starts after the normalized URL matches `ADMIN_MES`.
 
+The form is converted by the local `/login.js` module into a top-level
+same-origin navigation before the external authorization redirect. This keeps
+the response's strict `form-action 'self'` CSP without browsers treating the
+IndieAuth authorization endpoint as a disallowed form destination.
+
 The management UI uses Authorization Code + PKCE. PKCE state and authenticated
 sessions are HMAC-signed with `SESSION_SIGNING_SECRET`, so the callback and next
 page request do not depend on cross-region database replication. Session

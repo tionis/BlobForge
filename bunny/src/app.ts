@@ -1,5 +1,5 @@
 import { CoordinatorDatabase, PRIORITIES, type ImportItem, type JobRecord, type Priority } from "./database";
-import { APP_CSS, APP_JS, renderHome } from "./ui";
+import { APP_CSS, APP_JS, LOGIN_JS, renderHome } from "./ui";
 
 export interface AppConfig {
   workerApiToken: string;
@@ -178,6 +178,7 @@ export class BlobForgeApp {
       const url = new URL(request.url);
       if (url.pathname === "/app.css") return new Response(APP_CSS, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" } });
       if (url.pathname === "/app.js") return new Response(APP_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
+      if (url.pathname === "/login.js") return new Response(LOGIN_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
       if (url.pathname === "/client-metadata.json") return this.clientMetadata(url);
       if (url.pathname === "/auth/login" && request.method === "GET") return this.login(request);
       if (url.pathname === "/auth/callback" && request.method === "GET") return this.callback(request);

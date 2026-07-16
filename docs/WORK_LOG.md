@@ -1,5 +1,23 @@
 # Work Log
 
+## 2026-07-16 (IndieAuth CSP fix commit)
+- **Objective:** Commit the validated script-driven IndieAuth navigation fix at the user's request.
+- **Actions:**
+    1. Confirmed the scope contains only the CSP navigation fix, focused test, and required documentation/protocol updates.
+    2. Prepared the changes for one focused Git commit.
+- **Status:** Ready to commit.
+
+## 2026-07-16 (IndieAuth form CSP redirect fix)
+- **Objective:** Fix the profile login form being blocked before reaching the IndieAuth authorization endpoint.
+- **Diagnosis:** Browser console evidence showed `form-action 'self'` blocking the request. The form submitted to same-origin `/auth/login`, but that response redirects externally; browsers apply the form-action policy to the redirected destination as well.
+- **Implementation:**
+    1. Kept `form-action 'self'` instead of weakening CSP to permit arbitrary HTTPS form destinations.
+    2. Added a local `/login.js` module that prevents form submission, preserves standard form validation/Enter-key behavior, constructs the same-origin login URL with `URLSearchParams`, and starts a top-level navigation with `window.location.assign`.
+    3. Added the script only to the unauthenticated page and exposed it with the same local-script CSP and static cache policy as the application assets.
+    4. Extended the login UI test to verify the module is included, served as JavaScript, and uses top-level navigation.
+- **Validation:** `npm run check` passed; all Bunny/libSQL tests passed (`8 passed`).
+- **Status:** CSP redirect issue fixed without broadening the form-action policy. Redeployment is required.
+
 ## 2026-07-16 (Bunny IndieAuth fix commit)
 - **Objective:** Commit the validated cross-edge IndieAuth session and multi-admin login fix at the user's request.
 - **Actions:**

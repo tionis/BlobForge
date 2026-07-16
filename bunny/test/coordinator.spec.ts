@@ -104,8 +104,13 @@ describe("Bunny BlobForge coordinator", () => {
     const page = await app.fetch(new Request("https://blobforge.example/"));
     const body = await page.text();
     expect(body).toContain('name="me"');
+    expect(body).toContain('src="/login.js"');
     expect(normalizeProfileUrl("alice.example")).toBe("https://alice.example/");
     expect(() => normalizeProfileUrl("http://alice.example")).toThrow("must use HTTPS");
+
+    const loginScript = await app.fetch(new Request("https://blobforge.example/login.js"));
+    expect(loginScript.headers.get("content-type")).toContain("text/javascript");
+    expect(await loginScript.text()).toContain("window.location.assign");
   });
 
   it("rejects identities outside the multi-admin allowlist before discovery", async () => {
