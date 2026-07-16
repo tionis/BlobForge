@@ -13,6 +13,7 @@
 - [ ] Implement optional SQLite + Litestream for manifest storage.
 
 ## Done
+- [x] Replace S3 queue coordination with a Cloudflare Worker + SQLite Durable Object, IndieAuth management UI, fenced leases, and legacy-state migration.
 - [x] Isolate scheduled-abort worker conversions in a child process so native marker crashes do not kill the worker.
 - [x] Add worker run-window scheduling with optional active-job abort/requeue.
 - [x] Requeue all current failed, dead-letter, and stale processing jobs after follow-up investigation.

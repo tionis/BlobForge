@@ -1,5 +1,42 @@
 # Work Log
 
+## 2026-07-16 (Cloudflare backend commit)
+- **Objective:** Commit the completed Cloudflare coordination backend implementation at the user's request.
+- **Actions:**
+    1. Reviewed the final working-tree scope with `git status --short`.
+    2. Confirmed the commit contains the Worker/Durable Object service, management UI, Python integration, migration command, tests, and documentation from the completed implementation.
+- **Status:** Prepared for a single focused Git commit.
+
+## 2026-07-15 (Cloudflare coordination backend and management UI)
+- **Objective:** Replace the long-lived S3 queue coordination mechanism with Cloudflare Workers while retaining Bunny/S3 for blobs, and add an IndieAuth-protected administration interface.
+- **Research and inspection:**
+    1. Inspected the repository, current queue/manifest paths, worker shutdown/retry behavior, CLI commands, tests, and the clean Git baseline after removal of the prior PostgreSQL prototype.
+    2. Reviewed current Cloudflare Durable Object SQLite, transaction, alarm, and local-test behavior using official documentation.
+    3. Reviewed the IndieAuth living standard and discovered `https://eric.wendland.dev/` metadata. Its current authorization server metadata is at `https://indieauth.tionis.dev/.well-known/oauth-authorization-server`.
+    4. Compared the coordination workload with platform constraints and selected one strongly ordered Durable Object because the backlog is hundreds of records but throughput is only a few completions per day.
+- **Implementation:**
+    1. Added the `cloudflare/` TypeScript service, pinned Node-20-compatible Wrangler/test dependencies, Wrangler Durable Object migration, TypeScript configuration, and gitignored local state/secrets.
+    2. Added the SQLite schema for files, paths, tags, jobs, workers, logs, runtime config, IndieAuth attempts/sessions, and audit records.
+    3. Added authenticated enqueue/read/claim/heartbeat/complete/fail/release APIs with priority ordering, lease fencing, retry-safe calls, exponential retry availability, dead-letter transitions, and Durable Object alarm recovery.
+    4. Added a responsive dependency-free management UI for queue totals, recent jobs, workers, progress, priorities, retry/cancel, expired-lease recovery, and runtime settings.
+    5. Added IndieAuth metadata discovery, Authorization Code + PKCE, state expiry, exact canonical admin identity enforcement for `https://eric.wendland.dev/`, hashed sessions, secure cookies, origin checks, CSP, and escaped server-rendered identity data.
+    6. Added `blobforge/coordinator_client.py` and integrated coordinator selection into configuration, ingestion, workers, dashboard/list/status, heartbeats, metrics, completion, failure, release, and shutdown. S3 remains the raw/output store and remains a compatibility coordination fallback when coordinator variables are absent.
+    7. Added output-upload ambiguity recovery: a leased coordinator job with an existing output ZIP is finalized without repeating conversion.
+    8. Added a separately scoped `MIGRATION_API_TOKEN`, a transactional batch import endpoint, and `blobforge coordinator-migrate`. The importer scans legacy manifest/todo/processing/failed/dead/done state, applies deterministic state precedence, preserves retries and metadata, and converts unsafe old processing locks to todo.
+    9. Guarded legacy S3 queue mutation/search commands when the Cloudflare backend is active, directing operators to the authenticated UI instead of silently editing stale queue markers.
+    10. Added architecture, security, deployment, client configuration, and explicit stop-the-world cutover documentation in `docs/cloudflare_coordination_backend.md`; updated README and task/findings records.
+- **Tool executions and validation:**
+    1. Used `rg`, `sed`, `git status`, and targeted source reads throughout inspection and verification.
+    2. Installed the pinned Cloudflare development dependency tree with `npm install`; adjusted versions after the latest toolchain required Node 22 and addressed isolated SQLite test storage behavior.
+    3. Ran `npm run check` repeatedly after implementation; final TypeScript check passed.
+    4. Ran Cloudflare Vitest through the local Workers runtime (host interface permission required): `4 passed` covering auth rejection, enqueue/claim/fenced heartbeat/completion, IndieAuth client metadata, and separately authenticated legacy import.
+    5. Ran Python compilation through uv with a writable `/tmp` cache; all changed modules compiled.
+    6. Added coordinator HTTP-client tests; `2 passed`.
+    7. Ran the complete Python suite through uv: `88 passed, 5 subtests passed`.
+    8. Ran `npm audit --omit=dev`: no production dependency vulnerabilities.
+    9. Verified the installed CLI help exposes `coordinator-migrate`, ran the final Workers test pass (`4 passed`), and confirmed `git diff --check` is clean.
+- **Status:** Implementation, migration path, management UI, tests, and operator documentation are complete. Deployment and live migration remain explicit operator actions because they require the user's Cloudflare account, final custom domain, secrets, and a coordinated pause of legacy workers.
+
 ## 2026-07-09 (Worker Conversion Isolation)
 - **Objective:** Fix scheduled-abort worker mode after marker crashed natively with `corrupted double-linked list` and left an active processing lock behind.
 - **Actions:**

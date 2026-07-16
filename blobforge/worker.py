@@ -36,9 +36,11 @@ except ImportError:
 from .config import (
     S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING, S3_PREFIX_DONE,
     S3_PREFIX_FAILED, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY, WORKER_ID,
-    get_max_retries, get_heartbeat_interval, get_conversion_timeout
+    get_max_retries, get_heartbeat_interval, get_conversion_timeout,
+    get_worker_metadata,
 )
 from .s3_client import S3Client
+from .coordinator_client import CoordinatorClient, CoordinatorError
 
 logger = logging.getLogger(__name__)
 
@@ -387,10 +389,13 @@ def get_system_metrics() -> Dict[str, Any]:
 class HeartbeatThread(threading.Thread):
     """Background thread that periodically updates the heartbeat for active jobs."""
     
-    def __init__(self, s3_client: S3Client, worker_id: str):
+    def __init__(self, s3_client: S3Client, worker_id: str,
+                 coordinator: Optional[CoordinatorClient] = None):
         super().__init__(daemon=True)
         self.s3 = s3_client
         self.worker_id = worker_id
+        self.coordinator = coordinator
+        self.lease_token: Optional[str] = None
         self.current_job: Optional[str] = None
         self.progress: Optional[dict] = None
         self.job_start_time: Optional[float] = None
@@ -406,7 +411,8 @@ class HeartbeatThread(threading.Thread):
             psutil.cpu_percent(interval=None)
     
     def set_job(self, job_hash: Optional[str], progress: Optional[dict] = None,
-                original_filename: Optional[str] = None, file_size: Optional[int] = None):
+                original_filename: Optional[str] = None, file_size: Optional[int] = None,
+                lease_token: Optional[str] = None):
         """Set the current job being processed."""
         with self._lock:
             self.current_job = job_hash
@@ -414,6 +420,7 @@ class HeartbeatThread(threading.Thread):
             self.job_start_time = time.time() if job_hash else None
             self.original_filename = original_filename
             self.file_size = file_size
+            self.lease_token = lease_token
             self._tqdm_progress = None  # Reset tqdm progress for new job
     
     def update_progress(self, progress: dict):
@@ -496,15 +503,37 @@ class HeartbeatThread(threading.Thread):
             
             with self._lock:
                 job = self.current_job
+                lease_token = self.lease_token
                 progress_data = self._build_progress_data() if job else None
             
             if job:
-                success = self.s3.update_heartbeat(job, self.worker_id, progress_data)
-                if not success:
-                    logger.warning(f"Failed to update heartbeat for {job}")
+                if self.coordinator:
+                    try:
+                        self.coordinator.heartbeat(
+                            job,
+                            worker_id=self.worker_id,
+                            lease_token=lease_token or "",
+                            progress=progress_data or {},
+                        )
+                    except CoordinatorError as e:
+                        logger.warning(f"Failed to update coordinator heartbeat for {job}: {e}")
+                else:
+                    success = self.s3.update_heartbeat(job, self.worker_id, progress_data)
+                    if not success:
+                        logger.warning(f"Failed to update heartbeat for {job}")
             
             # Also update worker heartbeat with system metrics
-            self.s3.update_worker_heartbeat(current_job=job, system_metrics=get_system_metrics())
+            if self.coordinator:
+                try:
+                    self.coordinator.worker_heartbeat(
+                        self.worker_id,
+                        current_job=job,
+                        metrics={"system": get_system_metrics()},
+                    )
+                except CoordinatorError as e:
+                    logger.warning(f"Failed to update coordinator worker heartbeat: {e}")
+            else:
+                self.s3.update_worker_heartbeat(current_job=job, system_metrics=get_system_metrics())
 
 
 class Worker:
@@ -529,12 +558,17 @@ class Worker:
     POLL_BATCH_SIZE = 50  # Max jobs to fetch per priority in broad scan
     MAX_LOCK_ATTEMPTS = 5  # Max attempts to lock before moving to next priority
     
-    def __init__(self, s3_client: S3Client, isolate_conversion: bool = False):
+    def __init__(self, s3_client: S3Client, isolate_conversion: bool = False,
+                 coordinator_client: Optional[CoordinatorClient] = None):
         self.s3 = s3_client
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
         self.current_priority: Optional[str] = None
         self.isolate_conversion = isolate_conversion
+        candidate = coordinator_client or CoordinatorClient()
+        self.coordinator = candidate if candidate.available else None
+        self.current_lease_token: Optional[str] = None
+        self.current_retry_count = 0
         
         # Polling optimization state
         self._empty_poll_count = 0  # Track consecutive empty polls for backoff
@@ -548,12 +582,16 @@ class Worker:
         self._bytes_processed = 0
         self._total_processing_time = 0.0
         
-        # Register worker in S3
+        # Register worker in the authoritative coordinator (or legacy S3).
         logger.info(f"Registering worker {self.id}...")
-        self.s3.register_worker()
+        if self.coordinator:
+            self.coordinator.register_worker(self.id, get_worker_metadata())
+            logger.info("Using Cloudflare coordination backend; S3 is blob storage only.")
+        else:
+            self.s3.register_worker()
         
         # Start heartbeat thread
-        self.heartbeat = HeartbeatThread(s3_client, self.id)
+        self.heartbeat = HeartbeatThread(s3_client, self.id, self.coordinator)
         self.heartbeat.start()
         
         # Set up tqdm progress callback to route to heartbeat
@@ -569,6 +607,9 @@ class Worker:
         Check for stale locks from previous runs of this worker.
         This handles the case where this worker crashed while holding a lock.
         """
+        if self.coordinator:
+            logger.debug("Coordinator leases recover previous worker sessions server-side.")
+            return
         logger.info(f"Worker {self.id}: Checking for stale locks from previous session...")
         jobs = self.s3.list_processing()
         max_retries = get_max_retries()
@@ -646,6 +687,28 @@ class Worker:
         
         Returns the job hash if acquired, None otherwise.
         """
+        if self.coordinator:
+            job = self.coordinator.claim_job(self.id, PRIORITIES)
+            if not job:
+                self._empty_poll_count += 1
+                return None
+            self.current_job = job["hash"]
+            self.current_priority = job.get("priority", DEFAULT_PRIORITY)
+            self.current_lease_token = job.get("lease_token")
+            self.current_retry_count = _safe_int(job.get("retry_count", 0))
+            self.heartbeat.set_job(
+                self.current_job,
+                original_filename=job.get("original_name"),
+                file_size=_safe_int(job.get("size_bytes", 0)),
+                lease_token=self.current_lease_token,
+            )
+            self._empty_poll_count = 0
+            logger.info(
+                f"Coordinator lease acquired for {self.current_job[:12]}... "
+                f"(priority={self.current_priority}, retry={self.current_retry_count})"
+            )
+            return self.current_job
+
         for priority in PRIORITIES:
             # Check priority cache to skip empty queues
             if self._is_priority_cached_empty(priority):
@@ -770,8 +833,19 @@ class Worker:
         job_start_time = time.time()
         
         # Get current retry count
-        lock_info = self.s3.get_lock_info(job_hash)
-        retry_count = lock_info.get('retries', 0) if lock_info else 0
+        if self.coordinator:
+            retry_count = self.current_retry_count
+        else:
+            lock_info = self.s3.get_lock_info(job_hash)
+            retry_count = lock_info.get('retries', 0) if lock_info else 0
+
+        # Upload can succeed immediately before the coordinator completion call
+        # is lost. A later lease holder can safely finalize that existing result
+        # instead of spending hours converting the same PDF again.
+        if self.coordinator and self.s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
+            logger.info("Existing output found; finalizing the coordinator job without reconversion")
+            self._complete_job(job_hash)
+            return
         
         with tempfile.TemporaryDirectory() as tmp_dir:
             pdf_path = os.path.join(tmp_dir, "source.pdf")
@@ -801,7 +875,8 @@ class Worker:
                     job_hash, 
                     progress={"stage": "downloaded", "page_count": page_count},
                     original_filename=original_filename,
-                    file_size=file_size
+                    file_size=file_size,
+                    lease_token=self.current_lease_token,
                 )
                 
             except Exception as e:
@@ -943,8 +1018,26 @@ class Worker:
         self._bytes_processed += file_size
         self._total_processing_time += processing_time
         
-        # Update worker metrics in S3
+        # Update worker metrics in the active coordination backend.
         self._update_worker_metrics()
+        if self.coordinator:
+            self.coordinator.complete(
+                job_hash,
+                worker_id=self.id,
+                lease_token=self.current_lease_token or "",
+                result={
+                    "output_key": f"{S3_PREFIX_DONE}/{job_hash}.zip",
+                    "size_bytes": file_size,
+                    "processing_time_seconds": round(processing_time, 2),
+                },
+                metrics=self.get_throughput_metrics(),
+            )
+            self.heartbeat.set_job(None)
+            self.current_job = None
+            self.current_priority = None
+            self.current_lease_token = None
+            self.current_retry_count = 0
+            return
         
         # Delete todo marker from all priorities (it should only be in one)
         for priority in PRIORITIES:
@@ -964,7 +1057,12 @@ class Worker:
     def _update_worker_metrics(self):
         """Update worker metrics in S3 registry."""
         metrics = self.get_throughput_metrics()
-        self.s3.update_worker_metrics(metrics)
+        if self.coordinator:
+            self.coordinator.worker_heartbeat(
+                self.id, current_job=self.current_job, metrics=metrics
+            )
+        else:
+            self.s3.update_worker_metrics(metrics)
     
     def get_throughput_metrics(self) -> dict:
         """Get throughput metrics for this worker session."""
@@ -1012,9 +1110,29 @@ class Worker:
         if traceback_str is None:
             traceback_str = traceback.format_exc()
         
+        if self.coordinator:
+            result = self.coordinator.fail(
+                job_hash,
+                worker_id=self.id,
+                lease_token=self.current_lease_token or "",
+                error=reason,
+                traceback=traceback_str,
+                context=error_context,
+                metrics=self.get_throughput_metrics(),
+            )
+            logger.warning(
+                f"Coordinator recorded job {job_hash} as {result.get('status', 'failed')}"
+            )
+            self.heartbeat.set_job(None)
+            self.current_job = None
+            self.current_priority = None
+            self.current_lease_token = None
+            self.current_retry_count = 0
+            return
+
         self.s3.save_job_error_detail(
-            job_hash, 
-            error=reason, 
+            job_hash,
+            error=reason,
             traceback=traceback_str,
             context=error_context
         )
@@ -1258,6 +1376,24 @@ class Worker:
         job_hash = self.current_job
         if not job_hash:
             return False
+        if self.coordinator:
+            try:
+                self.coordinator.release(
+                    job_hash,
+                    worker_id=self.id,
+                    lease_token=self.current_lease_token or "",
+                    reason=reason,
+                )
+                requeued = True
+            except CoordinatorError as e:
+                logger.error(f"Failed to release coordinator lease for {job_hash}: {e}")
+                requeued = False
+            self.heartbeat.set_job(None)
+            self.current_job = None
+            self.current_priority = None
+            self.current_lease_token = None
+            self.current_retry_count = 0
+            return requeued
         
         lock_info = self.s3.get_lock_info(job_hash) or {}
         priority = self.current_priority or lock_info.get('priority', DEFAULT_PRIORITY)
@@ -1313,7 +1449,10 @@ class Worker:
         
         # Deregister worker
         logger.info(f"Deregistering worker {self.id}...")
-        self.s3.deregister_worker()
+        if self.coordinator:
+            self.coordinator.deregister_worker(self.id)
+        else:
+            self.s3.deregister_worker()
         
         logger.info(f"Worker {self.id} shut down.")
 

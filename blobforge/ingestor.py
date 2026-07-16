@@ -20,6 +20,7 @@ from .config import (
     S3_PREFIX_PROCESSING, S3_PREFIX_DEAD, PRIORITIES, DEFAULT_PRIORITY
 )
 from .s3_client import S3Client
+from .coordinator_client import CoordinatorClient
 from .utils import compute_sha256_with_cache, get_cached_hash
 
 # Regex for Git LFS pointer file
@@ -106,6 +107,8 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     Also updates the manifest with file metadata for lookup.
     """
     s3 = S3Client(dry_run=dry_run)
+    coordinator_candidate = CoordinatorClient()
+    coordinator = coordinator_candidate if coordinator_candidate.available else None
     
     # Expand paths into list of (full_path, base_path) tuples
     # base_path is used to compute relative paths for tags
@@ -136,10 +139,14 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     print(f"Found {len(files_to_process)} PDF(s) to process...")
     
     # Fetch manifest once for efficient duplicate detection
-    print("Fetching manifest for duplicate detection...")
-    manifest = s3.get_manifest()
-    known_hashes = set(manifest.get('entries', {}).keys())
-    print(f"Manifest contains {len(known_hashes)} known files.")
+    if coordinator:
+        known_hashes = set()
+        print("Using Cloudflare coordinator for persistent manifest and queue state.")
+    else:
+        print("Fetching manifest for duplicate detection...")
+        manifest = s3.get_manifest()
+        known_hashes = set(manifest.get('entries', {}).keys())
+        print(f"Manifest contains {len(known_hashes)} known files.")
     
     stats = {"found": 0, "skipped": 0, "uploaded": 0, "queued": 0}
     
@@ -183,13 +190,14 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         print(f"Found: {rel_path} -> {file_hash[:8]}...")
         
         # 2. Check if already known (manifest is source of truth)
-        if file_hash in known_hashes:
+        if not coordinator and file_hash in known_hashes:
             print(f"  [SKIP] Already ingested")
             stats["skipped"] += 1
             continue
         
         # 3. Check/Upload Raw + Metadata
         raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
+        size = 0
         if not s3.exists(raw_key):
             print(f"  [UPLOAD] Raw PDF not in S3.")
             
@@ -220,10 +228,39 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         else:
             print(f"  [OK] Raw PDF exists.")
         
-        # 4. Queue the job
-        s3.create_todo_marker(priority, file_hash)
-        print(f"  [QUEUED] Added with priority {priority}")
-        stats["queued"] += 1
+        # 4. Queue the job in the authoritative coordination backend.
+        if coordinator:
+            if dry_run:
+                print(f"  [DRY-RUN] Would enqueue with priority {priority}")
+                stats["queued"] += 1
+                continue
+            try:
+                if not size:
+                    raw_meta = s3.get_object_metadata(raw_key)
+                    size = int(raw_meta.get("size", 0))
+                job = coordinator.enqueue(
+                    file_hash,
+                    priority=priority,
+                    original_name=display_name,
+                    size_bytes=size,
+                    paths=[rel_path],
+                    tags=tags,
+                    source=os.path.basename(base_path),
+                )
+                job_status = job.get("status", "todo")
+                if job_status == "todo":
+                    print(f"  [QUEUED] Added with priority {job.get('priority', priority)}")
+                    stats["queued"] += 1
+                else:
+                    print(f"  [SKIP] Coordinator already has job in state: {job_status}")
+                    stats["skipped"] += 1
+            except Exception as e:
+                print(f"  [ERROR] Coordinator enqueue failed: {e}")
+                continue
+        else:
+            s3.create_todo_marker(priority, file_hash)
+            print(f"  [QUEUED] Added with priority {priority}")
+            stats["queued"] += 1
         
         # Add to known hashes so duplicates in same run are caught
         known_hashes.add(file_hash)
@@ -234,6 +271,9 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         except Exception:
             size = 0
         
+        if coordinator:
+            continue
+
         manifest_batch.append({
             'hash': file_hash,
             'path': rel_path,

@@ -3,7 +3,7 @@ BlobForge Configuration
 
 Configuration is split into two categories:
 1. Local config (env vars) - Required for S3 connectivity, cannot be stored in S3
-2. Remote config (S3) - Operational settings, fetched with 1-hour TTL cache
+2. Remote config - Cloudflare coordinator when configured, otherwise legacy S3
 
 Local env vars (BLOBFORGE_S3_*):
 - BLOBFORGE_S3_BUCKET, BLOBFORGE_S3_PREFIX, BLOBFORGE_S3_REGION
@@ -43,6 +43,8 @@ S3_REGION = os.getenv("BLOBFORGE_S3_REGION", "us-east-1")
 S3_ACCESS_KEY_ID = os.getenv("BLOBFORGE_S3_ACCESS_KEY_ID")
 S3_SECRET_ACCESS_KEY = os.getenv("BLOBFORGE_S3_SECRET_ACCESS_KEY")
 S3_ENDPOINT_URL = os.getenv("BLOBFORGE_S3_ENDPOINT_URL")
+COORDINATOR_URL = os.getenv("BLOBFORGE_COORDINATOR_URL", "").rstrip("/")
+COORDINATOR_TOKEN = os.getenv("BLOBFORGE_COORDINATOR_TOKEN", "")
 
 # Ensure trailing slash if prefix exists
 if S3_PREFIX and not S3_PREFIX.endswith("/"):
@@ -163,6 +165,21 @@ class RemoteConfig:
     
     def _fetch_from_s3(self) -> bool:
         """Fetch config from S3. Returns True if successful."""
+        if COORDINATOR_URL and COORDINATOR_TOKEN:
+            try:
+                from .coordinator_client import CoordinatorClient
+
+                data = CoordinatorClient().get_config()
+                for k, v in data.items():
+                    if k in self.DEFAULTS:
+                        self._config[k] = v
+                self._last_fetch = time.time()
+                logger.debug(f"Fetched coordinator config: {self._config}")
+                return True
+            except Exception as e:
+                logger.warning(f"Could not fetch coordinator config: {e}")
+                return False
+
         s3 = self._get_s3_client()
         if s3 is None:
             return False
@@ -209,6 +226,9 @@ class RemoteConfig:
     
     def save_to_s3(self, config: Dict[str, Any]) -> bool:
         """Save config to S3 (for admin/CLI use)."""
+        if COORDINATOR_URL and COORDINATOR_TOKEN:
+            logger.error("Coordinator config is managed through the authenticated web UI")
+            return False
         s3 = self._get_s3_client()
         if s3 is None:
             return False

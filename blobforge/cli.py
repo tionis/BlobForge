@@ -26,6 +26,23 @@ from . import ingestor
 from . import janitor as janitor_module
 from . import status as status_module
 from . import hydrator as hydrator_module
+from . import coordinator_migration
+from .coordinator_client import CoordinatorClient, CoordinatorError
+
+
+def _coordinator_client():
+    client = CoordinatorClient()
+    return client if client.available else None
+
+
+def _require_management_ui(action):
+    if _coordinator_client():
+        print(
+            f"'{action}' is managed by the Cloudflare coordinator. "
+            "Use its authenticated management UI."
+        )
+        return True
+    return False
 
 
 def cmd_ingest(args):
@@ -37,8 +54,22 @@ def cmd_ingest(args):
     ingestor.ingest(args.paths, priority=args.priority, dry_run=args.dry_run)
 
 
+def cmd_coordinator_migrate(args):
+    """Import legacy S3 queue state into the Cloudflare coordinator."""
+    try:
+        return coordinator_migration.migrate(
+            dry_run=args.dry_run,
+            batch_size=args.batch_size,
+        )
+    except Exception as exc:
+        print(f"Migration failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_reprioritize(args):
     """Change the priority of a queued job."""
+    if _require_management_ui("reprioritize"):
+        return 1
     s3 = S3Client()
     job_hash = args.hash
     new_prio = args.priority
@@ -97,6 +128,23 @@ def cmd_reprioritize(args):
 
 def cmd_status(args):
     """Check the status of a specific job."""
+    coordinator = _coordinator_client()
+    if coordinator:
+        try:
+            job = coordinator.get_job(args.hash)
+        except CoordinatorError as exc:
+            print(f"Status lookup failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"Status: {str(job.get('status', 'unknown')).upper()}")
+        print(f"Priority: {job.get('priority', '?')}")
+        if job.get("original_name"):
+            print(f"File: {job['original_name']}")
+        if job.get("worker_id"):
+            print(f"Worker: {job['worker_id']}")
+        if job.get("error_message"):
+            print(f"Error: {job['error_message']}")
+        print(f"Retries: {job.get('retry_count', 0)}/{job.get('max_retries', '?')}")
+        return 0
     s3 = S3Client()
     h = args.hash
     
@@ -169,6 +217,9 @@ def cmd_status(args):
 
 def cmd_list(args):
     """List queue statistics."""
+    if _coordinator_client():
+        status_module.show_status(verbose=args.verbose)
+        return 0
     s3 = S3Client()
     
     print("--- Queue Statistics ---")
@@ -223,6 +274,8 @@ def cmd_list(args):
 
 
 def cmd_retry(args):
+    if _require_management_ui("retry"):
+        return 1
     """Retry a failed or dead-letter job."""
     s3 = S3Client()
     job_hash = args.hash
@@ -395,6 +448,8 @@ def cmd_hydrate(args):
 
 
 def cmd_janitor(args):
+    if _require_management_ui("janitor"):
+        return 1
     """Run the janitor to recover stale jobs."""
     janitor_module.run_janitor(dry_run=args.dry_run, verbose=args.verbose)
 
@@ -1451,6 +1506,8 @@ def cmd_preview(args):
 
 
 def cmd_retry_all(args):
+    if _require_management_ui("retry-all"):
+        return 1
     """Retry all failed or dead-letter jobs."""
     s3 = S3Client()
     
@@ -1508,6 +1565,8 @@ def cmd_retry_all(args):
 
 
 def cmd_clear_dead(args):
+    if _require_management_ui("clear-dead"):
+        return 1
     """Clear the dead-letter queue."""
     s3 = S3Client()
     
@@ -1543,6 +1602,8 @@ def cmd_clear_dead(args):
 
 
 def cmd_search_queue(args):
+    if _require_management_ui("search-queue"):
+        return 1
     """Search queue by filename pattern."""
     s3 = S3Client()
     query = args.query.lower()
@@ -1604,6 +1665,8 @@ def cmd_search_queue(args):
 
 
 def cmd_cancel(args):
+    if _require_management_ui("cancel"):
+        return 1
     """Cancel a running job (move back to queue)."""
     s3 = S3Client()
     job_hash = args.hash
@@ -1638,6 +1701,8 @@ def cmd_cancel(args):
 
 
 def cmd_remove(args):
+    if _require_management_ui("remove"):
+        return 1
     """Remove a job from the system completely."""
     s3 = S3Client(dry_run=args.dry_run)
     job_hash = args.hash
@@ -1744,6 +1809,14 @@ def main():
                           help="Queue priority for new jobs")
     p_ingest.add_argument("--dry-run", action="store_true", help="Don't make changes")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_migrate = subparsers.add_parser(
+        "coordinator-migrate",
+        help="Import legacy S3 queue state into the Cloudflare coordinator",
+    )
+    p_migrate.add_argument("--dry-run", action="store_true", help="Scan and summarize without importing")
+    p_migrate.add_argument("--batch-size", type=int, default=200, help="Import records per request (maximum 250)")
+    p_migrate.set_defaults(func=cmd_coordinator_migrate)
     
     # Convert (local)
     p_convert = subparsers.add_parser("convert", help="Convert a PDF file locally (offline)")
