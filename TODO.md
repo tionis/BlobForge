@@ -12,6 +12,7 @@
 ## Low Priority
 
 ## Done
+- [x] Remediate the 33 Dependabot alerts with patched universal-lock constraints, Python 3.10+, conversion-tested Pillow override, and documented non-applicable Transformer/Torch advisories.
 - [x] Derive worker IDs directly from label slugs and reject duplicate/colliding enrollment labels.
 - [x] Make coordinator progress updates prompt and add persistent per-attempt failure diagnostics with a Web UI history viewer.
 - [x] Replace the preview's handwritten Markdown subset with Marked + DOMPurify and add a sticky/collapsible active-section ToC.

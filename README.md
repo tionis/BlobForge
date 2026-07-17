@@ -98,7 +98,7 @@ blobforge --help
 
 ### Option C: pip
 
-Requires Python 3.9+ and system dependencies for PDF conversion (`tesseract-ocr`, `ghostscript`).
+Requires Python 3.10+ and system dependencies for PDF conversion (`tesseract-ocr`, `ghostscript`). Python 3.9 is no longer supported because the compatible legacy Marker dependency branch retains known-vulnerable packages.
 
 ```bash
 pip install .

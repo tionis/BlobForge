@@ -801,3 +801,29 @@
     - `cd bunny && npm run build` -> successful Edge Script bundle (`306.5kb`).
     - `git diff --check` and final working-tree review -> clean.
 - **Status:** Implemented, documented, and validated.
+
+## 2026-07-17 (Dependabot Remediation)
+
+- **Objective:** Resolve the 33 open GitHub Dependabot alerts without breaking PDF conversion or hiding upstream compatibility constraints.
+- **Patch contract:** Untrusted PDFs must not reach vulnerable parsing/decompression code in locked dependencies; every supported universal-lock resolution must meet patched floors. Existing S3/coordinator behavior and the Marker PDF-to-Markdown conversion path must remain functional.
+- **Findings:**
+    1. Python 3.9 forced `marker-pdf 0.2.17` and multiple vulnerable legacy resolutions, so complete remediation requires Python 3.10+.
+    2. Current Marker/Surya cap Pillow below 11 even though the applicable fixes require 12.2; the cap is stale for the exercised conversion path.
+    3. A trial Transformers 5 override failed the real Marker import boundary because Surya uses removed private APIs. The three Transformer advisories affect untrusted model loading or `Trainer`, neither reachable from submitted PDFs.
+    4. The remaining Torch advisory affects unused `torch.jit.script` and has no recorded patched version. Torch 2.10 fixes the two reachable sequence/memory advisories while preserving the CUDA 12 fleet.
+- **Implementation:**
+    1. Raised `requires-python` to 3.10 and removed the Python 3.9 classifier.
+    2. Added centralized uv security floors for every applicable advisory and an explicit Pillow override.
+    3. Regenerated `uv.lock`, removing all vulnerable versions for applicable alerts.
+    4. Added a regression test that parses every universal-lock package resolution and enforces the security floors.
+    5. Added `docs/dependency_security.md` with override rationale, trust-boundary analysis, and conditions that invalidate the four non-applicability decisions.
+- **Compatibility evidence:** Marker imports passed with Marker 1.10.2, Surya 0.17.1, Pillow 12.3, Transformers 4.57.6, Torch 2.10.0, cryptography 49.0.0, and urllib3 2.7.0. A complete conversion of `assets/lorem.pdf` passed in 148.9 seconds under CPU fallback and produced Markdown successfully.
+- **Validation:**
+    - `UV_CACHE_DIR=/tmp/uv-cache uv lock --check` -> passed (`118 packages`).
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync python -m pytest tests/test_dependency_security.py -q` -> `2 passed`; every universal-lock resolution meets its applicable advisory floor.
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync python -m pytest tests/ -q` -> `95 passed, 5 subtests passed` (one pre-existing `datetime.utcnow` deprecation warning).
+    - `cd bunny && npm run check` -> generated Markdown runtime and TypeScript checks passed.
+    - `cd bunny && npm test -- --run` -> `13 passed`.
+    - `cd bunny && npm run build` -> successful Edge Script bundle (`306.5kb`).
+    - `git diff --check` -> clean.
+- **Status:** All 29 applicable alerts are remediated in the local universal lock. The three non-applicable Transformers alerts and one unpatched, unused TorchScript alert are documented for dismissal after the change reaches the default branch.
