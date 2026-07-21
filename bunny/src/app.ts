@@ -3,6 +3,7 @@ import type { ObjectTransferStore } from "./object_store";
 import { APP_CSS, LOGIN_JS, VIEWER_CSS, renderHome } from "./ui";
 import { APP_JS } from "./management_ui";
 import { MARKDOWN_JS } from "./generated/markdown_bundle";
+import { BRAND_SVG, DOCS_CSS, ROBOTS_TXT, renderDocs } from "./docs_ui";
 
 export interface AppConfig {
   clientApiToken: string;
@@ -41,6 +42,36 @@ function setPrivateNoCache(headers: Headers): void {
   headers.set("cdn-cache-control", "no-store");
   headers.set("surrogate-control", "no-store");
   headers.set("pragma", "no-cache");
+}
+
+function setPublicCache(headers: Headers, immutable = false): void {
+  if (immutable) {
+    headers.set("cache-control", "public, max-age=31536000, immutable");
+    headers.set("cdn-cache-control", "public, max-age=31536000, immutable");
+    headers.set("surrogate-control", "max-age=31536000, immutable");
+  } else {
+    headers.set("cache-control", "public, max-age=300, stale-while-revalidate=86400");
+    headers.set("cdn-cache-control", "public, max-age=86400, stale-while-revalidate=604800");
+    headers.set("surrogate-control", "max-age=86400, stale-while-revalidate=604800");
+  }
+}
+
+function publicResponse(request: Request, body: string, contentType: string, etag: string, immutable = false): Response {
+  const headers = new Headers({
+    "content-type": contentType,
+    "etag": `"${etag}"`,
+    "x-content-type-options": "nosniff",
+  });
+  setPublicCache(headers, immutable);
+  if (request.headers.get("if-none-match") === headers.get("etag")) return new Response(null, { status: 304, headers });
+  return new Response(request.method === "HEAD" ? null : body, { headers });
+}
+
+function publicHtml(request: Request, body: string, etag: string): Response {
+  const response = publicResponse(request, body, "text/html; charset=utf-8", etag);
+  response.headers.set("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  response.headers.set("referrer-policy", "strict-origin-when-cross-origin");
+  return response;
 }
 
 function canonicalUrl(value: string): string {
@@ -185,13 +216,22 @@ export class BlobForgeApp {
 
   async fetch(request: Request): Promise<Response> {
     try {
-      await this.db.ensureSchema();
       const url = new URL(request.url);
-      if (url.pathname === "/app.css") return new Response(`${APP_CSS}${VIEWER_CSS}`, { headers: { "content-type": "text/css; charset=utf-8", "cache-control": "public, max-age=3600" } });
-      if (url.pathname === "/app.js") return new Response(APP_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
-      if (url.pathname === "/markdown.js") return new Response(MARKDOWN_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
-      if (url.pathname === "/login.js") return new Response(LOGIN_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "public, max-age=3600" } });
-      if (url.pathname === "/client-metadata.json") return this.clientMetadata(url);
+      const staticRequest = request.method === "GET" || request.method === "HEAD";
+      if (staticRequest && url.pathname === "/") return publicHtml(request, renderDocs(), "blobforge-docs-v1");
+      if (staticRequest && url.pathname === "/static/docs-v1.css") return publicResponse(request, DOCS_CSS, "text/css; charset=utf-8", "blobforge-docs-css-v1", true);
+      if (staticRequest && url.pathname === "/static/blobforge-v1.svg") return publicResponse(request, BRAND_SVG, "image/svg+xml; charset=utf-8", "blobforge-brand-v1", true);
+      if (staticRequest && url.pathname === "/static/app-v7.css") return publicResponse(request, `${APP_CSS}${VIEWER_CSS}`, "text/css; charset=utf-8", "blobforge-app-css-v7", true);
+      if (staticRequest && url.pathname === "/static/app-v7.js") return publicResponse(request, APP_JS, "text/javascript; charset=utf-8", "blobforge-app-js-v7", true);
+      if (staticRequest && url.pathname === "/static/markdown-v1.js") return publicResponse(request, MARKDOWN_JS, "text/javascript; charset=utf-8", "blobforge-markdown-v1", true);
+      if (staticRequest && url.pathname === "/static/login-v4.js") return publicResponse(request, LOGIN_JS, "text/javascript; charset=utf-8", "blobforge-login-v4", true);
+      if (staticRequest && url.pathname === "/robots.txt") return publicResponse(request, ROBOTS_TXT, "text/plain; charset=utf-8", "blobforge-robots-v1");
+      if (staticRequest && url.pathname === "/client-metadata.json") return this.clientMetadata(request, url);
+      if (url.pathname === "/console" && request.method === "GET") return html(renderHome(true, "", `${url.origin}/auth/callback`));
+      if (url.pathname === "/login" && request.method === "GET") return html(renderHome(false, "", `${url.origin}/auth/callback`));
+      if (!url.pathname.startsWith("/api/v1/") && !url.pathname.startsWith("/auth/")) return error("Not found", 404);
+
+      await this.db.ensureSchema();
       if (url.pathname === "/auth/login" && request.method === "GET") return this.login(request);
       if (url.pathname === "/auth/callback" && request.method === "GET") return this.callback(request);
       if (url.pathname === "/auth/logout" && request.method === "POST") return this.logout(request);
@@ -199,13 +239,6 @@ export class BlobForgeApp {
       if (url.pathname === "/api/v1/health" && request.method === "GET") return json({ ok: true, service: "blobforge-bunny-coordinator", database: "connected" });
       if (url.pathname.startsWith("/api/v1/admin/")) return this.adminApi(request, url);
       if (url.pathname.startsWith("/api/v1/")) return this.workerApi(request, url);
-      if (url.pathname === "/console" && request.method === "GET") {
-        return html(renderHome(true, "", `${url.origin}/auth/callback`));
-      }
-      if (url.pathname === "/" && request.method === "GET") {
-        const session = await this.session(request);
-        return html(renderHome(Boolean(session), session?.me || "", `${url.origin}/auth/callback`));
-      }
       return error("Not found", 404);
     } catch (cause) {
       console.error(cause);
@@ -219,7 +252,9 @@ export class BlobForgeApp {
   }
   private isAdmin(me: string): boolean { return this.allowedAdmins().includes(me); }
   private leaseSeconds(runtime?: Record<string, unknown>): number { return Math.max(60, Number(runtime?.lease_seconds || this.config.leaseSeconds || 900)); }
-  private clientMetadata(url: URL): Response { return json({ client_id: `${url.origin}/client-metadata.json`, client_name: "BlobForge", client_uri: `${url.origin}/`, redirect_uris: [`${url.origin}/auth/callback`] }); }
+  private clientMetadata(request: Request, url: URL): Response {
+    return publicResponse(request, JSON.stringify({ client_id: `${url.origin}/client-metadata.json`, client_name: "BlobForge", client_uri: `${url.origin}/`, redirect_uris: [`${url.origin}/auth/callback`] }), "application/json; charset=utf-8", "blobforge-client-metadata-v1");
+  }
 
   private async body(request: Request): Promise<Record<string, unknown>> {
     if (!(request.headers.get("content-type") || "").includes("application/json")) throw new Error("Expected application/json");

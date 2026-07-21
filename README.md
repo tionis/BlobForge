@@ -11,6 +11,7 @@ history.
 
 *   **Managed Coordination:** Bunny Database and Edge Scripting replace PostgreSQL, Redis, and message-broker infrastructure.
 *   **Management UI:** IndieAuth-protected queue, worker enrollment/revocation, retry, priority, cancellation, and runtime configuration controls.
+*   **Public Handbook:** CDN-cacheable landing page with worker installation, scheduling, operations, and runtime-policy guidance.
 *   **Portable Backups:** Admin-triggered, transaction-consistent Bunny Database exports are stored privately in S3 with checksums.
 *   **Web Library:** Upload PDFs, search paths/tags/sources, filter and page through every job state, download source/result files, and safely render completed GFM Markdown with its assets and a persistent document ToC.
 *   **Least-Privilege Workers:** Per-worker tokens and lease-bound presigned transfers remove bucket credentials from conversion hosts.

@@ -12,6 +12,7 @@
 ## Low Priority
 
 ## Done
+- [x] Add a public, CDN-cacheable Edge Script documentation landing page.
 - [x] Reduce coordinator heartbeat traffic with suspension-aware workers, dynamic intervals, and lease-only mode.
 - [x] Hide revoked workers from normal fleet views and expose them separately.
 - [x] Add CPU/CUDA worker images plus a no-clone Linux systemd installation workflow.

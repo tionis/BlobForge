@@ -25,10 +25,11 @@ Official platform references:
 - `bunny/src/app.ts`: HTTP API, IndieAuth, signed state/sessions, validation, and UI routes.
 - `bunny/src/object_store.ts`: WebCrypto AWS SigV4 presigning and output existence checks.
 - `bunny/src/management_ui.ts`: authenticated file library, worker management, ZIP preview, and persistent ToC behavior.
+- `bunny/src/docs_ui.ts`: public product guide, landing page, and static styles.
 - `bunny/src/markdown_runtime.ts`: Marked + DOMPurify browser rendering boundary.
 - `bunny/scripts/generate-markdown.mjs`: reproducibly embeds the self-hosted browser renderer in the Edge Script bundle.
 - `bunny/src/database.ts`: schema and atomic queue operations.
-- `bunny/src/ui.ts`: dependency-free management console.
+- `bunny/src/ui.ts`: dependency-free management console and login shell.
 - `blobforge/coordinator_client.py`: worker/ingestor HTTP client.
 - Bunny/S3: content-addressed raw PDFs and output ZIPs.
 
@@ -116,13 +117,39 @@ Alternatively, Bunny's repository integration can generate its deployment
 workflow after the project, build command, and entry file are selected in the
 dashboard. This avoids committing account-specific script identifiers.
 
+## Public documentation and CDN caching
+
+The Edge Script serves the public handbook at `/`, a polite-crawler policy at
+`/robots.txt`, IndieAuth metadata at `/client-metadata.json`, and versioned
+browser assets under `/static/`. These routes run before Bunny Database schema
+initialization, so a pull-zone cache miss does not create a database query.
+Unknown non-API routes also return before database initialization.
+
+Versioned CSS, JavaScript, and brand assets return all three cache directives:
+
+```text
+Cache-Control: public, max-age=31536000, immutable
+CDN-Cache-Control: public, max-age=31536000, immutable
+Surrogate-Control: max-age=31536000, immutable
+```
+
+The documentation HTML, robots policy, and origin-dependent IndieAuth metadata
+use five-minute browser freshness, one-day CDN/surrogate freshness, and stale
+revalidation. Every public response has an ETag. Asset filenames must be bumped
+when their contents change because immutable responses intentionally retain the
+old bytes for one year. The Bunny pull zone must honor origin cache headers.
+
+Login, console, authentication, API, and error responses retain private
+`no-store` directives and are never intentionally cached by the pull zone.
+
 ## Authentication and authorization
 
-The login page asks for an IndieAuth profile URL. A value without a protocol is
+The public root links to administrator authentication at `/login`; the private
+application shell remains at `/console`. The login page asks for an IndieAuth profile URL. A value without a protocol is
 normalized to `https://`; explicitly non-HTTPS profiles are rejected. Discovery
 only starts after the normalized URL matches `ADMIN_MES`.
 
-The form is converted by the local `/login.js` module into a top-level
+The form is converted by the versioned local `/static/login-v4.js` module into a top-level
 same-origin navigation before the external authorization redirect. This keeps
 the response's strict `form-action 'self'` CSP without browsers treating the
 IndieAuth authorization endpoint as a disallowed form destination.
@@ -146,8 +173,8 @@ This design makes the session readable to same-origin JavaScript, so the strict
 same-origin CSP, absence of third-party scripts, and short session lifetime are
 part of the security boundary. Signing out removes the browser copy; because
 sessions are stateless, a copied token remains valid until expiry or signing-key
-rotation. Authenticated and HTML responses send browser/CDN/surrogate no-store
-headers. `GET /auth/status` reports cookie and session-header presence plus
+rotation. Authenticated responses and private HTML shells send
+browser/CDN/surrogate no-store headers. `GET /auth/status` reports cookie and session-header presence plus
 signed-session validity without returning the token. A normal address-bar
 request does not include the application-managed session header.
 

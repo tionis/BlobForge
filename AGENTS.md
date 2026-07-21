@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-07-21:** The Bunny Edge Script root is a public static BlobForge
+  handbook; administrator login is `/login` and the private application shell is
+  `/console`. Public HTML, robots, IndieAuth metadata, and versioned `/static/`
+  assets are routed before database initialization and carry explicit browser,
+  CDN, surrogate, and ETag caching. Versioned assets are immutable for one year;
+  their path version must change with their bytes. Public documents use a short
+  browser TTL and one-day edge TTL. Auth, console, API, and error responses stay
+  private/no-store, and unknown non-API routes avoid database initialization.
 - **2026-07-21:** Coordinator worker traffic is transition- and lease-driven.
   Run eligibility uses a reusable condition contract; blocked workers publish
   one `suspended` state with reason/optional resume timestamp and send no

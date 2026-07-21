@@ -183,18 +183,71 @@ describe("Bunny BlobForge coordinator", () => {
       client_id: "https://blobforge.example/client-metadata.json",
       redirect_uris: ["https://blobforge.example/auth/callback"],
     });
+    expect(response.headers.get("cache-control")).toContain("public, max-age=300");
+    expect(response.headers.get("cdn-cache-control")).toContain("max-age=86400");
   });
 
-  it("shows a profile URL field and normalizes bare domains to HTTPS", async () => {
+  it("serves cacheable public documentation and a private administrator login", async () => {
+    const schema = vi.spyOn(database, "ensureSchema");
     const page = await app.fetch(new Request("https://blobforge.example/"));
     const body = await page.text();
-    expect(body).toContain('name="me"');
-    expect(body).toContain('src="/login.js?v=3"');
+    expect(schema).not.toHaveBeenCalled();
+    expect(body).toContain("Self-hosted document infrastructure");
+    expect(body).toContain("Bring a Linux machine online");
+    expect(body).toContain('href="/console"');
+    expect(body).toContain('href="/static/docs-v1.css"');
+    expect(page.headers.get("cache-control")).toContain("public, max-age=300");
+    expect(page.headers.get("cdn-cache-control")).toContain("max-age=86400");
+    expect(page.headers.get("surrogate-control")).toContain("max-age=86400");
+    expect(page.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(page.headers.get("vary")).toBeNull();
+
+    const revalidated = await app.fetch(new Request("https://blobforge.example/", {
+      headers: { "if-none-match": page.headers.get("etag")! },
+    }));
+    expect(revalidated.status).toBe(304);
+    expect(await revalidated.text()).toBe("");
+
+    for (const asset of [
+      ["/static/docs-v1.css", "text/css"],
+      ["/static/blobforge-v1.svg", "image/svg+xml"],
+      ["/static/app-v7.css", "text/css"],
+      ["/static/app-v7.js", "text/javascript"],
+      ["/static/markdown-v1.js", "text/javascript"],
+      ["/static/login-v4.js", "text/javascript"],
+    ]) {
+      const response = await app.fetch(new Request(`https://blobforge.example${asset[0]}`));
+      expect(response.headers.get("content-type")).toContain(asset[1]);
+      expect(response.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(response.headers.get("cdn-cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(response.headers.get("surrogate-control")).toBe("max-age=31536000, immutable");
+      expect(response.headers.get("etag")).toBeTruthy();
+    }
+
+    const robots = await app.fetch(new Request("https://blobforge.example/robots.txt"));
+    expect(await robots.text()).toContain("Disallow: /api/");
+    expect(robots.headers.get("cdn-cache-control")).toContain("max-age=86400");
+
+    const head = await app.fetch(new Request("https://blobforge.example/static/docs-v1.css", { method: "HEAD" }));
+    expect(head.status).toBe(200);
+    expect(await head.text()).toBe("");
+    expect(head.headers.get("cache-control")).toContain("immutable");
+
+    const missing = await app.fetch(new Request("https://blobforge.example/wp-login.php"));
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("cache-control")).toContain("no-store");
+    expect(schema).not.toHaveBeenCalled();
+
+    const loginPage = await app.fetch(new Request("https://blobforge.example/login"));
+    const loginBody = await loginPage.text();
+    expect(loginBody).toContain('name="me"');
+    expect(loginBody).toContain('src="/static/login-v4.js"');
+    expect(loginPage.headers.get("cache-control")).toContain("no-store");
     expect(normalizeProfileUrl("alice.example")).toBe("https://alice.example/");
     expect(() => normalizeProfileUrl("http://alice.example")).toThrow("must use HTTPS");
     expect(workerIdFromLabel("GPU Workstation #2")).toBe("gpu-workstation-2");
 
-    const loginScript = await app.fetch(new Request("https://blobforge.example/login.js"));
+    const loginScript = await app.fetch(new Request("https://blobforge.example/static/login-v4.js"));
     expect(loginScript.headers.get("content-type")).toContain("text/javascript");
     expect(await loginScript.text()).toContain("window.location.assign");
 
@@ -204,7 +257,8 @@ describe("Bunny BlobForge coordinator", () => {
     expect(consoleBody).toContain('id="viewer-toc"');
     expect(consoleBody).toContain('id="toc-toggle"');
     expect(consoleBody).toContain('id="failure-viewer"');
-    const appScript = await app.fetch(new Request("https://blobforge.example/app.js"));
+    expect(consolePage.headers.get("cache-control")).toContain("no-store");
+    const appScript = await app.fetch(new Request("https://blobforge.example/static/app-v7.js"));
     const appBody = await appScript.text();
     expect(() => new Function(appBody)).not.toThrow();
     expect(appBody).toContain("localStorage.setItem");
@@ -218,10 +272,11 @@ describe("Bunny BlobForge coordinator", () => {
     expect(appBody).toContain("renderToc");
     expect(appBody).toContain("showFailures");
     expect(appBody).not.toContain("markdownToHtml");
-    const markdownScript = await app.fetch(new Request("https://blobforge.example/markdown.js"));
+    expect(appBody).toContain("location.replace('/login')");
+    const markdownScript = await app.fetch(new Request("https://blobforge.example/static/markdown-v1.js"));
     expect(markdownScript.headers.get("content-type")).toContain("text/javascript");
     expect((await markdownScript.text()).length).toBeGreaterThan(10_000);
-    const stylesheet = await app.fetch(new Request("https://blobforge.example/app.css"));
+    const stylesheet = await app.fetch(new Request("https://blobforge.example/static/app-v7.css"));
     const css = await stylesheet.text();
     expect(css).toContain(".viewer-toc");
     expect(css).toContain(".viewer-toc.open");

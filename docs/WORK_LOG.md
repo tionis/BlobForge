@@ -1,5 +1,38 @@
 # Work Log
 
+## 2026-07-21 (Public documentation landing page)
+- **Objective:** Use the Edge Script root as a useful BlobForge landing/help
+  page while ensuring scraper and bot traffic is served from the Bunny pull-zone
+  cache instead of repeatedly executing database-backed application paths.
+- **Design:** Serve a static technical handbook at `/`, move administrator login
+  to `/login`, and keep the authenticated application at `/console`. Route the
+  landing page, robots policy, IndieAuth metadata, and content-addressed static
+  assets before database initialization. Give versioned CSS, JavaScript, and
+  brand assets one-year immutable browser/CDN/surrogate caching; cache the HTML,
+  robots policy, and origin-dependent metadata for one day at the CDN with short
+  browser freshness and stale revalidation. Preserve private no-store headers
+  for login, console, auth, and API responses.
+- **Implementation:** Added a responsive public handbook with product overview,
+  architecture flow, no-clone worker setup, schedules, service operations,
+  coordinator settings, security/recovery notes, and common questions. Added a
+  versioned brand asset and stylesheet, moved sign-in to `/login`, retained the
+  application at `/console`, redirected expired sessions to the new login route,
+  and published a robots policy that excludes private/API paths.
+- **Caching:** Static routes run before database initialization. Versioned assets
+  use one-year immutable browser/CDN/surrogate caching; public documents use a
+  five-minute browser TTL and one-day edge TTL with stale revalidation. ETags,
+  conditional 304 responses, HEAD handling, and database-free unknown-route
+  rejection are covered by tests. Private surfaces remain `no-store`.
+- **Validation:** Bunny TypeScript checking, all `14` tests, and the production
+  Edge build passed (328.4 KiB). The complete Python suite passed (`102 passed`,
+  one pre-existing datetime warning). Workflow YAML parsing and
+  `git diff --check` passed. No local Chromium/Playwright browser was available
+  for screenshot-based layout verification; responsive behavior is constrained
+  in CSS and structural/static-response behavior is covered in jsdom tests.
+- **Status:** Implementation, documentation, cache policy, and regression
+  verification are complete. Prepared as one focused repository commit at the
+  user's request.
+
 ## 2026-07-21 (Coordinator cost and worker distribution optimization)
 - **Objective:** Reduce idle Edge Script traffic, represent run-window suspension explicitly, make heartbeat policy live-configurable, separate revoked workers from the active fleet, and provide a practical no-clone Linux worker setup.
 - **Design:**
