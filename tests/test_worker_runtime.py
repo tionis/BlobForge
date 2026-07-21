@@ -9,11 +9,19 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from blobforge.worker import ScheduleWindowClosed, Worker, WorkerSchedule, run_worker_loop
+from blobforge.worker import (
+    HeartbeatThread,
+    RunConditionResult,
+    ScheduleWindowClosed,
+    Worker,
+    WorkerSchedule,
+    run_worker_loop,
+)
 
 
 class TestConversionTimeout(unittest.TestCase):
@@ -258,6 +266,66 @@ class TestWorkerSchedule(unittest.TestCase):
         with self.assertRaises(ValueError):
             WorkerSchedule.from_specs(["25:00-06:00"])
 
+    def test_schedule_exposes_modular_suspension_metadata(self):
+        schedule = WorkerSchedule(
+            [(22 * 3600, 23 * 3600)],
+            now_fn=lambda: datetime(2026, 1, 1, 12, 0),
+        )
+
+        result = schedule.evaluate()
+
+        self.assertFalse(result.allowed)
+        self.assertEqual(result.reason, "run_window")
+        self.assertEqual(result.retry_after_seconds, 10 * 3600)
+        self.assertEqual(result.resume_at, datetime(2026, 1, 1, 22, 0))
+
+
+class TestHeartbeatPolicy(unittest.TestCase):
+    def test_runtime_config_updates_interval_and_lease_only_mode(self):
+        heartbeat = HeartbeatThread(
+            None,
+            "worker-1",
+            MagicMock(),
+            runtime_config={
+                "heartbeat_enabled": False,
+                "heartbeat_interval": 120,
+                "lease_seconds": 600,
+            },
+        )
+
+        self.assertFalse(heartbeat._heartbeat_enabled)
+        self.assertEqual(heartbeat._heartbeat_interval, 120)
+        self.assertEqual(heartbeat._lease_seconds, 600)
+
+        heartbeat.apply_runtime_config({"heartbeat_enabled": True, "heartbeat_interval": 30})
+        self.assertTrue(heartbeat._heartbeat_enabled)
+        self.assertEqual(heartbeat._heartbeat_interval, 30)
+
+        heartbeat._publish_event.clear()
+        heartbeat.apply_runtime_config({"heartbeat_enabled": True, "heartbeat_interval": 30})
+        self.assertFalse(heartbeat._publish_event.is_set())
+
+        heartbeat.apply_runtime_config({"heartbeat_interval": 45})
+        self.assertTrue(heartbeat._publish_event.is_set())
+
+    def test_suspended_heartbeat_thread_publishes_nothing(self):
+        coordinator = MagicMock()
+        heartbeat = HeartbeatThread(
+            None,
+            "worker-1",
+            coordinator,
+            runtime_config={"heartbeat_enabled": True, "heartbeat_interval": 5},
+        )
+        heartbeat.set_suspended(True)
+        heartbeat.start()
+        heartbeat.set_job("a" * 64, lease_token="lease-1")
+        time.sleep(0.05)
+        heartbeat.stop()
+        heartbeat.join(timeout=1)
+
+        coordinator.heartbeat.assert_not_called()
+        coordinator.worker_heartbeat.assert_not_called()
+
 
 class TestScheduledWorkerRunLoop(unittest.TestCase):
     """Validate schedule-aware polling loop behavior."""
@@ -298,6 +366,10 @@ class TestScheduledWorkerRunLoop(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         sleep.assert_called_once_with(10 * 3600)
+        suspension = worker.suspend.call_args.args[0]
+        self.assertEqual(suspension.reason, "run_window")
+        self.assertEqual(suspension.resume_at, datetime(2026, 1, 1, 22, 0))
+        worker.resume.assert_called_once_with()
         worker.acquire_job.assert_called_once()
         worker.shutdown.assert_called_once_with(requeue_current_job=True)
 
@@ -317,6 +389,24 @@ class TestScheduledWorkerRunLoop(unittest.TestCase):
         self.assertEqual(rc, 0)
         worker.process.assert_called_once_with("job123", run_schedule=schedule)
         worker.shutdown.assert_called_once_with(requeue_current_job=False)
+
+    def test_additional_run_condition_can_suspend_without_a_schedule(self):
+        worker = MagicMock()
+        worker.id = "conditional"
+        condition = MagicMock()
+        condition.evaluate.return_value = RunConditionResult(
+            allowed=False,
+            reason="thermal_limit",
+            retry_after_seconds=60,
+        )
+
+        with patch("blobforge.worker._install_shutdown_handlers", return_value={}), \
+             patch("blobforge.worker._restore_shutdown_handlers"):
+            rc = run_worker_loop(worker, run_once=True, run_conditions=[condition])
+
+        self.assertEqual(rc, 0)
+        condition.evaluate.assert_called_once_with()
+        worker.acquire_job.assert_not_called()
 
 
 @unittest.skipUnless(hasattr(signal, "SIGTERM"), "SIGTERM unavailable on this platform")

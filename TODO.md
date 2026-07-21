@@ -12,6 +12,9 @@
 ## Low Priority
 
 ## Done
+- [x] Reduce coordinator heartbeat traffic with suspension-aware workers, dynamic intervals, and lease-only mode.
+- [x] Hide revoked workers from normal fleet views and expose them separately.
+- [x] Add CPU/CUDA worker images plus a no-clone Linux systemd installation workflow.
 - [x] Remediate the 33 Dependabot alerts with patched universal-lock constraints, Python 3.10+, conversion-tested Pillow override, and documented non-applicable Transformer/Torch advisories.
 - [x] Derive worker IDs directly from label slugs and reject duplicate/colliding enrollment labels.
 - [x] Make coordinator progress updates prompt and add persistent per-attempt failure diagnostics with a Web UI history viewer.

@@ -33,7 +33,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status,lease_expires_at)`,
   `CREATE TABLE IF NOT EXISTS job_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, attempt INTEGER NOT NULL, worker_id TEXT, failed_at INTEGER NOT NULL, error_message TEXT NOT NULL, traceback TEXT, context_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS job_failures_job_idx ON job_failures(file_hash,failed_at DESC,id DESC)`,
-  `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}')`,
+  `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', state_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE TABLE IF NOT EXISTS worker_credentials (worker_id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, revoked_at INTEGER, last_used_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS worker_credentials_token_idx ON worker_credentials(token_hash)`,
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
@@ -42,6 +42,7 @@ const SCHEMA = [
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
   max_retries: 3,
+  heartbeat_enabled: true,
   heartbeat_interval: 60,
   lease_seconds: 900,
   conversion_timeout: 3600,
@@ -98,6 +99,10 @@ export class CoordinatorDatabase {
       this.initialized = (async () => {
         await this.client.execute("PRAGMA foreign_keys=ON");
         await this.client.batch(SCHEMA.map((sql) => statement(sql)), "write");
+        const workerColumns = await this.client.execute("PRAGMA table_info(workers)");
+        if (!workerColumns.rows.some((row) => String(row.name) === "state_json")) {
+          await this.client.execute("ALTER TABLE workers ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'");
+        }
         const timestamp = Date.now();
         await this.client.batch(Object.entries(DEFAULT_CONFIG).map(([key, value]) => statement(
           "INSERT OR IGNORE INTO config(key,value_json,updated_at) VALUES(?,?,?)",
@@ -121,7 +126,9 @@ export class CoordinatorDatabase {
     const timestamp = Date.now();
     const statements: InStatement[] = [];
     for (const [key, value] of Object.entries(values)) {
-      if (!allowed.includes(key) || typeof value !== "number" || !Number.isFinite(value) || value < 0) continue;
+      const validBoolean = key === "heartbeat_enabled" && typeof value === "boolean";
+      const validNumber = key !== "heartbeat_enabled" && typeof value === "number" && Number.isFinite(value) && value >= 0;
+      if (!allowed.includes(key) || !validBoolean && !validNumber) continue;
       statements.push(statement(
         "INSERT INTO config(key,value_json,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at",
         [key, JSON.stringify(value), timestamp],
@@ -206,11 +213,12 @@ export class CoordinatorDatabase {
     return true;
   }
 
-  async listWorkerCredentials(): Promise<Record<string, unknown>[]> {
+  async listWorkerCredentials(revoked = false): Promise<Record<string, unknown>[]> {
     const result = await this.client.execute(statement(
       `SELECT c.worker_id,c.label,c.created_at,c.created_by,c.revoked_at,c.last_used_at,
-              w.hostname,w.status,w.current_job,w.last_heartbeat,w.registered_at
+              w.hostname,w.status,w.current_job,w.last_heartbeat,w.registered_at,w.state_json
        FROM worker_credentials c LEFT JOIN workers w ON w.worker_id=c.worker_id
+       WHERE c.revoked_at IS ${revoked ? "NOT NULL" : "NULL"}
        ORDER BY c.created_at DESC LIMIT 250`,
     ));
     return result.rows.map((row) => ({
@@ -218,26 +226,35 @@ export class CoordinatorDatabase {
       created_by: String(row.created_by), revoked_at: nullableNumber(row.revoked_at), last_used_at: nullableNumber(row.last_used_at),
       hostname: row.hostname === null ? null : String(row.hostname), status: row.status === null ? "never_connected" : String(row.status),
       current_job: row.current_job === null ? null : String(row.current_job), last_heartbeat: nullableNumber(row.last_heartbeat),
-      registered_at: nullableNumber(row.registered_at),
+      registered_at: nullableNumber(row.registered_at), state: JSON.parse(String(row.state_json || "{}")),
     }));
   }
 
   async registerWorker(body: Record<string, unknown>): Promise<void> {
     const timestamp = Date.now();
-    await this.client.execute(statement(`INSERT INTO workers(worker_id,hostname,status,current_job,last_heartbeat,registered_at,metadata_json,metrics_json) VALUES(?,?,'idle',NULL,?,?,?,'{}')
-      ON CONFLICT(worker_id) DO UPDATE SET hostname=excluded.hostname,status='idle',last_heartbeat=excluded.last_heartbeat,metadata_json=excluded.metadata_json`, [String(body.worker_id), String(body.hostname || body.worker_id), timestamp, timestamp, JSON.stringify(body)]));
+    await this.client.execute(statement(`INSERT INTO workers(worker_id,hostname,status,current_job,last_heartbeat,registered_at,metadata_json,metrics_json,state_json) VALUES(?,?,'idle',NULL,?,?,?,'{}','{}')
+      ON CONFLICT(worker_id) DO UPDATE SET hostname=excluded.hostname,status='idle',last_heartbeat=excluded.last_heartbeat,metadata_json=excluded.metadata_json,state_json='{}'`, [String(body.worker_id), String(body.hostname || body.worker_id), timestamp, timestamp, JSON.stringify(body)]));
   }
 
   async workerHeartbeat(body: Record<string, unknown>): Promise<boolean> {
     const result = await this.client.execute(statement(
-      "UPDATE workers SET status=?,current_job=?,last_heartbeat=?,metrics_json=? WHERE worker_id=?",
+      "UPDATE workers SET status=?,current_job=?,last_heartbeat=?,metrics_json=?,state_json='{}' WHERE worker_id=?",
       [body.current_job ? "processing" : "idle", body.current_job ? String(body.current_job) : null, Date.now(), JSON.stringify(body.metrics || {}), String(body.worker_id)],
     ));
     return result.rowsAffected > 0;
   }
 
+  async workerState(workerId: string, status: string, detail: unknown): Promise<boolean> {
+    if (!["idle", "suspended"].includes(status)) return false;
+    const result = await this.client.execute(statement(
+      "UPDATE workers SET status=?,current_job=NULL,state_json=? WHERE worker_id=? AND current_job IS NULL",
+      [status, JSON.stringify(detail || {}), workerId],
+    ));
+    return result.rowsAffected > 0;
+  }
+
   async deregisterWorker(workerId: string): Promise<void> {
-    await this.client.execute(statement("UPDATE workers SET status='stopped',current_job=NULL,last_heartbeat=? WHERE worker_id=?", [Date.now(), workerId]));
+    await this.client.execute(statement("UPDATE workers SET status='stopped',current_job=NULL,last_heartbeat=?,state_json='{}' WHERE worker_id=?", [Date.now(), workerId]));
   }
 
   async recoverExpiredLeases(): Promise<number> {
@@ -275,7 +292,7 @@ export class CoordinatorDatabase {
       ));
       return repeated.rows[0] ? jobFromRow(repeated.rows[0]) : null;
     }
-    await this.client.execute(statement("UPDATE workers SET status='processing',current_job=?,last_heartbeat=? WHERE worker_id=?", [String(result.rows[0].file_hash), timestamp, workerId]));
+    await this.client.execute(statement("UPDATE workers SET status='processing',current_job=?,last_heartbeat=?,state_json='{}' WHERE worker_id=?", [String(result.rows[0].file_hash), timestamp, workerId]));
     await this.audit(workerId, "claim", String(result.rows[0].file_hash), {});
     return this.getJob(String(result.rows[0].file_hash));
   }
@@ -364,7 +381,9 @@ export class CoordinatorDatabase {
       statement(includeJobs
         ? "SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash ORDER BY CASE j.status WHEN 'processing' THEN 1 WHEN 'dead' THEN 2 WHEN 'failed' THEN 3 WHEN 'todo' THEN 4 ELSE 5 END,j.updated_at DESC LIMIT 250"
         : "SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE 0"),
-      statement("SELECT * FROM workers ORDER BY last_heartbeat DESC LIMIT 250"),
+      statement(`SELECT w.* FROM workers w
+        JOIN worker_credentials c ON c.worker_id=w.worker_id AND c.revoked_at IS NULL
+        ORDER BY w.last_heartbeat DESC LIMIT 250`),
       statement("SELECT key,value_json FROM config"),
     ], "read");
     const counts = Object.fromEntries(results[0].rows.map((row) => [String(row.status), numeric(row.count)]));
@@ -377,6 +396,7 @@ export class CoordinatorDatabase {
       worker_id: String(row.worker_id), hostname: String(row.hostname), status: String(row.status),
       current_job: row.current_job === null ? null : String(row.current_job), last_heartbeat: numeric(row.last_heartbeat),
       registered_at: numeric(row.registered_at), metadata: JSON.parse(String(row.metadata_json || "{}")), metrics: JSON.parse(String(row.metrics_json || "{}")),
+      state: JSON.parse(String(row.state_json || "{}")),
     }));
     const config = Object.fromEntries(results[4].rows.map((row) => [String(row.key), JSON.parse(String(row.value_json))]));
     return { counts, priority, jobs, workers, config };

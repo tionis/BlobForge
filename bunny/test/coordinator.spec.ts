@@ -76,13 +76,14 @@ describe("Bunny BlobForge coordinator", () => {
     await expect(queued.json()).resolves.toMatchObject({ hash, status: "todo", priority: "2_high" });
 
     const claimed = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
-    const job = await claimed.json() as Record<string, unknown>;
+    const claimBody = await claimed.json() as { job: Record<string, unknown> };
+    const job = claimBody.job;
     expect(job).toMatchObject({ hash, status: "processing", worker_id: "worker-1" });
     expect(job.lease_token).toEqual(expect.any(String));
     expect(job).toMatchObject({ input: { url: `https://s3.example/raw/${hash}` }, output_exists: false, tags: ["books"] });
 
     const repeated = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
-    await expect(repeated.json()).resolves.toMatchObject({ hash, lease_token: job.lease_token });
+    await expect(repeated.json()).resolves.toMatchObject({ job: { hash, lease_token: job.lease_token } });
 
     expect((await call(`/api/v1/jobs/${hash}/heartbeat`, "POST", {
       worker_id: "worker-1", lease_token: job.lease_token, progress: { stage: "converting" },
@@ -99,6 +100,36 @@ describe("Bunny BlobForge coordinator", () => {
       worker_id: "worker-1", lease_token: job.lease_token, result: { output_key: `store/out/${hash}.zip` },
     })).status).toBe(200);
     await expect((await call(`/api/v1/jobs/${hash}`)).json()).resolves.toMatchObject({ status: "done", lease_token: null });
+
+  });
+
+  it("publishes suspension once and returns live heartbeat policy", async () => {
+    await database.updateConfig({ heartbeat_enabled: false, heartbeat_interval: 180 }, "test-admin");
+    await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "test" });
+    const before = await database.snapshot(false, false) as { workers: Record<string, unknown>[] };
+    const lastHeartbeat = before.workers[0]!.last_heartbeat;
+
+    const suspended = await call("/api/v1/workers/state", "POST", {
+      worker_id: "worker-1",
+      status: "suspended",
+      detail: { reason: "run_window", until: 1_800_000_000_000 },
+    });
+    await expect(suspended.json()).resolves.toMatchObject({
+      ok: true,
+      config: { heartbeat_enabled: false, heartbeat_interval: 180 },
+    });
+    const during = await database.snapshot(false, false) as { workers: Record<string, unknown>[] };
+    expect(during.workers[0]).toMatchObject({
+      status: "suspended",
+      last_heartbeat: lastHeartbeat,
+      state: { reason: "run_window", until: 1_800_000_000_000 },
+    });
+
+    const idleClaim = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
+    await expect(idleClaim.json()).resolves.toMatchObject({
+      job: null,
+      config: { heartbeat_enabled: false, heartbeat_interval: 180 },
+    });
   });
 
   it("recovers an expired lease lazily on the next claim", async () => {
@@ -114,7 +145,7 @@ describe("Bunny BlobForge coordinator", () => {
 
     const recovered = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-new" }, newHeaders);
     await expect(recovered.json()).resolves.toMatchObject({
-      hash, status: "processing", worker_id: "worker-new", retry_count: 1,
+      job: { hash, status: "processing", worker_id: "worker-new", retry_count: 1 },
     });
   });
 
@@ -122,7 +153,8 @@ describe("Bunny BlobForge coordinator", () => {
     const hash = "f".repeat(64);
     await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "test" });
     await call(`/api/v1/jobs/${hash}`, "PUT", { original_name: "broken.pdf", priority: "3_normal" });
-    const claimed = await (await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" })).json() as Record<string, unknown>;
+    const claimedBody = await (await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" })).json() as { job: Record<string, unknown> };
+    const claimed = claimedBody.job;
     await call(`/api/v1/jobs/${hash}/heartbeat`, "POST", {
       worker_id: "worker-1", lease_token: claimed.lease_token,
       progress: { stage: "converting", percent: 15, elapsed_seconds: 42 },
@@ -312,6 +344,13 @@ describe("Bunny BlobForge coordinator", () => {
       body: "{}",
     }));
     expect(revoked.status).toBe(200);
+    const activeWorkers = await app.fetch(new Request("https://blobforge.example/api/v1/admin/snapshot", { headers: authorizationHeader }));
+    const activeWorkerBody = await activeWorkers.json() as { worker_enrollments: Record<string, unknown>[] };
+    expect(activeWorkerBody.worker_enrollments.some((worker) => worker.worker_id === created.worker_id)).toBe(false);
+    const revokedWorkers = await app.fetch(new Request("https://blobforge.example/api/v1/admin/workers?revoked=true", { headers: authorizationHeader }));
+    await expect(revokedWorkers.json()).resolves.toMatchObject({
+      workers: [expect.objectContaining({ worker_id: created.worker_id, revoked_at: expect.any(Number) })],
+    });
     const deniedAfterRevoke = await app.fetch(new Request("https://blobforge.example/api/v1/workers/me", {
       headers: { authorization: `Bearer ${created.token}` },
     }));

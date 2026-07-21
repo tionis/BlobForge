@@ -38,6 +38,7 @@ class CoordinatorClient:
         self.base_url = (base_url if base_url is not None else os.getenv("BLOBFORGE_COORDINATOR_URL", "")).rstrip("/")
         self.token = token if token is not None else os.getenv("BLOBFORGE_COORDINATOR_TOKEN", "")
         self.timeout = timeout
+        self.runtime_config: Dict[str, Any] = {}
 
     @property
     def available(self) -> bool:
@@ -73,7 +74,10 @@ class CoordinatorClient:
                 if response.status == 204 or allow_empty and not response.length:
                     return None
                 payload = response.read()
-                return json.loads(payload.decode("utf-8")) if payload else None
+                result = json.loads(payload.decode("utf-8")) if payload else None
+                if isinstance(result, dict) and isinstance(result.get("config"), dict):
+                    self.runtime_config = dict(result["config"])
+                return result
         except urllib.error.HTTPError as exc:
             payload = exc.read().decode("utf-8", errors="replace")
             try:
@@ -127,10 +131,10 @@ class CoordinatorClient:
     def get_job(self, file_hash: str) -> Dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/{file_hash}") or {}
 
-    def register_worker(self, worker_id: str, metadata: Dict[str, Any]) -> None:
+    def register_worker(self, worker_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(metadata)
         payload.update({"worker_id": worker_id, "hostname": payload.get("hostname") or socket.gethostname()})
-        self._request("POST", "/api/v1/workers/register", payload)
+        return self._request("POST", "/api/v1/workers/register", payload) or {}
 
     def worker_heartbeat(
         self,
@@ -138,23 +142,40 @@ class CoordinatorClient:
         *,
         current_job: Optional[str],
         metrics: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self._request(
+    ) -> Dict[str, Any]:
+        return self._request(
             "POST",
             "/api/v1/workers/heartbeat",
             {"worker_id": worker_id, "current_job": current_job, "metrics": metrics or {}},
-        )
+        ) or {}
+
+    def worker_state(
+        self,
+        worker_id: str,
+        *,
+        status: str,
+        detail: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Publish a one-shot worker lifecycle state transition."""
+        return self._request(
+            "POST",
+            "/api/v1/workers/state",
+            {"worker_id": worker_id, "status": status, "detail": detail or {}},
+        ) or {}
 
     def deregister_worker(self, worker_id: str) -> None:
         self._request("POST", "/api/v1/workers/deregister", {"worker_id": worker_id})
 
     def claim_job(self, worker_id: str, priorities: Iterable[str]) -> Optional[Dict[str, Any]]:
-        return self._request(
+        payload = self._request(
             "POST",
             "/api/v1/jobs/claim",
             {"worker_id": worker_id, "priorities": list(priorities)},
-            allow_empty=True,
         )
+        if not isinstance(payload, dict) or "job" not in payload:
+            raise CoordinatorError("Coordinator returned an invalid claim response")
+        job = payload.get("job")
+        return job if isinstance(job, dict) else None
 
     def download_job_input(self, job: Dict[str, Any], local_path: str) -> None:
         """Download the claimed PDF through its coordinator-issued signed URL."""
@@ -222,8 +243,8 @@ class CoordinatorClient:
         lease_token: str,
         progress: Dict[str, Any],
         metrics: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self._request(
+    ) -> Dict[str, Any]:
+        return self._request(
             "POST",
             f"/api/v1/jobs/{file_hash}/heartbeat",
             {
@@ -232,7 +253,7 @@ class CoordinatorClient:
                 "progress": progress,
                 "metrics": metrics or {},
             },
-        )
+        ) or {}
 
     def complete(
         self,

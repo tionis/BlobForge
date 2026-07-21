@@ -292,10 +292,19 @@ export class BlobForgeApp {
     if (url.pathname === "/api/v1/workers/register" && request.method === "POST") {
       const body = await this.body(request);
       if (body.worker_id && body.worker_id !== workerId) return error("Worker token does not match worker_id", 403);
-      await this.db.registerWorker({ ...body, worker_id: workerId }); return json({ ok: true, worker_id: workerId });
+      await this.db.registerWorker({ ...body, worker_id: workerId });
+      return json({ ok: true, worker_id: workerId, config: await this.db.getConfig() });
     }
     if (url.pathname === "/api/v1/workers/heartbeat" && request.method === "POST") {
-      const body = await this.body(request); return json({ ok: await this.db.workerHeartbeat({ ...body, worker_id: workerId }) });
+      const body = await this.body(request);
+      return json({ ok: await this.db.workerHeartbeat({ ...body, worker_id: workerId }), config: await this.db.getConfig() });
+    }
+    if (url.pathname === "/api/v1/workers/state" && request.method === "POST") {
+      const body = await this.body(request);
+      const status = String(body.status || "");
+      if (!["idle", "suspended"].includes(status)) return error("Invalid worker state");
+      const ok = await this.db.workerState(workerId, status, body.detail);
+      return ok ? json({ ok: true, config: await this.db.getConfig() }) : error("Worker state conflicts with an active lease", 409);
     }
     if (url.pathname === "/api/v1/workers/deregister" && request.method === "POST") { await this.db.deregisterWorker(workerId); return json({ ok: true }); }
     if (url.pathname === "/api/v1/jobs/claim" && request.method === "POST") {
@@ -305,11 +314,12 @@ export class BlobForgeApp {
       if (!priorities.length) return error("No valid priorities");
       const runtime = await this.db.getConfig();
       const job = await this.db.claim(workerId, priorities, randomToken(), this.leaseSeconds(runtime));
-      if (!job) return new Response(null, { status: 204 });
+      if (!job) return json({ job: null, config: runtime });
       const [metadata, input, outputExists] = await Promise.all([
         this.db.getFileMetadata(job.file_hash), this.config.objectStore.download(job.file_hash), this.config.objectStore.outputExists(job.file_hash),
       ]);
-      return json({ ...jobJson(job), ...metadata, input: { url: input.url, expires_at: input.expiresAt }, output_exists: outputExists });
+      const claimed = { ...jobJson(job), ...metadata, input: { url: input.url, expires_at: input.expiresAt }, output_exists: outputExists };
+      return json({ job: claimed, config: runtime });
     }
     if (!jobMatch) return error("Not found", 404);
     const hash = jobMatch[1]!; const action = jobMatch[2];
@@ -323,8 +333,9 @@ export class BlobForgeApp {
       return json({ url: upload.url, method: "PUT", expires_at: upload.expiresAt, headers: { "content-type": "application/zip" } });
     }
     if (action === "heartbeat") {
-      const ok = await this.db.jobHeartbeat(hash, workerId, leaseToken, body.progress, body.metrics, this.leaseSeconds(await this.db.getConfig()));
-      return ok ? json({ ok: true }) : error("Lease is no longer valid", 409);
+      const runtime = await this.db.getConfig();
+      const ok = await this.db.jobHeartbeat(hash, workerId, leaseToken, body.progress, body.metrics, this.leaseSeconds(runtime));
+      return ok ? json({ ok: true, config: runtime }) : error("Lease is no longer valid", 409);
     }
     if (action === "complete") {
       const current = await this.db.getJob(hash);
@@ -353,6 +364,9 @@ export class BlobForgeApp {
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
     if (url.pathname === "/api/v1/admin/snapshot" && request.method === "GET") {
       return json({ ...await this.db.snapshot(false, false), worker_enrollments: await this.db.listWorkerCredentials(), identity: session.me });
+    }
+    if (url.pathname === "/api/v1/admin/workers" && request.method === "GET") {
+      return json({ workers: await this.db.listWorkerCredentials(url.searchParams.get("revoked") === "true") });
     }
     if (url.pathname === "/api/v1/admin/files" && request.method === "GET") {
       const status = url.searchParams.get("status") || undefined;
@@ -438,8 +452,12 @@ export class BlobForgeApp {
     }
     if (url.pathname === "/api/v1/admin/config" && request.method === "PUT") {
       const body = await this.body(request);
-      const allowed = new Set(["max_retries", "heartbeat_interval", "lease_seconds", "conversion_timeout"]);
-      for (const [key, value] of Object.entries(body)) if (!allowed.has(key) || typeof value !== "number" || !Number.isFinite(value) || value < 0) return error(`Invalid config value: ${key}`);
+      const numericKeys = new Set(["max_retries", "heartbeat_interval", "lease_seconds", "conversion_timeout"]);
+      for (const [key, value] of Object.entries(body)) {
+        const validBoolean = key === "heartbeat_enabled" && typeof value === "boolean";
+        const validNumber = numericKeys.has(key) && typeof value === "number" && Number.isFinite(value) && value >= 0;
+        if (!validBoolean && !validNumber) return error(`Invalid config value: ${key}`);
+      }
       return json(await this.db.updateConfig(body, session.me));
     }
     if (url.pathname === "/api/v1/admin/recover" && request.method === "POST") { const recovered = await this.db.recoverExpiredLeases(); await this.db.audit(session.me, "recover", null, { recovered }); return json({ recovered }); }

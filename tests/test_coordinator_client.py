@@ -1,7 +1,9 @@
 import json
 from unittest.mock import patch
 
-from blobforge.coordinator_client import CoordinatorClient
+import pytest
+
+from blobforge.coordinator_client import CoordinatorClient, CoordinatorError
 
 
 class FakeResponse:
@@ -39,10 +41,40 @@ class FakeBinaryResponse:
         return chunk
 
 
-def test_empty_claim_returns_none():
+def test_obsolete_empty_claim_response_is_rejected():
     client = CoordinatorClient("https://coord.example", "worker-secret")
     with patch("urllib.request.urlopen", return_value=FakeResponse(status=204)):
+        with pytest.raises(CoordinatorError, match="invalid claim response"):
+            client.claim_job("worker-1", ["3_normal"])
+
+
+def test_obsolete_direct_claim_response_is_rejected():
+    client = CoordinatorClient("https://coord.example", "worker-secret")
+    with patch("urllib.request.urlopen", return_value=FakeResponse({"hash": "a" * 64})):
+        with pytest.raises(CoordinatorError, match="invalid claim response"):
+            client.claim_job("worker-1", ["3_normal"])
+
+
+def test_claim_envelope_updates_runtime_config():
+    client = CoordinatorClient("https://coord.example", "worker-secret")
+    payload = {
+        "job": {"hash": "a" * 64, "lease_token": "lease-1"},
+        "config": {"heartbeat_enabled": False, "heartbeat_interval": 120},
+    }
+    with patch("urllib.request.urlopen", return_value=FakeResponse(payload)):
+        job = client.claim_job("worker-1", ["3_normal"])
+
+    assert job == payload["job"]
+    assert client.runtime_config == payload["config"]
+
+
+def test_empty_claim_envelope_still_updates_runtime_config():
+    client = CoordinatorClient("https://coord.example", "worker-secret")
+    payload = {"job": None, "config": {"heartbeat_enabled": True, "heartbeat_interval": 300}}
+    with patch("urllib.request.urlopen", return_value=FakeResponse(payload)):
         assert client.claim_job("worker-1", ["3_normal"]) is None
+
+    assert client.runtime_config == payload["config"]
 
 
 def test_worker_identity_comes_from_enrollment_token():

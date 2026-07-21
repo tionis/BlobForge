@@ -596,10 +596,11 @@ def cmd_workers(args):
         status = w.get('status', '?')
         last_hb = w.get('last_heartbeat', '?')
         current_job = w.get('current_job')
+        state_detail = w.get('state') or {}
         metrics = w.get('metrics', {})
         system = w.get('system', {})
         
-        status_icon = "🟢" if status == "active" or status == "processing" else "🔴" if status == "stopped" else "⚪"
+        status_icon = "🟢" if status in {"active", "processing", "idle"} else "🟠" if status == "suspended" else "🔴" if status == "stopped" else "⚪"
         
         # Get metrics
         jobs_completed = metrics.get('jobs_completed', 0)
@@ -621,6 +622,9 @@ def cmd_workers(args):
         
         if current_job:
             print(f"      Status: {status} - Processing: {current_job[:16]}...")
+        elif status == "suspended" and state_detail.get("until"):
+            until = datetime.fromtimestamp(float(state_detail["until"]) / 1000).astimezone()
+            print(f"      Status: suspended ({state_detail.get('reason', 'run condition')}, until {until.isoformat(timespec='minutes')})")
         else:
             print(f"      Status: {status}")
         

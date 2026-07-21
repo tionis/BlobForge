@@ -13,6 +13,15 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - flavor: cpu
+            suffix: ""
+            platforms: linux/amd64,linux/arm64
+          - flavor: cuda
+            suffix: -cuda
+            platforms: linux/amd64
     permissions:
       contents: read
       packages: write
@@ -41,10 +50,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=
-            type=ref,event=branch
-            type=ref,event=pr
+            type=raw,value=latest${{ matrix.suffix }},enable={{is_default_branch}}
+            type=sha,prefix=,suffix=${{ matrix.suffix }}
+            type=ref,event=branch,suffix=${{ matrix.suffix }}
+            type=ref,event=pr,suffix=${{ matrix.suffix }}
 
       - name: Build and push container image
         uses: docker/build-push-action@v6
@@ -54,6 +63,7 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
+          build-args: TORCH_FLAVOR=${{ matrix.flavor }}
+          cache-from: type=gha,scope=${{ matrix.flavor }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.flavor }}
+          platforms: ${{ matrix.platforms }}

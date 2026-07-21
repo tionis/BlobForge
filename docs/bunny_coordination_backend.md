@@ -163,6 +163,9 @@ heartbeat its own worker, claim one fenced lease, operate that lease, request
 its exact transfer URL, and read dashboard/config data. It cannot enqueue jobs,
 act as another worker, call admin routes, or forge admin sessions.
 Revocation requeues its active lease and marks the runtime worker stopped.
+Revoked credentials and runtime records are excluded from ordinary fleet
+snapshots. Administrators load them explicitly through the management
+console's **Revoked workers** view or `GET /api/v1/admin/workers?revoked=true`.
 
 ## Configure BlobForge clients
 
@@ -175,11 +178,18 @@ BLOBFORGE_COORDINATOR_TOKEN=<CLIENT_API_TOKEN value>
 
 Ingestors keep their existing `BLOBFORGE_S3_*` variables so they can write raw
 PDFs. Conversion workers do not need any `BLOBFORGE_S3_*` variable. Create a
-worker in the management UI and run the one-time command it displays:
+worker in the management UI and run the no-clone Linux installation command it
+displays:
 
 ```bash
-blobforge worker --coordinator-url https://blobforge.example --token bfw_...
+curl -fsSLO https://raw.githubusercontent.com/tionis/BlobForge/main/scripts/install-linux-worker.sh
+chmod +x install-linux-worker.sh
+./install-linux-worker.sh --coordinator-url https://blobforge.example --token bfw_...
 ```
+
+The installer pulls the published container and creates a user systemd service.
+See `docs/linux_worker_setup.md` for scheduling, GPU passthrough, upgrades,
+manual containers, and native `uv` installation.
 
 The same credential can read coordinator-backed terminal dashboards:
 
@@ -233,9 +243,19 @@ percentage. Marker/tqdm counters, rates, and ETA are included when available.
 Isolated conversions publish model-loading, conversion, extraction, and output
 writing checkpoints through an atomic JSON side channel monitored by the parent
 worker, so subprocess isolation does not make progress disappear.
-Changing stage wakes the heartbeat publisher immediately; noisy converter
-events are coalesced to one publication per two seconds, and the configured
-heartbeat interval remains the maximum quiet-period/liveness update. The Web UI
+Changing stage wakes the heartbeat publisher immediately when normal
+heartbeats are enabled; noisy converter events are coalesced to one publication
+per two seconds. An active job heartbeat renews its lease and updates the worker
+record in the same request. When `heartbeat_enabled` is false, idle and prompt
+progress heartbeats stop, but an active lease is renewed one-third of the way to
+expiry so a transient failed renewal still leaves recovery time.
+Register, claim, and heartbeat responses carry current runtime configuration,
+so a changed interval takes effect after the next existing coordinator request.
+Claims always return a `{ job, config }` envelope, including `job: null` for an
+empty queue. Coordinator and worker releases must therefore be deployed
+together; obsolete worker protocols are not supported.
+Workers blocked by a run condition publish one `suspended` transition with
+optional resume metadata and send no heartbeats until they resume. The Web UI
 refreshes active jobs every ten seconds and renders stage, percentage, worker,
 elapsed time, converter counters, and ETA.
 

@@ -23,8 +23,9 @@ import zipfile
 import tempfile
 import threading
 import logging
-from datetime import datetime
-from typing import Optional, Any, Dict, Callable
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Optional, Any, Dict, Callable, Protocol, Sequence
 
 # Optional psutil for system metrics
 try:
@@ -72,6 +73,41 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 class ScheduleWindowClosed(Exception):
     """Raised when a worker schedule boundary aborts an active conversion."""
+
+
+@dataclass(frozen=True)
+class RunConditionResult:
+    """Decision returned by a worker run condition."""
+
+    allowed: bool
+    reason: Optional[str] = None
+    resume_at: Optional[datetime] = None
+    retry_after_seconds: Optional[float] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def suspension_detail(self) -> Dict[str, Any]:
+        detail = {"reason": self.reason or "run_condition"}
+        if self.resume_at:
+            detail["until"] = int(self.resume_at.timestamp() * 1000)
+            detail["until_iso"] = self.resume_at.isoformat()
+        detail.update(self.metadata)
+        return detail
+
+
+class WorkerRunCondition(Protocol):
+    """Extensible condition that decides whether a worker may acquire work."""
+
+    def evaluate(self) -> RunConditionResult:
+        ...
+
+
+def evaluate_run_conditions(conditions: Sequence[WorkerRunCondition]) -> RunConditionResult:
+    """Return the first blocking condition, or an allowed result."""
+    for condition in conditions:
+        result = condition.evaluate()
+        if not result.allowed:
+            return result
+    return RunConditionResult(allowed=True)
 
 
 class WorkerSchedule:
@@ -143,6 +179,20 @@ class WorkerSchedule:
         """Return True when the worker is inside any configured run window."""
         second = self._second_of_day(at or self._now())
         return any(self._contains(second, start, end) for start, end in self.windows)
+
+    def evaluate(self) -> RunConditionResult:
+        """Evaluate the schedule through the generic run-condition contract."""
+        current = self._now()
+        if self.is_allowed(current):
+            return RunConditionResult(allowed=True)
+        wait_seconds = self.seconds_until_next_allowed(current)
+        return RunConditionResult(
+            allowed=False,
+            reason="run_window",
+            resume_at=current + timedelta(seconds=wait_seconds),
+            retry_after_seconds=wait_seconds,
+            metadata={"schedule": self.describe()},
+        )
 
     def seconds_until_next_allowed(self, at: Optional[datetime] = None) -> float:
         """Seconds until a run window opens. Returns 0 when already allowed."""
@@ -390,7 +440,8 @@ class HeartbeatThread(threading.Thread):
     """Background thread that periodically updates the heartbeat for active jobs."""
     
     def __init__(self, s3_client: Optional[S3Client], worker_id: str,
-                 coordinator: Optional[CoordinatorClient] = None):
+                 coordinator: Optional[CoordinatorClient] = None,
+                 runtime_config: Optional[Dict[str, Any]] = None):
         super().__init__(daemon=True)
         self.s3 = s3_client
         self.worker_id = worker_id
@@ -405,7 +456,13 @@ class HeartbeatThread(threading.Thread):
         self._stop_event = threading.Event()
         self._publish_event = threading.Event()
         self._lock = threading.Lock()
+        self._prompt_update = False
         self._tqdm_progress: Optional[dict] = None  # Latest tqdm progress
+        self._suspended = False
+        self._heartbeat_enabled = True
+        self._heartbeat_interval = max(5, get_heartbeat_interval())
+        self._lease_seconds = 900
+        self.apply_runtime_config(runtime_config or {})
         
         # Initialize CPU percent measurement
         if HAS_PSUTIL:
@@ -425,6 +482,7 @@ class HeartbeatThread(threading.Thread):
             self.lease_token = lease_token if lease_token is not None else (self.lease_token if same_job else None)
             if not same_job:
                 self._tqdm_progress = None  # Reset converter progress for a new job
+            self._prompt_update = bool(job_hash)
         self._publish_event.set()
     
     def update_progress(self, progress: dict):
@@ -434,12 +492,42 @@ class HeartbeatThread(threading.Thread):
                 self.progress.update(progress)
             else:
                 self.progress = progress
+            self._prompt_update = True
         self._publish_event.set()
     
     def update_tqdm_progress(self, tqdm_data: dict):
         """Update tqdm progress (called from tqdm hook)."""
         with self._lock:
             self._tqdm_progress = tqdm_data
+            self._prompt_update = True
+        self._publish_event.set()
+
+    def apply_runtime_config(self, config: Dict[str, Any]) -> None:
+        """Apply coordinator policy and wake the publisher to recalculate its deadline."""
+        if not config:
+            return
+        changed = False
+        with self._lock:
+            if "heartbeat_enabled" in config:
+                value = config["heartbeat_enabled"]
+                enabled = value if isinstance(value, bool) else str(value).lower() not in {"0", "false", "no", "off"}
+                changed = changed or enabled != self._heartbeat_enabled
+                self._heartbeat_enabled = enabled
+            if "heartbeat_interval" in config:
+                interval = max(5, _safe_int(config["heartbeat_interval"], 60))
+                changed = changed or interval != self._heartbeat_interval
+                self._heartbeat_interval = interval
+            if "lease_seconds" in config:
+                lease_seconds = max(60, _safe_int(config["lease_seconds"], 900))
+                changed = changed or lease_seconds != self._lease_seconds
+                self._lease_seconds = lease_seconds
+        if changed:
+            self._publish_event.set()
+
+    def set_suspended(self, suspended: bool) -> None:
+        """Pause or resume heartbeat publication without stopping the thread."""
+        with self._lock:
+            self._suspended = suspended
         self._publish_event.set()
     
     def stop(self):
@@ -503,34 +591,75 @@ class HeartbeatThread(threading.Thread):
     
     def run(self):
         """Main heartbeat loop."""
-        heartbeat_interval = get_heartbeat_interval()
-        last_publish = 0.0
+        last_publish = time.monotonic()
         while self.running:
-            self._publish_event.wait(timeout=heartbeat_interval)
+            with self._lock:
+                job = self.current_job
+                suspended = self._suspended
+                heartbeat_enabled = self._heartbeat_enabled
+                heartbeat_interval = self._heartbeat_interval
+                lease_seconds = self._lease_seconds
+
+            lease_interval = max(5.0, lease_seconds / 3.0)
+            if suspended or not job and not heartbeat_enabled:
+                wait_seconds = None
+            else:
+                publish_interval = (
+                    min(float(heartbeat_interval), lease_interval)
+                    if job and heartbeat_enabled
+                    else lease_interval if job else float(heartbeat_interval)
+                )
+                wait_seconds = max(0.0, publish_interval - (time.monotonic() - last_publish))
+
+            self._publish_event.wait(timeout=wait_seconds)
             self._publish_event.clear()
             if self._stop_event.is_set():
-                break
-
-            # Coalesce noisy converter updates while publishing stage changes
-            # promptly instead of waiting a full heartbeat interval.
-            delay = 2.0 - (time.monotonic() - last_publish)
-            if delay > 0 and self._stop_event.wait(timeout=delay):
                 break
             
             with self._lock:
                 job = self.current_job
                 lease_token = self.lease_token
+                suspended = self._suspended
+                heartbeat_enabled = self._heartbeat_enabled
+                heartbeat_interval = self._heartbeat_interval
+                lease_seconds = self._lease_seconds
+                prompt_update = self._prompt_update
+                self._prompt_update = False
                 progress_data = self._build_progress_data() if job else None
-            
+
+            if suspended:
+                continue
+
+            lease_interval = max(5.0, lease_seconds / 3.0)
+            publish_interval = (
+                min(float(heartbeat_interval), lease_interval)
+                if job and heartbeat_enabled
+                else lease_interval if job else float(heartbeat_interval)
+            )
+            elapsed = time.monotonic() - last_publish
+            prompt_job_update = bool(prompt_update and job and heartbeat_enabled)
+            if elapsed < publish_interval and not prompt_job_update:
+                continue
+
+            # Coalesce noisy converter updates while still publishing stage
+            # changes promptly when normal heartbeats are enabled.
+            if prompt_job_update:
+                delay = 2.0 - elapsed
+                if delay > 0 and self._stop_event.wait(timeout=delay):
+                    break
+
+            runtime_config: Dict[str, Any] = {}
             if job:
                 if self.coordinator:
                     try:
-                        self.coordinator.heartbeat(
+                        response = self.coordinator.heartbeat(
                             job,
                             worker_id=self.worker_id,
                             lease_token=lease_token or "",
                             progress=progress_data or {},
+                            metrics={"system": get_system_metrics()},
                         )
+                        runtime_config = response.get("config") or self.coordinator.runtime_config
                     except CoordinatorError as e:
                         logger.warning(f"Failed to update coordinator heartbeat for {job}: {e}")
                 else:
@@ -540,23 +669,26 @@ class HeartbeatThread(threading.Thread):
                     success = self.s3.update_heartbeat(job, self.worker_id, progress_data)
                     if not success:
                         logger.warning(f"Failed to update heartbeat for {job}")
-            
-            # Also update worker heartbeat with system metrics
-            if self.coordinator:
+
+            # A coordinator job heartbeat already renews the lease and updates
+            # the worker record, so only idle workers need this separate call.
+            if self.coordinator and not job and heartbeat_enabled:
                 try:
-                    self.coordinator.worker_heartbeat(
+                    response = self.coordinator.worker_heartbeat(
                         self.worker_id,
-                        current_job=job,
+                        current_job=None,
                         metrics={"system": get_system_metrics()},
                     )
+                    runtime_config = response.get("config") or self.coordinator.runtime_config
                 except CoordinatorError as e:
                     logger.warning(f"Failed to update coordinator worker heartbeat: {e}")
-            else:
+            elif not self.coordinator:
                 if not self.s3:
                     logger.error("Legacy worker registration requires an S3 client")
                     continue
                 self.s3.update_worker_heartbeat(current_job=job, system_metrics=get_system_metrics())
             last_publish = time.monotonic()
+            self.apply_runtime_config(runtime_config)
 
 
 class Worker:
@@ -595,6 +727,7 @@ class Worker:
         self.current_lease_token: Optional[str] = None
         self.current_retry_count = 0
         self.current_job_data: Optional[dict] = None
+        self._suspension_key: Optional[str] = None
         
         # Polling optimization state
         self._empty_poll_count = 0  # Track consecutive empty polls for backoff
@@ -610,8 +743,10 @@ class Worker:
         
         # Register worker in the authoritative coordinator (or legacy S3).
         logger.info(f"Registering worker {self.id}...")
+        runtime_config: Dict[str, Any] = {}
         if self.coordinator:
-            self.coordinator.register_worker(self.id, get_worker_metadata())
+            response = self.coordinator.register_worker(self.id, get_worker_metadata())
+            runtime_config = response.get("config") or self.coordinator.runtime_config
             logger.info("Using Bunny coordination backend with coordinator-issued blob transfer URLs.")
         else:
             if not self.s3:
@@ -619,7 +754,12 @@ class Worker:
             self.s3.register_worker()
         
         # Start heartbeat thread
-        self.heartbeat = HeartbeatThread(s3_client, self.id, self.coordinator)
+        self.heartbeat = HeartbeatThread(
+            s3_client,
+            self.id,
+            self.coordinator,
+            runtime_config=runtime_config,
+        )
         self.heartbeat.start()
         
         # Set up tqdm progress callback to route to heartbeat
@@ -717,6 +857,7 @@ class Worker:
         """
         if self.coordinator:
             job = self.coordinator.claim_job(self.id, PRIORITIES)
+            self.heartbeat.apply_runtime_config(self.coordinator.runtime_config)
             if not job:
                 self._empty_poll_count += 1
                 return None
@@ -811,6 +952,32 @@ class Worker:
         # No jobs found - track for backoff
         self._empty_poll_count += 1
         return None
+
+    def suspend(self, result: RunConditionResult) -> None:
+        """Enter a coordinator-visible suspended state once per condition state."""
+        detail = result.suspension_detail()
+        key = json.dumps(detail, sort_keys=True)
+        if key == self._suspension_key:
+            return
+        self.heartbeat.set_suspended(True)
+        if self.coordinator:
+            response = self.coordinator.worker_state(
+                self.id,
+                status="suspended",
+                detail=detail,
+            )
+            self.heartbeat.apply_runtime_config(response.get("config") or self.coordinator.runtime_config)
+        self._suspension_key = key
+
+    def resume(self) -> None:
+        """Leave a suspended run-condition state and resume normal publication."""
+        if self._suspension_key is None:
+            return
+        if self.coordinator:
+            response = self.coordinator.worker_state(self.id, status="idle", detail={})
+            self.heartbeat.apply_runtime_config(response.get("config") or self.coordinator.runtime_config)
+        self._suspension_key = None
+        self.heartbeat.set_suspended(False)
     
     def _is_priority_cached_empty(self, priority: str) -> bool:
         """Check if a priority queue is cached as empty."""
@@ -1122,14 +1289,10 @@ class Worker:
         self.current_priority = None
     
     def _update_worker_metrics(self):
-        """Update worker metrics in S3 registry."""
-        metrics = self.get_throughput_metrics()
+        """Update legacy metrics; coordinator completion/failure carries them."""
         if self.coordinator:
-            self.coordinator.worker_heartbeat(
-                self.id, current_job=self.current_job, metrics=metrics
-            )
-        else:
-            self.s3.update_worker_metrics(metrics)
+            return
+        self.s3.update_worker_metrics(self.get_throughput_metrics())
     
     def get_throughput_metrics(self) -> dict:
         """Get throughput metrics for this worker session."""
@@ -1534,7 +1697,8 @@ class Worker:
 
 def run_worker_loop(worker: Worker, run_once: bool = False,
                     idle_sleep: Optional[float] = None,
-                    run_schedule: Optional[WorkerSchedule] = None) -> int:
+                    run_schedule: Optional[WorkerSchedule] = None,
+                    run_conditions: Optional[Sequence[WorkerRunCondition]] = None) -> int:
     """
     Run the worker polling loop with graceful signal handling.
     
@@ -1543,6 +1707,7 @@ def run_worker_loop(worker: Worker, run_once: bool = False,
         run_once: Process at most one job
         idle_sleep: Fixed sleep when idle. If None, use adaptive backoff.
         run_schedule: Optional local-time run window policy.
+        run_conditions: Additional modular worker eligibility conditions.
     
     Returns:
         Process exit code
@@ -1550,6 +1715,9 @@ def run_worker_loop(worker: Worker, run_once: bool = False,
     logger.info(f"Worker {worker.id} started. Polling for jobs...")
     if run_schedule:
         logger.info(f"Worker schedule enabled: {run_schedule.describe()}")
+    conditions: list[WorkerRunCondition] = list(run_conditions or [])
+    if run_schedule:
+        conditions.insert(0, run_schedule)
     shutdown_requested = False
     shutdown_in_progress = False
     exit_code = 0
@@ -1567,19 +1735,24 @@ def run_worker_loop(worker: Worker, run_once: bool = False,
     
     try:
         while True:
-            if run_schedule and not run_schedule.is_allowed():
-                wait_seconds = run_schedule.seconds_until_next_allowed()
+            condition_result = evaluate_run_conditions(conditions)
+            if not condition_result.allowed:
+                wait_seconds = max(1.0, condition_result.retry_after_seconds or 3600.0)
                 if run_once:
                     logger.info(
-                        "Current time is outside worker run window; no job will be acquired in --run-once mode."
+                        "Worker run conditions currently prevent acquisition; no job will be acquired in --run-once mode."
                     )
                     break
+                worker.suspend(condition_result)
                 logger.info(
-                    f"Outside worker run window; sleeping for {wait_seconds:.1f}s "
-                    "until the next configured window opens."
+                    f"Worker suspended by {condition_result.reason or 'run condition'}; "
+                    f"sleeping for {wait_seconds:.1f}s."
                 )
-                time.sleep(max(1, wait_seconds))
+                time.sleep(wait_seconds)
                 continue
+
+            if conditions:
+                worker.resume()
 
             job = worker.acquire_job()
             if job:

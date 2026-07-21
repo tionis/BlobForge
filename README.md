@@ -62,24 +62,21 @@ s3://my-bucket/
 
 ## 📦 Installation
 
-### Option A: Docker/Podman (Recommended for Workers)
+### Option A: Managed Linux worker (Recommended)
 
-The container image includes all dependencies for PDF processing (`marker-pdf`, `ocr`, `torch`).
+The published CPU and CUDA containers include the Python environment and PDF
+conversion dependencies. A setup script installs the appropriate image as a
+user-level systemd service, keeps the enrollment token in a private environment
+file, and persists model caches.
 
 ```bash
-# Build the image (or pull from ghcr.io/tionis/blobforge:latest)
-podman build -t blobforge .
-
-# Create the worker in the management UI, then run its displayed command.
-podman run -d \
-  -v blobforge-cache:/root/.cache \
-  ghcr.io/tionis/blobforge:latest \
-  blobforge worker --coordinator-url https://blobforge.example --token bfw_...
+curl -fsSLO https://raw.githubusercontent.com/tionis/BlobForge/main/scripts/install-linux-worker.sh
+chmod +x install-linux-worker.sh
+./install-linux-worker.sh --coordinator-url https://blobforge.example --token bfw_...
 ```
 
-**Important notes:**
-- **Model Cache:** Mount `/root/.cache` as a volume to persist the ~3GB marker/torch models across container restarts. Without this, models are re-downloaded on every container start.
-- **Worker Identity:** Coordinator workers derive their stable identity from the UI-issued token.
+See [Linux worker setup](docs/linux_worker_setup.md) for run windows, GPU
+passthrough, service management, upgrades, and a native `uv` fallback.
 
 ### Option B: uv (Recommended for CLI)
 
@@ -204,6 +201,7 @@ after a retry.
 - The option may be repeated or comma-separated, for example `--run-window 06:00-08:00,22:00-23:30`.
 - Outside configured windows, workers stay idle and do not acquire new jobs.
 - Outside-window idle sleep lasts until the next configured opening window; workers do not poll every few seconds while waiting.
+- The coordinator records the worker as `suspended` with its condition and next eligible timestamp. Periodic heartbeats stop until it resumes.
 - By default, active jobs finish even if the window closes.
 - With `--abort-outside-window`, active conversion is interrupted at the window boundary, requeued, and unlocked.
 - `--abort-outside-window` automatically enables isolated conversion so the parent worker can kill the conversion child at the boundary.
@@ -338,17 +336,22 @@ These settings are stored in Bunny Database and edited in the management UI.
 | Setting | Default | Description |
 | :--- | :--- | :--- |
 | `max_retries` | `3` | Number of failures before moving to dead-letter queue |
+| `heartbeat_enabled` | `true` | Send idle and prompt progress heartbeats; active leases are still renewed when disabled |
 | `heartbeat_interval` | `60` | Seconds between heartbeat updates |
-| `stale_timeout_minutes` | `15` | Minutes without heartbeat before job is considered stale |
+| `lease_seconds` | `900` | Processing lease duration; lease-only mode renews one-third through this period |
 | `conversion_timeout` | `3600` | Seconds before conversion timeout (hard kill via signal timer when supported) |
 
 ```bash
 # View all remote config
 blobforge config --show
 
-# Update settings (takes effect within 1 hour on all workers)
-blobforge config --set max_retries=5 conversion_timeout=7200
+# Configuration is edited in the management console.
 ```
+
+Workers receive current configuration on registration, claims, and heartbeats.
+A heartbeat interval change therefore applies immediately after the next such
+request. Disabling normal heartbeats suppresses idle and prompt progress
+updates; an active worker still renews its lease one-third of the way to expiry.
 
 **Conversion timeout notes**
 - Hard timeout enforcement uses `SIGALRM` + `ITIMER_REAL` when available.

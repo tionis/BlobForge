@@ -38,6 +38,20 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-07-21:** Coordinator worker traffic is transition- and lease-driven.
+  Run eligibility uses a reusable condition contract; blocked workers publish
+  one `suspended` state with reason/optional resume timestamp and send no
+  periodic traffic until a one-shot resume. Runtime heartbeat configuration is
+  piggybacked on register, claim, and heartbeat responses, so interval changes
+  apply after the next request. Disabling normal heartbeats suppresses idle and
+  prompt progress updates while active jobs still renew at one-third of the
+  lease duration. Claims use a single `{ job, config }` response contract,
+  including `job: null` for empty queues; obsolete worker protocols are not
+  supported. Ordinary fleet queries exclude revoked credentials, which
+  have a separate admin endpoint/view. Linux workers use a no-clone systemd
+  installer and persistent cache; `latest` is multi-architecture CPU and
+  `latest-cuda` is amd64 CUDA because bundling CUDA made the default image 16.1
+  GB uncompressed versus 1.88 GB for the tested CPU image.
 - **2026-07-17:** Dependabot remediation raised the supported Python floor to 3.10 because Python 3.9 forced `marker-pdf 0.2.17` and vulnerable legacy resolutions. Patched floors are centralized in `[tool.uv].constraint-dependencies`; Pillow uses an explicit override because `marker-pdf 1.10.2`/`surya-ocr 0.17.1` cap it below the first safe release. A real `assets/lorem.pdf` conversion passed with Pillow 12.3. Transformers must remain on 4.57 because Surya imports removed v4-private APIs; its three alerts concern untrusted model initialization/Trainer paths BlobForge does not invoke. Torch remains at CUDA-compatible 2.10; the remaining unpatched `jit.script` alert is outside BlobForge's conversion path.
 - **2026-07-17:** UI-created worker IDs are the deterministic lowercase ASCII slug of their label (for example `GPU Workstation` becomes `gpu-workstation`); duplicate or slug-colliding labels return HTTP 409, including collisions with revoked enrollments. Enrollment tokens remain bound to exactly one worker ID. Any intentionally reusable bootstrap credential must be implemented separately as a dynamic-registration token that exchanges registration requests for distinct worker identities.
 - **2026-07-17:** Coordinator failure diagnostics are stored append-only in `job_failures`, one row per failed attempt, instead of only overwriting `jobs.error_message`. Records retain the worker, attempt, timestamp, traceback, context, and last coordinator progress snapshot. Worker stage changes wake the heartbeat publisher immediately (coalesced to at most one update every two seconds), while the normal heartbeat interval remains the liveness fallback. Isolated conversions report reliable coarse checkpoints through an atomic JSON file watched by the parent because the parent's in-process tqdm hook cannot observe child-process state.

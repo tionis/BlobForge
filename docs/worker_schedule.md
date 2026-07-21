@@ -22,6 +22,7 @@ Windows may cross midnight.
 
 - Outside the run window, the worker stays idle and does not acquire new jobs.
 - When outside all windows, the worker sleeps until the next configured window opens rather than polling periodically.
+- The worker publishes one `suspended` state transition with `reason: run_window` and the next eligible timestamp, then pauses periodic heartbeats until it resumes.
 - Inside the run window, normal polling and processing behavior applies.
 - With no extra flags, an already-running job is allowed to finish even if the window closes.
 - With `--abort-outside-window`, active conversion is interrupted when the window closes.
@@ -43,6 +44,7 @@ Normal conversion timeout still applies. In the default in-process mode it uses 
 ## Limitations
 
 - The schedule is local to the worker process; it is not stored in remote S3 config.
+- Run windows implement the generic worker run-condition contract so future thermal, power, or host-policy conditions can use the same suspend/resume path.
 - Isolated conversion reloads marker models per job, so it is more robust but slower than the default in-process model cache.
 - Non-conversion work such as final packaging may continue briefly past a window boundary.
 - Shutdown signals still interrupt the outside-window sleep and trigger normal graceful shutdown.

@@ -1,5 +1,36 @@
 # Work Log
 
+## 2026-07-21 (Coordinator cost and worker distribution optimization)
+- **Objective:** Reduce idle Edge Script traffic, represent run-window suspension explicitly, make heartbeat policy live-configurable, separate revoked workers from the active fleet, and provide a practical no-clone Linux worker setup.
+- **Design:**
+    1. Model run eligibility through reusable run-condition results carrying a reason and optional resume timestamp; run windows become the first condition implementation.
+    2. Publish suspension and resume only on state transitions, pause heartbeat publishing while suspended, and keep lease renewal independent from optional idle/progress heartbeats.
+    3. Piggyback runtime configuration on worker register, claim, and heartbeat responses so interval changes apply after the next existing coordinator request without adding config polling.
+    4. Let an active job heartbeat renew the lease and update worker state in one request; avoid a second worker-heartbeat request.
+    5. Exclude revoked credentials/runtime records from ordinary snapshots and load revoked enrollments only through an explicit admin view.
+    6. Use the existing GHCR container publication as the Linux distribution boundary, backed by a systemd installer that stores credentials in a private environment file and persists the model cache.
+- **Implementation:** Added modular run-condition decisions and one-shot
+  suspended/idle transitions, paused all suspended heartbeat traffic, folded
+  active worker updates into lease renewal, added live response-piggybacked
+  heartbeat policy, and exposed a boolean lease-only mode. Bunny Database now
+  stores suspension detail and excludes revoked credentials from ordinary fleet
+  snapshots; the console loads revoked workers only in its explicit dialog.
+  Added a systemd user-service installer, persistent model cache, CPU-default
+  multi-architecture image, and separate amd64 CUDA image selected by `--gpu`.
+- **Compatibility decision:** All workers are stopped for this rollout, so the
+  coordinator and workers use one claim contract with no protocol negotiation:
+  `{ job, config }`, including `job: null` for an empty queue. The Python client
+  rejects obsolete HTTP 204 and direct-job claim responses.
+- **Validation:** Complete Python suite passed (`102 passed`, one pre-existing
+  datetime warning); Ruff passed on changed Python runtime/tests. Bunny type
+  checking, all `14` tests, and production build passed. Installer syntax/help
+  checks passed. Local Podman builds and CLI probes passed; the final amd64 CPU
+  image imports `torch 2.10.0+cpu`, retains `filelock 3.30.2`, reports no CUDA,
+  and is 1.88 GB uncompressed versus 16.1 GB for the CUDA image.
+- **Status:** Implementation, documentation, distribution setup, and regression
+  verification are complete. Prepared as one focused repository commit at the
+  user's request.
+
 ## 2026-07-16 (Least-privilege worker enrollment and transfers)
 - **Objective:** Remove bucket credentials from conversion workers, move terminal worker views to the coordinator, and add UI-managed per-worker enrollment.
 - **Design:**
