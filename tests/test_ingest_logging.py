@@ -11,14 +11,13 @@ def test_ingest_logging():
         f.write(content)
     
     try:
-        # Mock S3Client to avoid network calls
-        with patch('blobforge.ingestor.S3Client') as MockS3Client, \
-             patch('blobforge.ingestor.CoordinatorClient') as MockCoordinatorClient:
-            mock_s3 = MockS3Client.return_value
-            mock_s3.exists.return_value = False
+        # Mock CoordinatorClient to avoid network calls
+        with patch('blobforge.ingestor.CoordinatorClient') as MockCoordinatorClient:
             coordinator = MockCoordinatorClient.return_value
             coordinator.available = True
+            coordinator.raw_upload_url.return_value = {"url": "https://s3.example/raw", "already_exists": False, "headers": {}}
             coordinator.enqueue.return_value = {'status': 'todo', 'priority': '3_normal'}
+            coordinator.get_job.return_value = {}
             
             # Capture stdout
             captured_output = io.StringIO()

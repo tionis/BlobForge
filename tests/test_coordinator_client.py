@@ -124,3 +124,54 @@ def test_input_download_streams_signed_url_to_disk(tmp_path):
 
     assert target.read_bytes() == b"%PDF signed content"
     assert opened.call_args.args[0].full_url == "https://s3.example/raw.pdf?signed=yes"
+
+
+def test_bulk_status_uses_single_request_and_dedupes_hashes():
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    payload = {"results": {"a" * 64: {"status": "done", "original_name": "book.pdf", "size_bytes": 123}}}
+    with patch("urllib.request.urlopen", return_value=FakeResponse(payload)) as opened:
+        results = client.check_statuses(["a" * 64, "a" * 64, "b" * 64])
+
+    assert results == payload["results"]
+    request = opened.call_args.args[0]
+    assert request.full_url == "https://coord.example/api/v1/jobs/status"
+    assert json.loads(request.data)["hashes"] == ["a" * 64, "b" * 64]
+
+
+def test_bulk_status_returns_empty_for_no_hashes():
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    assert client.check_statuses([]) == {}
+
+
+def test_output_download_streams_signed_url_to_disk(tmp_path):
+    target = tmp_path / "result.zip"
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    response = FakeResponse({"url": "https://s3.example/done.zip?signed=yes"})
+
+    with patch("urllib.request.urlopen", side_effect=[response, FakeBinaryResponse(b"zip payload")]) as opened:
+        client.download_output("a" * 64, str(target))
+
+    assert target.read_bytes() == b"zip payload"
+    assert opened.call_args.args[0].full_url == "https://s3.example/done.zip?signed=yes"
+
+
+def test_raw_upload_streams_to_signed_url_with_headers(tmp_path):
+    pdf = tmp_path / "book.pdf"
+    pdf.write_bytes(b"%PDF upload")
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    response = FakeResponse({
+        "url": "https://s3.example/raw/abc.pdf?signed=yes",
+        "already_exists": False,
+        "headers": {"content-type": "application/pdf"},
+    })
+
+    with patch("urllib.request.urlopen", return_value=response) as opened, patch.object(client, "_stream_put") as streamed:
+        client.upload_raw("a" * 64, str(pdf))
+
+    request = opened.call_args.args[0]
+    assert request.full_url == f"https://coord.example/api/v1/jobs/{'a' * 64}/raw-upload-url"
+    streamed.assert_called_once_with(
+        "https://s3.example/raw/abc.pdf?signed=yes",
+        str(pdf),
+        {"content-type": "application/pdf"},
+    )

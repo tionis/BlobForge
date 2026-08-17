@@ -54,7 +54,7 @@ def test_hydrate_materializes_markdown_and_assets(tmp_path):
     )
     s3 = FakeS3({file_hash: archive_data})
 
-    result = hydrate([str(tmp_path)], s3=s3)
+    result = hydrate([str(tmp_path)], client=s3)
     assert result == 0
 
     markdown_path = tmp_path / "rules.md"
@@ -75,7 +75,7 @@ def test_hydrate_skips_when_markdown_exists_without_force(tmp_path):
     markdown_path.write_text("already here\n", encoding="utf-8")
 
     s3 = FakeS3({})
-    result = hydrate([str(tmp_path)], s3=s3, force=False)
+    result = hydrate([str(tmp_path)], client=s3, force=False)
 
     assert result == 0
     assert markdown_path.read_text(encoding="utf-8") == "already here\n"
@@ -97,7 +97,7 @@ def test_hydrate_downloads_once_for_duplicate_hashes(tmp_path):
     )
     s3 = FakeS3({shared_hash: archive_data})
 
-    result = hydrate([str(tmp_path)], s3=s3)
+    result = hydrate([str(tmp_path)], client=s3)
     assert result == 0
 
     assert len(s3.download_calls) == 1
@@ -124,7 +124,7 @@ def test_hydrate_checks_each_unique_hash_for_completed_output(tmp_path):
     )
     s3 = FakeS3({known_hash: archive_data})
 
-    result = hydrate([str(tmp_path)], s3=s3)
+    result = hydrate([str(tmp_path)], client=s3)
     assert result == 0
 
     assert len(s3.exists_calls) == 2
@@ -133,3 +133,46 @@ def test_hydrate_checks_each_unique_hash_for_completed_output(tmp_path):
 
     assert (tmp_path / "known.md").exists()
     assert not (tmp_path / "unknown.md").exists()
+
+
+class FakeCoordinator:
+    def __init__(self, statuses_by_hash, archives_by_hash):
+        self.statuses_by_hash = statuses_by_hash
+        self.archives_by_hash = archives_by_hash
+        self.status_calls = 0
+        self.download_calls = []
+
+    def check_statuses(self, hashes):
+        self.status_calls += 1
+        return {file_hash: {"status": self.statuses_by_hash.get(file_hash, "todo")} for file_hash in hashes}
+
+    def download_output(self, file_hash, local_path):
+        self.download_calls.append(file_hash)
+        with open(local_path, "wb") as handle:
+            handle.write(self.archives_by_hash[file_hash])
+
+
+def test_hydrate_uses_coordinator_bulk_status(tmp_path):
+    pdf_done = tmp_path / "done.pdf"
+    pdf_todo = tmp_path / "pending.pdf"
+    _write_pdf(pdf_done, b"%PDF-1.4\ndone\n%%EOF\n")
+    _write_pdf(pdf_todo, b"%PDF-1.4\npending\n%%EOF\n")
+
+    done_hash = compute_sha256_with_cache(str(pdf_done))
+    todo_hash = compute_sha256_with_cache(str(pdf_todo))
+
+    archive_data = _build_conversion_zip(
+        markdown_text="![img](assets/image.png)\n",
+        assets={"image.png": b"coordinator-image"},
+    )
+    coordinator = FakeCoordinator({done_hash: "done", todo_hash: "todo"}, {done_hash: archive_data})
+
+    result = hydrate([str(tmp_path)], client=coordinator)
+    assert result == 0
+
+    assert coordinator.status_calls == 1
+    assert coordinator.download_calls == [done_hash]
+
+    assert (tmp_path / "done.md").exists()
+    assert not (tmp_path / "pending.md").exists()
+    assert (tmp_path / "done.assets" / "image.png").read_bytes() == b"coordinator-image"
