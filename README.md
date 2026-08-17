@@ -32,8 +32,10 @@ The current architecture and deployment/cutover guide are documented in
 [docs/bunny_coordination_backend.md](docs/bunny_coordination_backend.md).
 
 Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` to use it.
-Trusted ingestors use the deployment's client token. Conversion workers use a
-per-worker token created in the management UI.
+Admin tokens created in the management UI authorize `ingest` and `hydrate` from
+operator hosts; conversion workers use a per-worker token created in the
+management UI. No S3 credentials are required on any client: raw uploads,
+result downloads, and hydration all use coordinator-issued signed URLs.
 
 Worker labels become stable IDs by slugging them (`GPU Workstation` becomes
 `gpu-workstation`). Duplicate or slug-colliding labels are rejected. A worker
@@ -119,9 +121,8 @@ Ingests **PDF files only** (`.pdf` extension) and queues them for processing. Ac
 3. For each PDF, determines the file hash:
    - **Git LFS pointer files**: Extracts the SHA256 from the pointer (no download needed)
    - **Regular PDF files**: Validates the `%PDF` header, then computes SHA256
-4. Checks if the file is already processed, queued, or failed (prevents duplicates)
-5. Uploads the raw PDF to S3 (if not already present)
-6. Creates a job in the todo queue
+4. Requests a signed raw-object upload URL from the coordinator (upload only if not already present)
+5. Creates a job in the coordinator's todo queue
 
 **Git LFS Support:**
 - If the path is inside a Git repo with LFS, pointer files are detected automatically
@@ -280,6 +281,9 @@ blobforge convert document.pdf --output ./results/
 
 Materialize converted markdown/assets next to local PDFs by matching on file hash.
 This is useful when conversions already exist in BlobForge and you want local `.md` files.
+Requires `BLOBFORGE_COORDINATOR_URL` / `BLOBFORGE_COORDINATOR_TOKEN` (an admin
+token); availability is checked in one bulk request and archives stream through
+signed URLs.
 
 Outputs per PDF:
 - `<stem>.md`
@@ -327,7 +331,7 @@ coordinator URL and their enrolled token.
 | `BLOBFORGE_S3_SECRET_ACCESS_KEY` | - | S3 secret key (overrides AWS_SECRET_ACCESS_KEY) |
 | `BLOBFORGE_S3_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
 | `BLOBFORGE_COORDINATOR_URL` | - | Bunny coordinator base URL |
-| `BLOBFORGE_COORDINATOR_TOKEN` | - | Client token for ingestion/CLI or a UI-issued `bfw_...` worker token |
+| `BLOBFORGE_COORDINATOR_TOKEN` | - | Admin token (`bfa_...`) for ingest/hydrate/CLI, `CLIENT_API_TOKEN` for service accounts, or a UI-issued `bfw_...` worker token |
 | `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Remote Configuration

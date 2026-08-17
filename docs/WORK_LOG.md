@@ -1,5 +1,35 @@
 # Work Log
 
+## 2026-08-18 (Revocable admin tokens and coordinator-driven hydration)
+- **Objective:** Let operators create per-person admin tokens for `ingest` and
+  `hydrate`, replace the S3 done-hash index with an optimized bulk status API,
+  and remove direct S3 access from all client-side commands.
+- **Design:** Admins mint `bfa_...` tokens in the management console. They are
+  stored as SHA-256 hashes, shown once, bound to one token ID, revocable, and
+  accepted by `workerApi` for job enqueue/read, bulk status, and signed
+  raw-upload/output-download URLs. `POST /api/v1/jobs/status` resolves up to
+  5,000 hashes per request via a jobs/files join. `blobforge hydrate` uses the
+  bulk call as its single remote preflight and streams archives through signed
+  GET URLs; `blobforge ingest` uploads raw PDFs through signed PUT URLs;
+  `download`/`preview` stream through signed GET URLs. S3 done-index/per-hash
+  checks remain only as no-coordinator fallbacks.
+- **Implementation:** Added `admin_credentials` to the coordinator schema with
+  create/authenticate/list/revoke methods, admin-token identity in `workerApi`,
+  the `jobs/status`, `raw-upload-url`, and `download-url` endpoints, admin token
+  management UI and routes, `getJobStatuses` batch join (400-hash chunks), and
+  backup table inclusion. Python: added
+  `check_statuses`/`output_download_url`/`raw_upload_url`/`upload_raw`/
+  `download_output` to `CoordinatorClient`; reworked `hydrator.py`, `ingestor.py`,
+  and `cmd_download`/`cmd_preview`/`cmd_ingest`/`cmd_hydrate` to coordinator
+  transfers; added `--coordinator-url`/`--token` flags to ingest/hydrate/
+  download/preview. Updated CLI docs, README, coordination backend design, and
+  hydrate design.
+- **Validation:** Bunny `npm run check` and all `15` coordinator tests pass
+  (new admin-token lifecycle test covers create/list/revoke, bulk status, signed
+  URLs, and revocation denial). Python suite passes (`107 passed`, one
+  pre-existing datetime warning), including new hydrator coordinator-path and
+  coordinator-client tests and the reworked ingest logging test.
+
 ## 2026-07-21 (Public documentation landing page)
 - **Objective:** Use the Edge Script root as a useful BlobForge landing/help
   page while ensuring scraper and bot traffic is served from the Bunny pull-zone

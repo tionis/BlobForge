@@ -12,6 +12,7 @@
 ## Low Priority
 
 ## Done
+- [x] Add revocable per-operator admin tokens and an optimized bulk job-status API so `ingest`/`hydrate`/`download`/`preview` need no direct S3 credentials.
 - [x] Add a public, CDN-cacheable Edge Script documentation landing page.
 - [x] Reduce coordinator heartbeat traffic with suspension-aware workers, dynamic intervals, and lease-only mode.
 - [x] Hide revoked workers from normal fleet views and expose them separately.

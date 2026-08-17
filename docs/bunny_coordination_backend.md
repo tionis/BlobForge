@@ -194,19 +194,32 @@ Revoked credentials and runtime records are excluded from ordinary fleet
 snapshots. Administrators load them explicitly through the management
 console's **Revoked workers** view or `GET /api/v1/admin/workers?revoked=true`.
 
+Admin tokens are client-scoped credentials for command-line ingestion,
+hydration, and result downloads. They are created in the management UI
+(**Admin tokens**) or `POST /api/v1/admin/tokens`, returned only once as
+`bfa_...`, stored only as a SHA-256 hash, and immediately rejected after
+revocation. An admin token can enqueue and read jobs, run the optimized bulk
+status check, and request signed raw-upload and output-download URLs, but it
+cannot operate worker leases or call admin routes. Admin tokens use the same
+`Authorization: Bearer` header as worker and client credentials, so clients
+that previously used `CLIENT_API_TOKEN` can switch to a revocable per-operator
+admin token without code changes.
+
 ## Configure BlobForge clients
 
-Trusted ingestors and administrative CLI hosts use:
+Trusted ingestors, hydration hosts, and administrative CLI reads use:
 
 ```bash
 BLOBFORGE_COORDINATOR_URL=https://blobforge.example
-BLOBFORGE_COORDINATOR_TOKEN=<CLIENT_API_TOKEN value>
+BLOBFORGE_COORDINATOR_TOKEN=<admin token or CLIENT_API_TOKEN value>
 ```
 
-Ingestors keep their existing `BLOBFORGE_S3_*` variables so they can write raw
-PDFs. Conversion workers do not need any `BLOBFORGE_S3_*` variable. Create a
-worker in the management UI and run the no-clone Linux installation command it
-displays:
+Ingestors and hydration hosts no longer need any `BLOBFORGE_S3_*` variables:
+raw PDFs are written and result archives are read through coordinator-issued
+pre-signed URLs. Create an admin token in the management UI for each operator
+host, or reuse `CLIENT_API_TOKEN` for trusted service accounts. Conversion
+workers need only the displayed enrollment token. Create a worker in the
+management UI and run the no-clone Linux installation command it displays:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/tionis/BlobForge/main/scripts/install-linux-worker.sh
@@ -328,6 +341,26 @@ uv run blobforge cleanup-legacy --execute
 The destructive form requires typing `DELETE`; automation can add `--yes`.
 Only `{S3_PREFIX}queue/` and `{S3_PREFIX}registry/` are touched. Raw PDFs,
 converted outputs, and database backups remain intact.
+
+## Client ingestion and hydration API
+
+`blobforge ingest` and `blobforge hydrate` authenticate with an admin token
+(or `CLIENT_API_TOKEN`) and never touch the object store directly; every
+transfer goes through coordinator-issued signed URLs.
+
+- `POST /api/v1/jobs/status` with `{ "hashes": [...] }` returns completion
+  status, original filename, and size per hash in one request. Hydration uses
+  this as its bulk preflight, replacing per-hash existence checks (or the old
+  done-hash index scan) and making hydration efficient at any scale.
+- `POST /api/v1/jobs/{hash}/download-url` returns a short-lived signed GET URL
+  for a completed result archive; `blobforge download`, `blobforge preview`,
+  and hydration stream from it.
+- `POST /api/v1/jobs/{hash}/raw-upload-url` returns a signed PUT URL and
+  `already_exists`; `blobforge ingest` uploads raw PDFs through it instead of
+  holding S3 credentials.
+- `GET/POST /api/v1/jobs/{hash}` accept admin tokens in addition to
+  `CLIENT_API_TOKEN`, so operators can enqueue and query jobs with a revocable
+  per-person credential.
 
 ## Web library, uploads, and result preview
 

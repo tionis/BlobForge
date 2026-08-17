@@ -14,12 +14,21 @@ Given one or more input paths (PDF files and/or directories), the command:
    - Skips files where `<stem>.md` already exists unless `--force` is set.
    - Computes SHA256 using the existing xattr-aware hash path (`compute_sha256_with_cache`).
 3. Runs remote preflight:
-   - Resolves done availability per unique local hash.
-   - For large candidate sets, uses a done-hash index scan to avoid one-by-one HEAD checks.
-4. When conversion output exists, downloads `<hash>.zip` (deduplicated per hash during one run).
+   - Sends all unique local hashes to the coordinator in one `POST
+     /api/v1/jobs/status` bulk request and resolves which have completed
+     conversions, regardless of candidate count.
+   - If a coordinator is not configured, falls back to the legacy S3 done-hash
+     index scan or per-hash existence checks.
+4. When conversion output exists, downloads `<hash>.zip` through a
+   coordinator-issued signed URL (deduplicated per hash during one run).
 5. Writes:
    - `<stem>.md`
    - `<stem>.assets/` (sibling directory)
+
+The command requires `BLOBFORGE_COORDINATOR_URL` and
+`BLOBFORGE_COORDINATOR_TOKEN` (an admin token created in the management UI) or
+the equivalent `--coordinator-url` / `--token` flags. No S3 credentials are
+needed.
 
 ## Asset Path Rewriting
 
