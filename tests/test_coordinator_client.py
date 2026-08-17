@@ -143,6 +143,30 @@ def test_bulk_status_returns_empty_for_no_hashes():
     assert client.check_statuses([]) == {}
 
 
+def test_bulk_status_chunks_hashes_to_server_limit_and_reports_progress():
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    first = {f"a{i:063d}": {"status": "done", "original_name": "book.pdf", "size_bytes": 1} for i in range(5000)}
+    second = {"b" * 64: {"status": "todo", "original_name": "other.pdf", "size_bytes": 2}}
+    calls = {"count": 0}
+
+    def urlopen(request, *_args, **_kwargs):
+        calls["count"] += 1
+        payload = json.loads(request.data)
+        hashes = payload["hashes"]
+        if calls["count"] == 1:
+            return FakeResponse({"results": {h: first[h] for h in hashes}})
+        return FakeResponse({"results": {h: second[h] for h in hashes}})
+
+    progress = []
+    with patch("urllib.request.urlopen", side_effect=urlopen):
+        results = client.check_statuses([*first.keys(), "b" * 64], progress=lambda checked, total: progress.append((checked, total)))
+
+    assert calls["count"] == 2
+    assert progress == [(5000, 5001), (5001, 5001)]
+    assert len(results) == 5001
+    assert results["b" * 64]["status"] == "todo"
+
+
 def test_output_download_streams_signed_url_to_disk(tmp_path):
     target = tmp_path / "result.zip"
     client = CoordinatorClient("https://coord.example", "bfa_admin-token")

@@ -131,14 +131,33 @@ class CoordinatorClient:
     def get_job(self, file_hash: str) -> Dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/{file_hash}") or {}
 
-    def check_statuses(self, hashes: Iterable[str]) -> Dict[str, Any]:
-        """Bulk-check completion state for many hashes in a single request."""
+    def check_statuses(
+        self,
+        hashes: Iterable[str],
+        *,
+        progress: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Bulk-check completion state, chunking to the server's per-request limit.
+
+        The coordinator answers up to 5,000 hashes per request, so large
+        candidate sets are split automatically. An optional ``progress``
+        callback receives ``(checked, total)`` after each chunk.
+        """
         values = list(dict.fromkeys(hashes))
         if not values:
             return {}
-        payload = self._request("POST", "/api/v1/jobs/status", {"hashes": values}) or {}
-        results = payload.get("results")
-        return results if isinstance(results, dict) else {}
+        results: Dict[str, Any] = {}
+        chunk_size = 5000
+        total = len(values)
+        for start in range(0, total, chunk_size):
+            batch = values[start:start + chunk_size]
+            payload = self._request("POST", "/api/v1/jobs/status", {"hashes": batch}) or {}
+            chunk_results = payload.get("results")
+            if isinstance(chunk_results, dict):
+                results.update(chunk_results)
+            if progress is not None:
+                progress(min(start + chunk_size, total), total)
+        return results
 
     def output_download_url(self, file_hash: str) -> str:
         """Return a coordinator-issued signed URL for a completed result archive."""

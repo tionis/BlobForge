@@ -142,8 +142,10 @@ class FakeCoordinator:
         self.status_calls = 0
         self.download_calls = []
 
-    def check_statuses(self, hashes):
+    def check_statuses(self, hashes, progress=None):
         self.status_calls += 1
+        if progress:
+            progress(len(hashes), len(hashes))
         return {file_hash: {"status": self.statuses_by_hash.get(file_hash, "todo")} for file_hash in hashes}
 
     def download_output(self, file_hash, local_path):

@@ -231,6 +231,7 @@ def _build_done_hash_index(client: Any) -> Optional[Set[str]]:
 def _resolve_done_availability(
     client: Any,
     candidate_hashes: Set[str],
+    progress: Optional[Any] = None,
 ) -> Dict[str, bool]:
     """
     Resolve done availability for candidate hashes with the minimum request count.
@@ -243,7 +244,7 @@ def _resolve_done_availability(
 
     if hasattr(client, "check_statuses"):
         try:
-            results = client.check_statuses(candidate_hashes)
+            results = client.check_statuses(candidate_hashes, progress=progress)
             for file_hash in candidate_hashes:
                 availability[file_hash] = bool(results.get(file_hash, {}).get("status") == "done")
             print(
@@ -316,7 +317,7 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
 
     work_items: List[Dict[str, str]] = []
 
-    for pdf_path in pdf_files:
+    for index, pdf_path in enumerate(pdf_files, start=1):
         base_dir = os.path.dirname(pdf_path)
         stem = os.path.splitext(os.path.basename(pdf_path))[0]
         markdown_path = os.path.join(base_dir, f"{stem}.md")
@@ -342,6 +343,9 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
             "assets_dir_path": assets_dir_path,
         })
 
+        if index % 100 == 0 or index == len(pdf_files):
+            print(f"  [hash] {index}/{len(pdf_files)} files", flush=True)
+
     if not work_items:
         print("No files require hydration after local preflight.")
         print("\n--- Hydrate Summary ---")
@@ -359,7 +363,9 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
     )
 
     print("Preflight: checking local hashes against the completed-output store.")
-    conversion_available = _resolve_done_availability(client, unique_hashes)
+    def _report_status(checked: int, total: int) -> None:
+        print(f"  [status] {checked}/{total} hashes", flush=True)
+    conversion_available = _resolve_done_availability(client, unique_hashes, progress=_report_status)
 
     archive_cache: Dict[str, str] = {}
 
