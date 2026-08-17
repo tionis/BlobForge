@@ -3,6 +3,7 @@ import json
 import zipfile
 
 from blobforge.config import S3_PREFIX_DONE
+from blobforge.hash_index import HashIndex
 from blobforge.hydrator import hydrate
 from blobforge.utils import compute_sha256_with_cache
 
@@ -178,3 +179,88 @@ def test_hydrate_uses_coordinator_bulk_status(tmp_path):
     assert (tmp_path / "done.md").exists()
     assert not (tmp_path / "pending.md").exists()
     assert (tmp_path / "done.assets" / "image.png").read_bytes() == b"coordinator-image"
+
+
+def test_hydrate_skips_status_query_for_known_done_hashes(tmp_path):
+    pdf_done = tmp_path / "done.pdf"
+    _write_pdf(pdf_done, b"%PDF-1.4\ndone\n%%EOF\n")
+    done_hash = compute_sha256_with_cache(str(pdf_done))
+
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_status(done_hash, True)
+
+    archive_data = _build_conversion_zip(
+        markdown_text="![img](assets/image.png)\n",
+        assets={"image.png": b"coordinator-image"},
+    )
+    coordinator = FakeCoordinator({done_hash: "done"}, {done_hash: archive_data})
+
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 0
+
+    assert coordinator.status_calls == 0
+    assert coordinator.download_calls == [done_hash]
+    assert (tmp_path / "done.md").exists()
+
+
+def test_hydrate_requeries_only_after_status_ttl_expires(tmp_path):
+    pdf = tmp_path / "pending.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\npending\n%%EOF\n")
+    file_hash = compute_sha256_with_cache(str(pdf))
+
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_status(file_hash, False)
+    coordinator = FakeCoordinator({}, {})
+
+    result = hydrate([str(tmp_path)], client=coordinator, index=index, status_ttl_seconds=3600)
+    assert result == 0
+    assert coordinator.status_calls == 0  # missing still within TTL -> no query
+    assert not (tmp_path / "pending.md").exists()
+
+    index.set_statuses({file_hash: False})
+    coordinator.status_calls = 0
+    result = hydrate([str(tmp_path)], client=coordinator, index=index, status_ttl_seconds=0.0001)
+    assert result == 0
+    assert coordinator.status_calls == 1  # stale -> re-queried
+
+
+def test_hydrate_refresh_status_forces_query_even_when_cached(tmp_path):
+    pdf = tmp_path / "pending.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\npending\n%%EOF\n")
+    file_hash = compute_sha256_with_cache(str(pdf))
+
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_status(file_hash, False)
+    coordinator = FakeCoordinator({}, {})
+
+    result = hydrate([str(tmp_path)], client=coordinator, index=index, refresh_status=True)
+    assert result == 0
+    assert coordinator.status_calls == 1
+    assert not (tmp_path / "pending.md").exists()
+
+
+def test_hydrate_reuses_indexed_hash_without_reading_file(tmp_path, monkeypatch):
+    pdf = tmp_path / "known.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\nknown\n%%EOF\n")
+    stat_result = pdf.stat()
+    file_hash = compute_sha256_with_cache(str(pdf))
+
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_file_hash(str(pdf), stat_result.st_size, stat_result.st_mtime_ns, file_hash)
+    index.set_status(file_hash, True)
+
+    archive_data = _build_conversion_zip(
+        markdown_text="![img](assets/image.png)\n",
+        assets={"image.png": b"coordinator-image"},
+    )
+    coordinator = FakeCoordinator({file_hash: "done"}, {file_hash: archive_data})
+
+    def _fail_if_read(*_args, **_kwargs):
+        raise AssertionError("hash was computed from disk instead of the index")
+
+    monkeypatch.setattr("blobforge.hydrator.compute_sha256_with_cache", _fail_if_read)
+
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 0
+    assert coordinator.status_calls == 0
+    assert (tmp_path / "known.md").exists()

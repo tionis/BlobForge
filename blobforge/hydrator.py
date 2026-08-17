@@ -14,6 +14,7 @@ import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .config import S3_PREFIX_DONE
+from .hash_index import HashIndex, default_db_path
 from .s3_client import S3Client
 from .utils import compute_sha256_with_cache
 
@@ -289,16 +290,65 @@ def _download_conversion_archive(client: Any, file_hash: str, local_path: str) -
     client.download_file(done_key, local_path)
 
 
-def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client: Optional[Any] = None) -> int:
+def hydrate(
+    paths: List[str],
+    force: bool = False,
+    dry_run: bool = False,
+    client: Optional[Any] = None,
+    index: Optional[HashIndex] = None,
+    refresh_status: bool = False,
+    status_ttl_seconds: Optional[float] = None,
+) -> int:
     """
     Hydrate local markdown and assets for PDFs that already have completed
     conversions in BlobForge.
+
+    Uses a persistent local index for two purposes:
+    - Skip re-hashing unchanged files via (size, mtime_ns) instead of relying
+      on filesystem xattr support.
+    - Reconcile the done-set incrementally: known-done hashes are never
+      re-queried, and previously-missing hashes are only re-queried after
+      ``status_ttl_seconds`` (default 6 hours).
     """
     if client is None:
         if S3Client is not None:
             client = S3Client()
         else:
             raise RuntimeError("No client provided for hydration")
+
+    own_index = index is None
+    if index is None:
+        index = HashIndex(db_path=os.getenv("BLOBFORGE_HASH_INDEX_PATH") or default_db_path())
+    if status_ttl_seconds is None:
+        try:
+            status_ttl_seconds = float(os.getenv("BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS", "21600"))
+        except ValueError:
+            status_ttl_seconds = 21600
+
+    try:
+        return _hydrate_with_index(
+            paths=paths,
+            force=force,
+            dry_run=dry_run,
+            client=client,
+            index=index,
+            refresh_status=refresh_status,
+            status_ttl_seconds=status_ttl_seconds,
+        )
+    finally:
+        if own_index:
+            index.close()
+
+
+def _hydrate_with_index(
+    paths: List[str],
+    force: bool,
+    dry_run: bool,
+    client: Any,
+    index: HashIndex,
+    refresh_status: bool,
+    status_ttl_seconds: float,
+) -> int:
     pdf_files = discover_pdf_files(paths)
 
     if not pdf_files:
@@ -317,7 +367,7 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
 
     work_items: List[Dict[str, str]] = []
 
-    for index, pdf_path in enumerate(pdf_files, start=1):
+    for pdf_path in pdf_files:
         base_dir = os.path.dirname(pdf_path)
         stem = os.path.splitext(os.path.basename(pdf_path))[0]
         markdown_path = os.path.join(base_dir, f"{stem}.md")
@@ -329,7 +379,11 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
             continue
 
         try:
-            file_hash = compute_sha256_with_cache(pdf_path)
+            stat_result = os.stat(pdf_path)
+            file_hash = index.get_file_hash(pdf_path, stat_result.st_size, stat_result.st_mtime_ns)
+            hash_cached = file_hash is not None
+            if not hash_cached:
+                file_hash = compute_sha256_with_cache(pdf_path)
         except Exception as exc:
             print(f"[ERROR] Failed to compute hash for {pdf_path}: {exc}")
             stats["errors"] += 1
@@ -341,10 +395,14 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
             "markdown_path": markdown_path,
             "assets_dir_name": assets_dir_name,
             "assets_dir_path": assets_dir_path,
+            "hash_cached": hash_cached,
         })
 
-        if index % 100 == 0 or index == len(pdf_files):
-            print(f"  [hash] {index}/{len(pdf_files)} files", flush=True)
+    cached_hash_count = sum(1 for item in work_items if item["hash_cached"])
+    print(
+        f"  [hash] {len(work_items)}/{len(pdf_files)} files hashed "
+        f"({cached_hash_count} reused from index)"
+    )
 
     if not work_items:
         print("No files require hydration after local preflight.")
@@ -362,22 +420,44 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client
         f"{len(unique_hashes)} unique hash(es)."
     )
 
-    print("Preflight: checking local hashes against the completed-output store.")
-    def _report_status(checked: int, total: int) -> None:
-        print(f"  [status] {checked}/{total} hashes", flush=True)
-    conversion_available = _resolve_done_availability(client, unique_hashes, progress=_report_status)
+    # Incremental reconciliation: partition into hashes we can trust locally
+    # (known-done, or missing within TTL) versus hashes that need a fresh query.
+    conversion_available: Dict[str, bool] = {}
+    to_query: Set[str] = set()
+    for file_hash in unique_hashes:
+        cached_status = None if refresh_status else index.get_status(file_hash, status_ttl_seconds)
+        if cached_status is None:
+            to_query.add(file_hash)
+        else:
+            conversion_available[file_hash] = cached_status
+
+    if to_query:
+        print(
+            f"Preflight: checking {len(to_query)} hash(es) against the completed-output store"
+            f" ({len(unique_hashes) - len(to_query)} resolved from cache)."
+        )
+        def _report_status(checked: int, total: int) -> None:
+            print(f"  [status] {checked}/{total} hashes", flush=True)
+        fresh = _resolve_done_availability(client, to_query, progress=_report_status)
+        index.set_statuses(fresh)
+        conversion_available.update(fresh)
+    else:
+        print(
+            f"Preflight: all {len(unique_hashes)} hash(es) resolved from local index, "
+            "no coordinator query needed."
+        )
 
     archive_cache: Dict[str, str] = {}
 
     with tempfile.TemporaryDirectory(prefix="blobforge-hydrate-") as tmp_dir:
-        for index, item in enumerate(work_items, start=1):
+        for item_index, item in enumerate(work_items, start=1):
             pdf_path = item["pdf_path"]
             file_hash = item["hash"]
             markdown_path = item["markdown_path"]
             assets_dir_name = item["assets_dir_name"]
             assets_dir_path = item["assets_dir_path"]
 
-            print(f"[{index}/{len(work_items)}] {pdf_path}")
+            print(f"[{item_index}/{len(work_items)}] {pdf_path}")
 
             available = conversion_available.get(file_hash, False)
             if not available:
