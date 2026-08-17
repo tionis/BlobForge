@@ -57,6 +57,8 @@ def _require_management_ui(action):
 
 def cmd_ingest(args):
     """Ingest PDFs from files or directories."""
+    if not _apply_coordinator_overrides(args):
+        return 1
     if len(args.paths) == 1:
         print(f"Ingesting {args.paths[0]} with priority {args.priority}...")
     else:
@@ -469,11 +471,14 @@ def cmd_convert(args):
 
 def cmd_hydrate(args):
     """Hydrate local markdown/assets from completed conversion outputs."""
+    if not _apply_coordinator_overrides(args):
+        return 1
     if len(args.paths) == 1:
         print(f"Hydrating conversions for {args.paths[0]}...")
     else:
         print(f"Hydrating conversions for {len(args.paths)} paths...")
-    return hydrator_module.hydrate(args.paths, force=args.force, dry_run=args.dry_run)
+    coordinator = _coordinator_client()
+    return hydrator_module.hydrate(args.paths, force=args.force, dry_run=args.dry_run, client=coordinator)
 
 
 def cmd_janitor(args):
@@ -978,47 +983,33 @@ def cmd_watch(args):
 
 def cmd_download(args):
     """Download completed job results."""
-    import tempfile
-    
-    s3 = S3Client()
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        return 1
     job_hash = args.hash
     output_path = args.output
-    
-    # Check if job is done
-    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
-    if not s3.exists(done_key):
+
+    job = coordinator.get_job(job_hash)
+    if not job or job.get("status") != "done":
         print(f"Error: Job {job_hash} is not completed.")
-        
-        # Provide status hint
-        if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
-            print("Job is currently being processed.")
-        elif s3.exists(f"{S3_PREFIX_FAILED}/{job_hash}"):
-            print("Job is in failed state (pending retry).")
-        elif s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
-            print("Job is in dead-letter queue.")
+        if job:
+            print(f"Job is in state: {job.get('status')}")
         else:
-            # Check todo
-            for p in PRIORITIES:
-                if s3.exists(f"{S3_PREFIX_TODO}/{p}/{job_hash}"):
-                    print(f"Job is queued (priority: {p}).")
-                    break
+            print("No such job.")
         return 1
-    
-    # Determine output path
+
     if output_path is None:
         output_path = f"{job_hash}.zip"
-    
+
     print(f"Downloading {job_hash}.zip to {output_path}...")
-    
+
     try:
-        s3.download_file(done_key, output_path)
+        coordinator.download_output(job_hash, output_path)
         print(f"Downloaded: {output_path}")
-        
-        # Show file size
-        import os
-        size = os.path.getsize(output_path)
-        print(f"Size: {size:,} bytes")
-        
+        print(f"Size: {os.path.getsize(output_path):,} bytes")
         return 0
     except Exception as e:
         print(f"Error downloading: {e}")
@@ -1029,23 +1020,27 @@ def cmd_preview(args):
     """Preview the content of a completed job."""
     import tempfile
     import zipfile
-    
-    s3 = S3Client()
+
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        return 1
     job_hash = args.hash
-    
-    # Check if job is done
-    done_key = f"{S3_PREFIX_DONE}/{job_hash}.zip"
-    if not s3.exists(done_key):
+
+    job = coordinator.get_job(job_hash)
+    if not job or job.get("status") != "done":
         print(f"Error: Job {job_hash} is not completed.")
         return 1
-    
+
     # Download to temp file
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp_path = tmp.name
-    
+
     try:
         print(f"Fetching {job_hash}...")
-        s3.download_file(done_key, tmp_path)
+        coordinator.download_output(job_hash, tmp_path)
         
         with zipfile.ZipFile(tmp_path, 'r') as zf:
             # List contents
@@ -1233,6 +1228,8 @@ def main():
     p_ingest.add_argument("--priority", default=DEFAULT_PRIORITY, choices=PRIORITIES,
                           help="Queue priority for new jobs")
     p_ingest.add_argument("--dry-run", action="store_true", help="Don't make changes")
+    p_ingest.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_ingest.add_argument("--token", help="Admin token for the coordinator")
     p_ingest.set_defaults(func=cmd_ingest)
 
     p_cleanup = subparsers.add_parser(
@@ -1254,6 +1251,8 @@ def main():
     p_hydrate.add_argument("paths", nargs='+', help="PDF files or directories to hydrate")
     p_hydrate.add_argument("--force", action="store_true", help="Overwrite existing markdown/assets")
     p_hydrate.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
+    p_hydrate.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_hydrate.add_argument("--token", help="Admin token for the coordinator")
     p_hydrate.set_defaults(func=cmd_hydrate)
     
     # Status (single job)
@@ -1351,12 +1350,16 @@ def main():
     p_download = subparsers.add_parser("download", help="Download completed job results")
     p_download.add_argument("hash", help="SHA256 hash of the PDF")
     p_download.add_argument("--output", "-o", help="Output path (default: <hash>.zip)")
+    p_download.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_download.add_argument("--token", help="Admin token for the coordinator")
     p_download.set_defaults(func=cmd_download)
     
     # Preview
     p_preview = subparsers.add_parser("preview", help="Preview completed job content")
     p_preview.add_argument("hash", help="SHA256 hash of the PDF")
     p_preview.add_argument("--lines", "-n", type=int, default=50, help="Lines of markdown to show")
+    p_preview.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_preview.add_argument("--token", help="Admin token for the coordinator")
     p_preview.set_defaults(func=cmd_preview)
     
     # Retry-all

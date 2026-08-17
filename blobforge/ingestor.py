@@ -11,11 +11,9 @@ import re
 import argparse
 import subprocess
 import hashlib
-import json
 from typing import Optional, List
 
-from .config import S3_PREFIX_RAW, PRIORITIES, DEFAULT_PRIORITY
-from .s3_client import S3Client
+from .config import PRIORITIES, DEFAULT_PRIORITY
 from .coordinator_client import CoordinatorClient
 from .utils import compute_sha256_with_cache, get_cached_hash
 
@@ -96,7 +94,6 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
     The Bunny coordinator is the sole source of job and file metadata. S3 stores
     only raw PDFs, conversion results, and coordinator backups.
     """
-    s3 = S3Client(dry_run=dry_run)
     coordinator = CoordinatorClient()
     if not coordinator.available:
         raise RuntimeError(
@@ -178,22 +175,23 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             stats["skipped"] += 1
             continue
         
-        # 3. Check/Upload Raw + Metadata
-        raw_key = f"{S3_PREFIX_RAW}/{file_hash}.pdf"
+        # 3. Check/Upload Raw via coordinator-issued signed URL.
         size = 0
-        if not s3.exists(raw_key):
-            print(f"  [UPLOAD] Raw PDF not in S3.")
+        try:
+            transfer = coordinator.raw_upload_url(file_hash)
+            raw_exists = transfer["already_exists"]
+        except Exception as exc:
+            print(f"  [ERROR] Coordinator raw check failed: {exc}")
+            continue
+
+        if not raw_exists:
+            print(f"  [UPLOAD] Raw PDF not in the object store.")
             
             if is_pointer:
                 try:
                     pull_lfs_file(base_path, rel_path)
                     size = os.path.getsize(full_path)
-                    metadata = {
-                        "original-name": display_name,
-                        "tags": json.dumps(tags),
-                        "size": str(size)
-                    }
-                    s3.upload_file(full_path, raw_key, metadata=metadata)
+                    coordinator.upload_raw(file_hash, full_path)
                     cleanup_lfs_file(base_path, rel_path)
                     stats["uploaded"] += 1
                 except subprocess.CalledProcessError as e:
@@ -201,13 +199,12 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
                     continue
             else:
                 size = os.path.getsize(full_path)
-                metadata = {
-                    "original-name": display_name,
-                    "tags": json.dumps(tags),
-                    "size": str(size)
-                }
-                s3.upload_file(full_path, raw_key, metadata=metadata)
-                stats["uploaded"] += 1
+                try:
+                    coordinator.upload_raw(file_hash, full_path)
+                    stats["uploaded"] += 1
+                except Exception as exc:
+                    print(f"  [ERROR] Raw upload failed: {exc}")
+                    continue
         else:
             print(f"  [OK] Raw PDF exists.")
         
@@ -219,8 +216,8 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             continue
         try:
             if not size:
-                raw_meta = s3.get_object_metadata(raw_key)
-                size = int(raw_meta.get("size", 0))
+                job = coordinator.get_job(file_hash)
+                size = int(job.get("size_bytes") or 0)
             job = coordinator.enqueue(
                 file_hash,
                 priority=priority,

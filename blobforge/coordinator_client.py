@@ -131,6 +131,50 @@ class CoordinatorClient:
     def get_job(self, file_hash: str) -> Dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/{file_hash}") or {}
 
+    def check_statuses(self, hashes: Iterable[str]) -> Dict[str, Any]:
+        """Bulk-check completion state for many hashes in a single request."""
+        values = list(dict.fromkeys(hashes))
+        if not values:
+            return {}
+        payload = self._request("POST", "/api/v1/jobs/status", {"hashes": values}) or {}
+        results = payload.get("results")
+        return results if isinstance(results, dict) else {}
+
+    def output_download_url(self, file_hash: str) -> str:
+        """Return a coordinator-issued signed URL for a completed result archive."""
+        transfer = self._request("POST", f"/api/v1/jobs/{file_hash}/download-url", {}) or {}
+        url = str(transfer.get("url") or "")
+        if not url:
+            raise CoordinatorError("Coordinator did not return an output download URL")
+        return url
+
+    def raw_upload_url(self, file_hash: str) -> Dict[str, Any]:
+        """Return a signed raw-object upload URL plus whether the object already exists."""
+        transfer = self._request("POST", f"/api/v1/jobs/{file_hash}/raw-upload-url", {}) or {}
+        url = str(transfer.get("url") or "")
+        if not url:
+            raise CoordinatorError("Coordinator did not return a raw upload URL")
+        return {
+            "url": url,
+            "already_exists": bool(transfer.get("already_exists")),
+            "headers": transfer.get("headers") or {},
+        }
+
+    def download_output(self, file_hash: str, local_path: str) -> None:
+        """Download a completed result archive through its coordinator-issued signed URL."""
+        url = self.output_download_url(file_hash)
+        try:
+            request = urllib.request.Request(url, headers={"Accept": "application/zip"})
+            with urllib.request.urlopen(request, timeout=self.timeout) as response, open(local_path, "wb") as target:
+                shutil.copyfileobj(response, target, length=1024 * 1024)
+        except (urllib.error.URLError, OSError) as exc:
+            raise CoordinatorError(f"Output download failed: {exc}") from exc
+
+    def upload_raw(self, file_hash: str, local_path: str) -> None:
+        """Stream a raw PDF to its signed raw-object upload URL."""
+        transfer = self.raw_upload_url(file_hash)
+        self._stream_put(transfer["url"], local_path, transfer["headers"])
+
     def register_worker(self, worker_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(metadata)
         payload.update({"worker_id": worker_id, "hostname": payload.get("hostname") or socket.gethostname()})

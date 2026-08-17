@@ -234,10 +234,25 @@ def _resolve_done_availability(
 ) -> Dict[str, bool]:
     """
     Resolve done availability for candidate hashes with the minimum request count.
+    Coordinator clients answer in a single bulk status call; S3 clients fall back
+    to the bulk done-index scan or per-hash existence checks.
     """
     availability: Dict[str, bool] = {}
     if not candidate_hashes:
         return availability
+
+    if hasattr(client, "check_statuses"):
+        try:
+            results = client.check_statuses(candidate_hashes)
+            for file_hash in candidate_hashes:
+                availability[file_hash] = bool(results.get(file_hash, {}).get("status") == "done")
+            print(
+                f"Preflight: resolved done availability via coordinator "
+                f"({len(candidate_hashes)} hashes checked)"
+            )
+            return availability
+        except Exception as exc:
+            print(f"[WARN] Could not resolve availability via coordinator: {exc}")
 
     if len(candidate_hashes) >= DONE_INDEX_THRESHOLD:
         done_index = _build_done_hash_index(client)
@@ -264,12 +279,25 @@ def _resolve_done_availability(
     return availability
 
 
-def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, s3: Optional[S3Client] = None) -> int:
+def _download_conversion_archive(client: Any, file_hash: str, local_path: str) -> None:
+    """Download a completed conversion archive through the preferred client."""
+    if hasattr(client, "download_output"):
+        client.download_output(file_hash, local_path)
+        return
+    done_key = f"{S3_PREFIX_DONE}/{file_hash}.zip"
+    client.download_file(done_key, local_path)
+
+
+def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, client: Optional[Any] = None) -> int:
     """
     Hydrate local markdown and assets for PDFs that already have completed
     conversions in BlobForge.
     """
-    client = s3 or S3Client()
+    if client is None:
+        if S3Client is not None:
+            client = S3Client()
+        else:
+            raise RuntimeError("No client provided for hydration")
     pdf_files = discover_pdf_files(paths)
 
     if not pdf_files:
@@ -361,7 +389,7 @@ def hydrate(paths: List[str], force: bool = False, dry_run: bool = False, s3: Op
             if archive_path is None:
                 archive_path = os.path.join(tmp_dir, f"{file_hash}.zip")
                 try:
-                    client.download_file(done_key, archive_path)
+                    _download_conversion_archive(client, file_hash, archive_path)
                     archive_cache[file_hash] = archive_path
                 except Exception as exc:
                     print(f"  [ERROR] Failed to download conversion zip: {exc}")
