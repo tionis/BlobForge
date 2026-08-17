@@ -222,7 +222,7 @@ export class BlobForgeApp {
       if (staticRequest && url.pathname === "/static/docs-v1.css") return publicResponse(request, DOCS_CSS, "text/css; charset=utf-8", "blobforge-docs-css-v1", true);
       if (staticRequest && url.pathname === "/static/blobforge-v1.svg") return publicResponse(request, BRAND_SVG, "image/svg+xml; charset=utf-8", "blobforge-brand-v1", true);
       if (staticRequest && url.pathname === "/static/app-v7.css") return publicResponse(request, `${APP_CSS}${VIEWER_CSS}`, "text/css; charset=utf-8", "blobforge-app-css-v7", true);
-      if (staticRequest && url.pathname === "/static/app-v7.js") return publicResponse(request, APP_JS, "text/javascript; charset=utf-8", "blobforge-app-js-v7", true);
+      if (staticRequest && url.pathname === "/static/app-v8.js") return publicResponse(request, APP_JS, "text/javascript; charset=utf-8", "blobforge-app-js-v8", true);
       if (staticRequest && url.pathname === "/static/markdown-v1.js") return publicResponse(request, MARKDOWN_JS, "text/javascript; charset=utf-8", "blobforge-markdown-v1", true);
       if (staticRequest && url.pathname === "/static/login-v4.js") return publicResponse(request, LOGIN_JS, "text/javascript; charset=utf-8", "blobforge-login-v4", true);
       if (staticRequest && url.pathname === "/robots.txt") return publicResponse(request, ROBOTS_TXT, "text/plain; charset=utf-8", "blobforge-robots-v1");

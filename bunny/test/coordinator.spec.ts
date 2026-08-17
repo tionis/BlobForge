@@ -212,7 +212,7 @@ describe("Bunny BlobForge coordinator", () => {
       ["/static/docs-v1.css", "text/css"],
       ["/static/blobforge-v1.svg", "image/svg+xml"],
       ["/static/app-v7.css", "text/css"],
-      ["/static/app-v7.js", "text/javascript"],
+      ["/static/app-v8.js", "text/javascript"],
       ["/static/markdown-v1.js", "text/javascript"],
       ["/static/login-v4.js", "text/javascript"],
     ]) {
@@ -258,7 +258,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(consoleBody).toContain('id="toc-toggle"');
     expect(consoleBody).toContain('id="failure-viewer"');
     expect(consolePage.headers.get("cache-control")).toContain("no-store");
-    const appScript = await app.fetch(new Request("https://blobforge.example/static/app-v7.js"));
+    const appScript = await app.fetch(new Request("https://blobforge.example/static/app-v8.js"));
     const appBody = await appScript.text();
     expect(() => new Function(appBody)).not.toThrow();
     expect(appBody).toContain("localStorage.setItem");
@@ -267,6 +267,8 @@ describe("Bunny BlobForge coordinator", () => {
     expect(appBody).toContain("/api/v1/admin/workers");
     expect(appBody).toContain("/api/v1/admin/files");
     expect(appBody).toContain("/api/v1/admin/uploads");
+    expect(appBody).toContain("admin-token-form");
+    expect(appBody).toContain("BLOBFORGE_COORDINATOR_TOKEN");
     expect(appBody).toContain("DecompressionStream");
     expect(appBody).toContain("BlobForgeMarkdown.render");
     expect(appBody).toContain("renderToc");
