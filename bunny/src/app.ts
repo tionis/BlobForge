@@ -274,6 +274,14 @@ export class BlobForgeApp {
     return this.db.authenticateWorkerToken(await sha256(authorization.slice(7)));
   }
 
+  private async adminTokenIdentity(request: Request): Promise<string | null> {
+    const authorization = request.headers.get("authorization") || "";
+    if (!authorization.startsWith("Bearer ")) return null;
+    const token = authorization.slice(7);
+    const id = await this.db.authenticateAdminToken(await sha256(token));
+    return id;
+  }
+
   private sameOrigin(request: Request): boolean {
     if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return true;
     return request.headers.get("origin") === new URL(request.url).origin;
@@ -303,16 +311,24 @@ export class BlobForgeApp {
 
   private async workerApi(request: Request, url: URL): Promise<Response> {
     const clientAuthorized = await this.bearerAuthorized(request, this.config.clientApiToken);
-    const workerId = clientAuthorized ? null : await this.workerIdentity(request);
+    const adminTokenId = clientAuthorized ? null : await this.adminTokenIdentity(request);
+    const workerId = clientAuthorized || adminTokenId ? null : await this.workerIdentity(request);
     if (url.pathname === "/api/v1/config" && request.method === "GET") {
-      return clientAuthorized || workerId ? json(await this.db.getConfig()) : error("Unauthorized", 401);
+      return clientAuthorized || workerId || adminTokenId ? json(await this.db.getConfig()) : error("Unauthorized", 401);
     }
     if (url.pathname === "/api/v1/snapshot" && request.method === "GET") {
-      return clientAuthorized || workerId ? json(await this.db.snapshot(false)) : error("Unauthorized", 401);
+      return clientAuthorized || workerId || adminTokenId ? json(await this.db.snapshot(false)) : error("Unauthorized", 401);
     }
-    const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url))?$/);
+    if (url.pathname === "/api/v1/jobs/status" && request.method === "POST") {
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
+      const body = await this.body(request);
+      const hashes = Array.isArray(body.hashes) ? body.hashes.filter((h): h is string => validHash(h)).slice(0, 5000) : [];
+      if (!hashes.length) return error("Provide at least one valid SHA-256 hash");
+      return json({ results: await this.db.getJobStatuses([...new Set(hashes)]) });
+    }
+    const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url|download-url|raw-upload-url))?$/);
     if (jobMatch && !jobMatch[2]) {
-      if (!clientAuthorized) return error("Unauthorized", 401);
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
       const hash = jobMatch[1]!;
       if (request.method === "PUT") {
         const body = await this.body(request);
@@ -321,6 +337,21 @@ export class BlobForgeApp {
       }
       if (request.method === "GET") { const job = await this.db.getJob(hash); return job ? json(jobJson(job)) : error("Job not found", 404); }
       return error("Method not allowed", 405);
+    }
+    if (jobMatch && jobMatch[2] === "download-url" && request.method === "POST") {
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
+      const hash = jobMatch[1]!;
+      const job = await this.db.getJob(hash);
+      if (!job) return error("Job not found", 404);
+      if (job.status !== "done" || !(await this.config.objectStore.outputExists(hash))) return error("Completed output not available", 409);
+      const transfer = await this.config.objectStore.outputDownload(hash);
+      return json({ method: "GET", url: transfer.url, expires_at: transfer.expiresAt });
+    }
+    if (jobMatch && jobMatch[2] === "raw-upload-url" && request.method === "POST") {
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
+      const hash = jobMatch[1]!;
+      const transfer = await this.config.objectStore.rawUpload(hash);
+      return json({ method: "PUT", url: transfer.url, expires_at: transfer.expiresAt, already_exists: await this.config.objectStore.rawExists(hash), headers: { "content-type": "application/pdf" } });
     }
     if (!workerId) return error("Unauthorized", 401);
     if (url.pathname === "/api/v1/workers/me" && request.method === "GET") return json({ worker_id: workerId });
@@ -398,7 +429,7 @@ export class BlobForgeApp {
     if (!session) return error("Unauthorized", 401);
     if (!this.sameOrigin(request)) return error("Invalid origin", 403);
     if (url.pathname === "/api/v1/admin/snapshot" && request.method === "GET") {
-      return json({ ...await this.db.snapshot(false, false), worker_enrollments: await this.db.listWorkerCredentials(), identity: session.me });
+      return json({ ...await this.db.snapshot(false, false), worker_enrollments: await this.db.listWorkerCredentials(), admin_tokens: await this.db.listAdminCredentials(false), identity: session.me });
     }
     if (url.pathname === "/api/v1/admin/workers" && request.method === "GET") {
       return json({ workers: await this.db.listWorkerCredentials(url.searchParams.get("revoked") === "true") });
@@ -484,6 +515,23 @@ export class BlobForgeApp {
     const workerMatch = url.pathname.match(/^\/api\/v1\/admin\/workers\/([A-Za-z0-9._:-]{1,128})\/revoke$/);
     if (workerMatch && request.method === "POST") {
       return await this.db.revokeWorkerCredential(workerMatch[1]!, session.me) ? json({ ok: true }) : error("Worker is already revoked or does not exist", 409);
+    }
+    if (url.pathname === "/api/v1/admin/tokens" && request.method === "GET") {
+      return json({ tokens: await this.db.listAdminCredentials(url.searchParams.get("revoked") === "true") });
+    }
+    if (url.pathname === "/api/v1/admin/tokens" && request.method === "POST") {
+      const body = await this.body(request); const label = String(body.label || "").trim();
+      if (!label || label.length > 80) return error("Admin token label must contain 1 to 80 characters");
+      const tokenId = randomToken(8);
+      const token = `bfa_${randomToken(32)}`;
+      if (!(await this.db.createAdminCredential(tokenId, label, await sha256(token), session.me))) {
+        return error("Admin token could not be created", 409);
+      }
+      return json({ token_id: tokenId, label, token, coordinator_url: new URL(request.url).origin }, { status: 201 });
+    }
+    const adminTokenMatch = url.pathname.match(/^\/api\/v1\/admin\/tokens\/([A-Za-z0-9._:-]{1,128})\/revoke$/);
+    if (adminTokenMatch && request.method === "POST") {
+      return await this.db.revokeAdminCredential(adminTokenMatch[1]!, session.me) ? json({ ok: true }) : error("Admin token is already revoked or does not exist", 409);
     }
     if (url.pathname === "/api/v1/admin/config" && request.method === "PUT") {
       const body = await this.body(request);

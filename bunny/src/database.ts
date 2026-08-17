@@ -36,6 +36,8 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', state_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE TABLE IF NOT EXISTS worker_credentials (worker_id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, revoked_at INTEGER, last_used_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS worker_credentials_token_idx ON worker_credentials(token_hash)`,
+  `CREATE TABLE IF NOT EXISTS admin_credentials (token_id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, revoked_at INTEGER, last_used_at INTEGER)`,
+  `CREATE INDEX IF NOT EXISTS admin_credentials_token_idx ON admin_credentials(token_hash)`,
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, subject TEXT, detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
 ];
@@ -228,6 +230,75 @@ export class CoordinatorDatabase {
       current_job: row.current_job === null ? null : String(row.current_job), last_heartbeat: nullableNumber(row.last_heartbeat),
       registered_at: nullableNumber(row.registered_at), state: JSON.parse(String(row.state_json || "{}")),
     }));
+  }
+
+  async createAdminCredential(tokenId: string, label: string, tokenHash: string, actor: string): Promise<boolean> {
+    const timestamp = Date.now();
+    const result = await this.client.execute(statement(
+      "INSERT OR IGNORE INTO admin_credentials(token_id,label,token_hash,created_at,created_by,revoked_at,last_used_at) VALUES(?,?,?,?,?,NULL,NULL)",
+      [tokenId, label, tokenHash, timestamp, actor],
+    ));
+    if (!result.rowsAffected) return false;
+    await this.audit(actor, "admin_token.create", tokenId, { label });
+    return true;
+  }
+
+  async authenticateAdminToken(tokenHash: string): Promise<string | null> {
+    const result = await this.client.execute(statement(
+      "SELECT token_id,last_used_at FROM admin_credentials WHERE token_hash=? AND revoked_at IS NULL",
+      [tokenHash],
+    ));
+    if (!result.rows[0]) return null;
+    const tokenId = String(result.rows[0].token_id);
+    const timestamp = Date.now();
+    if (numeric(result.rows[0].last_used_at) < timestamp - 300_000) {
+      await this.client.execute(statement("UPDATE admin_credentials SET last_used_at=? WHERE token_id=?", [timestamp, tokenId]));
+    }
+    return tokenId;
+  }
+
+  async revokeAdminCredential(tokenId: string, actor: string): Promise<boolean> {
+    const timestamp = Date.now();
+    const result = await this.client.execute(statement(
+      "UPDATE admin_credentials SET revoked_at=? WHERE token_id=? AND revoked_at IS NULL",
+      [timestamp, tokenId],
+    ));
+    if (!result.rowsAffected) return false;
+    await this.audit(actor, "admin_token.revoke", tokenId, {});
+    return true;
+  }
+
+  async listAdminCredentials(revoked = false): Promise<Record<string, unknown>[]> {
+    const result = await this.client.execute(statement(
+      `SELECT token_id,label,created_at,created_by,revoked_at,last_used_at
+       FROM admin_credentials WHERE revoked_at IS ${revoked ? "NOT NULL" : "NULL"}
+       ORDER BY created_at DESC LIMIT 250`,
+    ));
+    return result.rows.map((row) => ({
+      token_id: String(row.token_id), label: String(row.label), created_at: numeric(row.created_at),
+      created_by: String(row.created_by), revoked_at: nullableNumber(row.revoked_at), last_used_at: nullableNumber(row.last_used_at),
+    }));
+  }
+
+  async getJobStatuses(hashes: string[]): Promise<Record<string, { status: JobStatus; original_name: string | null; size_bytes: number }>> {
+    if (!hashes.length) return {};
+    const results: Record<string, { status: JobStatus; original_name: string | null; size_bytes: number }> = {};
+    for (let start = 0; start < hashes.length; start += 400) {
+      const batch = hashes.slice(start, start + 400);
+      const placeholders = batch.map(() => "?").join(",");
+      const query = await this.client.execute(statement(
+        `SELECT j.file_hash,j.status,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE j.file_hash IN (${placeholders})`,
+        batch,
+      ));
+      for (const row of query.rows) {
+        results[String(row.file_hash)] = {
+          status: String(row.status) as JobStatus,
+          original_name: row.original_name === null ? null : String(row.original_name),
+          size_bytes: numeric(row.size_bytes),
+        };
+      }
+    }
+    return results;
   }
 
   async registerWorker(body: Record<string, unknown>): Promise<void> {
@@ -462,7 +533,7 @@ export class CoordinatorDatabase {
   }
 
   async exportBackup(): Promise<Record<string, unknown>> {
-    const tableNames = ["files", "file_paths", "file_tags", "jobs", "job_failures", "workers", "worker_credentials", "config", "audit_log"];
+    const tableNames = ["files", "file_paths", "file_tags", "jobs", "job_failures", "workers", "worker_credentials", "admin_credentials", "config", "audit_log"];
     const results = await this.client.batch([
       statement(
         `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND tbl_name IN (${tableNames.map(() => "?").join(",")}) ORDER BY type,name`,

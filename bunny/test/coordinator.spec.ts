@@ -411,4 +411,97 @@ describe("Bunny BlobForge coordinator", () => {
     }));
     expect(deniedAfterRevoke.status).toBe(401);
   });
+
+  it("creates, lists, and revokes admin tokens and uses them for bulk status and signed URLs", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://alice.example/") return new Response(
+        '<link rel="indieauth-metadata" href="https://auth.example/metadata">',
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+      if (url === "https://auth.example/metadata") return Response.json({
+        issuer: "https://auth.example/",
+        authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+      });
+      if (url === "https://auth.example/token") return Response.json({ me: "https://alice.example/" });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    const login = await app.fetch(new Request("https://blobforge.example/auth/login?me=alice.example"));
+    const authorization = new URL(login.headers.get("location")!);
+    const callback = await app.fetch(new Request(
+      `https://blobforge.example/auth/callback?code=test-code&state=${encodeURIComponent(authorization.searchParams.get("state")!)}`,
+    ));
+    const destination = new URL(callback.headers.get("location")!, "https://blobforge.example");
+    const token = new URLSearchParams(destination.hash.slice(1)).get("session");
+    const authorizationHeader = { authorization: `BlobForge-Session ${token}` };
+
+    const createdResponse = await app.fetch(new Request("https://blobforge.example/api/v1/admin/tokens", {
+      method: "POST",
+      headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" },
+      body: JSON.stringify({ label: "Hydration workstation" }),
+    }));
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as Record<string, unknown>;
+    expect(created).toMatchObject({ label: "Hydration workstation", coordinator_url: "https://blobforge.example" });
+    expect(created.token_id).toEqual(expect.any(String));
+    expect(created.token).toMatch(/^bfa_/);
+    const adminHeaders = { authorization: `Bearer ${created.token}`, "content-type": "application/json" };
+
+    const jobHash = "b".repeat(64);
+    const enqueue = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}`, {
+      method: "PUT", headers: adminHeaders, body: JSON.stringify({ original_name: "second.pdf", size_bytes: 456, paths: ["b/second.pdf"], tags: ["b"], priority: "2_high" }),
+    }));
+    expect(enqueue.status).toBe(200);
+
+    const getJob = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}`, { headers: adminHeaders }));
+    expect(getJob.status).toBe(200);
+
+    const bulk = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/status", {
+      method: "POST", headers: adminHeaders, body: JSON.stringify({ hashes: [jobHash, "c".repeat(64)] }),
+    }));
+    expect(bulk.status).toBe(200);
+    await expect(bulk.json()).resolves.toMatchObject({
+      results: { [jobHash]: expect.objectContaining({ status: "todo", original_name: "second.pdf", size_bytes: 456 }) },
+    });
+
+    const rawUploadUrl = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${"c".repeat(64)}/raw-upload-url`, {
+      method: "POST", headers: adminHeaders, body: "{}",
+    }));
+    expect(rawUploadUrl.status).toBe(200);
+    await expect(rawUploadUrl.json()).resolves.toMatchObject({
+      method: "PUT", url: expect.stringContaining("s3.example"), already_exists: false, headers: { "content-type": "application/pdf" },
+    });
+
+    await client.execute({ sql: "UPDATE jobs SET status='done',completed_at=?,updated_at=? WHERE file_hash=?", args: [Date.now(), Date.now(), jobHash] });
+    outputExists = true;
+    const downloadUrl = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}/download-url`, {
+      method: "POST", headers: adminHeaders, body: "{}",
+    }));
+    expect(downloadUrl.status).toBe(200);
+    await expect(downloadUrl.json()).resolves.toMatchObject({ method: "GET", url: expect.stringContaining("s3.example") });
+
+    const unauthedBulk = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/status", {
+      method: "POST", headers: { authorization: "Bearer invalid", "content-type": "application/json" }, body: JSON.stringify({ hashes: [jobHash] }),
+    }));
+    expect(unauthedBulk.status).toBe(401);
+
+    const active = await app.fetch(new Request("https://blobforge.example/api/v1/admin/snapshot", { headers: authorizationHeader }));
+    const activeBody = await active.json() as { admin_tokens: Record<string, unknown>[] };
+    expect(activeBody.admin_tokens.some((token) => token.token_id === created.token_id)).toBe(true);
+
+    const revoke = await app.fetch(new Request(`https://blobforge.example/api/v1/admin/tokens/${created.token_id}/revoke`, {
+      method: "POST", headers: { ...authorizationHeader, origin: "https://blobforge.example", "content-type": "application/json" }, body: "{}",
+    }));
+    expect(revoke.status).toBe(200);
+    const revokedList = await app.fetch(new Request("https://blobforge.example/api/v1/admin/tokens?revoked=true", { headers: authorizationHeader }));
+    await expect(revokedList.json()).resolves.toMatchObject({
+      tokens: [expect.objectContaining({ token_id: created.token_id, revoked_at: expect.any(Number) })],
+    });
+    const deniedAfterRevoke = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/status", {
+      method: "POST", headers: adminHeaders, body: JSON.stringify({ hashes: [jobHash] }),
+    }));
+    expect(deniedAfterRevoke.status).toBe(401);
+  });
 });
