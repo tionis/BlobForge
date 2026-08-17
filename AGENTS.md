@@ -44,9 +44,10 @@ The virtual environment is located at `.venv/` and should be activated automatic
   bound to one ID, shown once, stored only as a SHA-256 hash, revocable, and
   valid for job enqueue/read, bulk status, and signed raw-upload/output-download
   URLs. `POST /api/v1/jobs/status` answers completion for up to 5,000 hashes in
-  one request, so `blobforge hydrate` resolves availability in a single bulk
-  call at any scale. `POST /api/v1/jobs/{hash}/raw-upload-url` and
-  `POST /api/v1/jobs/{hash}/download-url` issue signed PUT/GET URLs, and
+  one request (the client chunks larger sets automatically), so `blobforge
+  hydrate` resolves availability in bulk calls at any scale and prints progress
+  for hashing and status resolution. `POST /api/v1/jobs/{hash}/raw-upload-url`
+  and `POST /api/v1/jobs/{hash}/download-url` issue signed PUT/GET URLs, and
   `blobforge ingest`/`hydrate`/`download`/`preview` stream through them with no
   `BLOBFORGE_S3_*` credentials. The S3 done-hash index and per-hash existence
   checks remain only as fallbacks when no coordinator is configured.

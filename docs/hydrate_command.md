@@ -14,8 +14,9 @@ Given one or more input paths (PDF files and/or directories), the command:
    - Skips files where `<stem>.md` already exists unless `--force` is set.
    - Computes SHA256 using the existing xattr-aware hash path (`compute_sha256_with_cache`).
 3. Runs remote preflight:
-   - Sends all unique local hashes to the coordinator in one `POST
-     /api/v1/jobs/status` bulk request and resolves which have completed
+   - Sends all unique local hashes to the coordinator in `POST
+     /api/v1/jobs/status` bulk requests (automatically chunked to the 5,000
+     hash-per-request server limit) and resolves which have completed
      conversions, regardless of candidate count.
    - If a coordinator is not configured, falls back to the legacy S3 done-hash
      index scan or per-hash existence checks.

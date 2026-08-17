@@ -1,5 +1,22 @@
 # Work Log
 
+## 2026-08-18 (Hydration progress and bulk-status chunking)
+- **Objective:** `blobforge hydrate` gave no feedback while hashing tens of
+  thousands of local PDFs, and the bulk status check silently dropped hashes.
+- **Root cause:** The local hash preflight loop printed nothing until it
+  finished, and `CoordinatorClient.check_statuses` sent every unique hash in a
+  single `POST /api/v1/jobs/status` request even though the coordinator answers
+  at most 5,000 hashes per request (`slice(0, 5000)`), so larger candidate sets
+  were truncated server-side.
+- **Fix:** `check_statuses` now dedupes, chunks into 5,000-hash batches matching
+  the server limit, merges per-chunk results, and accepts an optional
+  `progress(checked, total)` callback. Hydration prints `[hash] n/total files`
+  every 100 files during local preflight and `[status] n/total hashes` after
+  each status chunk. Added tests for chunking/progress and updated the
+  coordinator fake.
+- **Validation:** Full Python suite passes (`108 passed`, one pre-existing
+  datetime warning).
+
 ## 2026-08-18 (Admin token bundle version and usage instructions)
 - **Objective:** Fix the management console's **Create admin token** button,
   which did nothing, and document how to use an admin token from the CLI.
