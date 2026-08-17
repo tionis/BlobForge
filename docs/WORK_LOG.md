@@ -1,5 +1,22 @@
 # Work Log
 
+## 2026-08-18 (Admin token bundle version and usage instructions)
+- **Objective:** Fix the management console's **Create admin token** button,
+  which did nothing, and document how to use an admin token from the CLI.
+- **Root cause:** The `management_ui.ts` bundle gained the admin-token handlers,
+  but the versioned asset path `/static/app-v7.js` was not bumped. Because
+  versioned assets are immutable for one year, browsers kept executing the old
+  cached bundle, which had no `#new-admin-token` handler.
+- **Fix:** Bumped the JavaScript bundle to `/static/app-v8.js` with a matching
+  ETag name in `app.ts`, updated the inline `<script>` reference in `ui.ts`, and
+  updated the coordinator static-asset tests. Only the JS version changed; the
+  stylesheet stayed at `app-v7.css`.
+- **Instructions:** The admin-token credential panel now spells out the exact
+  `export BLOBFORGE_COORDINATOR_URL=...` and `export BLOBFORGE_COORDINATOR_TOKEN=...`
+  lines plus example `blobforge ingest`/`hydrate`/`download` invocations, and
+  the copy button copies the whole instruction block.
+- **Validation:** `npm run check` and all 15 coordinator tests pass.
+
 ## 2026-08-18 (Revocable admin tokens and coordinator-driven hydration)
 - **Objective:** Let operators create per-person admin tokens for `ingest` and
   `hydrate`, replace the S3 done-hash index with an optimized bulk status API,

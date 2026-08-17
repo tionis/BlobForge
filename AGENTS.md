@@ -51,6 +51,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
   `BLOBFORGE_S3_*` credentials. The S3 done-hash index and per-hash existence
   checks remain only as fallbacks when no coordinator is configured.
 
+- **2026-08-18:** The management console's JavaScript bundle is served at the
+  versioned `/static/app-vN.js` path; any change to `management_ui.ts` must bump
+  that path (and the ETag name) together with the inline `<script>` reference in
+  `ui.ts` and the coordinator tests, because the old path is cached immutable
+  for one year. The admin-token credential panel shows the exact
+  `BLOBFORGE_COORDINATOR_URL`/`BLOBFORGE_COORDINATOR_TOKEN` exports and example
+  `blobforge ingest`/`hydrate`/`download` invocations.
+
 - **2026-07-21:** The Bunny Edge Script root is a public static BlobForge
   handbook; administrator login is `/login` and the private application shell is
   `/console`. Public HTML, robots, IndieAuth metadata, and versioned `/static/`
