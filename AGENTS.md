@@ -38,6 +38,21 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-18:** Hydration keeps a persistent local SQLite index
+  (`~/.cache/blobforge/hash_index.sqlite3`, overridable via `BLOBFORGE_CACHE_DIR`
+  or `BLOBFORGE_HASH_INDEX_PATH`) with two tables: file hashes keyed by
+  `(path, size, mtime_ns)` — so unchanged files are reused without re-reading on
+  any filesystem, unlike the xattr cache which silently misses on mounts without
+  `user_xattr` — and done-status answers keyed by content hash with a timestamp.
+  Hydration reconciles incrementally: known-done hashes are never re-sent to the
+  coordinator (immutable content-addressed outputs), previously-missing hashes
+  are re-queried only after a TTL (default 6h,
+  `BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS` or `--status-ttl`), and
+  `--refresh-status` forces a fresh query for every hash. A full range-based
+  reconciliation protocol was considered and rejected: the candidate payload is
+  only ~2 MB for tens of thousands of hashes, so the client-side delta snapshot
+  is the fitting optimization.
+
 - **2026-08-18:** Client-side ingestion and hydration now use revocable
   per-operator admin tokens (`bfa_...`) instead of direct S3 access. Admins
   create them in the management console (`POST /api/v1/admin/tokens`); each is

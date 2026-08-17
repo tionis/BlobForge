@@ -12,12 +12,20 @@ Given one or more input paths (PDF files and/or directories), the command:
 1. Recursively discovers PDF files (`.pdf`, case-insensitive).
 2. Runs local preflight:
    - Skips files where `<stem>.md` already exists unless `--force` is set.
-   - Computes SHA256 using the existing xattr-aware hash path (`compute_sha256_with_cache`).
-3. Runs remote preflight:
-   - Sends all unique local hashes to the coordinator in `POST
+   - Computes SHA256 using a persistent local SQLite index first: files are
+     keyed by `(path, size, mtime_ns)`, so unchanged files are reused without
+     re-reading them on any filesystem. Only index misses fall through to the
+     existing xattr-aware hash path (`compute_sha256_with_cache`).
+3. Runs remote preflight as incremental reconciliation:
+   - Known-done hashes (content-addressed outputs are immutable) are trusted
+     from the local index and never re-sent.
+   - Previously-missing hashes are only re-queried after a TTL (default 6
+     hours, `BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS` or `--status-ttl`).
+   - The remaining delta is sent to the coordinator in `POST
      /api/v1/jobs/status` bulk requests (automatically chunked to the 5,000
-     hash-per-request server limit) and resolves which have completed
-     conversions, regardless of candidate count.
+     hash-per-request server limit) and resolved for completion.
+   - `--refresh-status` forces a fresh query for every hash, ignoring cached
+     answers.
    - If a coordinator is not configured, falls back to the legacy S3 done-hash
      index scan or per-hash existence checks.
 4. When conversion output exists, downloads `<hash>.zip` through a
@@ -30,6 +38,30 @@ The command requires `BLOBFORGE_COORDINATOR_URL` and
 `BLOBFORGE_COORDINATOR_TOKEN` (an admin token created in the management UI) or
 the equivalent `--coordinator-url` / `--token` flags. No S3 credentials are
 needed.
+
+## Local Persistent Index
+
+Hydration maintains a SQLite database (WAL mode) that makes repeat runs fast:
+
+- **File hashes** — keyed by `(path, size, mtime_ns)` with nanosecond
+  precision. This removes the dependency on filesystem extended-attribute
+  support (the xattr cache silently misses on mounts without `user_xattr`),
+  so unchanged files are never re-read.
+- **Done-status answers** — content hash to `(done, checked_at)`. Known-done
+  answers never expire (immutable content-addressed outputs); missing answers
+  expire after the status TTL.
+
+Location is `~/.cache/blobforge/hash_index.sqlite3`, overridable with
+`BLOBFORGE_CACHE_DIR` (directory) or `BLOBFORGE_HASH_INDEX_PATH` (file path).
+
+This is a practical form of set reconciliation: instead of re-transferring the
+whole candidate set each run, the client holds a local snapshot of the
+done-set and only exchanges the delta (new/changed files plus expired missing
+answers). A full range-based reconciliation protocol (IBLT/Merkle-style) was
+considered and rejected as overkill — the candidate payload is only ~2 MB for
+tens of thousands of hashes, and the dominant costs on repeat runs are
+re-reading unchanged files and re-querying the full set, both of which the
+local index eliminates.
 
 ## Asset Path Rewriting
 

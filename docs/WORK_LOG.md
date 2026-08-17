@@ -1,5 +1,26 @@
 # Work Log
 
+## 2026-08-18 (Persistent hydration index and incremental reconciliation)
+- **Objective:** Speed up `blobforge hydrate` on large libraries (30k+ PDFs).
+  Repeated runs were slow because the xattr-only hash cache silently misses on
+  filesystems without `user_xattr`, forcing every file to be re-read, and the
+  whole unique-hash set was re-sent to the coordinator every run.
+- **Design:** Added `blobforge/hash_index.py`, a WAL-mode SQLite index at
+  `~/.cache/blobforge/hash_index.sqlite3` (overridable via `BLOBFORGE_CACHE_DIR`
+  or `BLOBFORGE_HASH_INDEX_PATH`). Two tables: file hashes keyed by
+  `(path, size, mtime_ns)` and done-status answers keyed by content hash with a
+  timestamp. Hydration now reuses indexed hashes instead of re-reading files,
+  and reconciles the done-set incrementally: known-done hashes (immutable
+  content-addressed outputs) are never re-queried, missing hashes are re-queried
+  only after a TTL (default 6h). Added `--refresh-status` and `--status-ttl`
+  hydrate CLI flags. A full range-based set-reconciliation protocol (IBLT-style)
+  was considered and rejected — the ~2 MB candidate payload makes the client-side
+  delta snapshot the fitting optimization.
+- **Validation:** New `tests/test_hash_index.py` (round-trip, invalidation,
+  sticky-done, TTL expiry, batch) and hydrate-level delta tests (known-done skip,
+  TTL re-query, `--refresh-status`, hash-reuse-without-read). Full suite: `119
+  passed` (plus one pre-existing datetime warning).
+
 ## 2026-08-18 (Hydration progress and bulk-status chunking)
 - **Objective:** `blobforge hydrate` gave no feedback while hashing tens of
   thousands of local PDFs, and the bulk status check silently dropped hashes.
