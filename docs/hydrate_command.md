@@ -52,7 +52,7 @@ Hydration maintains a SQLite database (WAL mode) that makes repeat runs fast:
   conversions (`done_hashes`) plus a `(since_ms, cursor)` watermark in a
   `meta` table. The mirror is append-only: content-addressed outputs never
   expire, and entries are dropped only when a signed download proves the
-  output is gone.
+  output is gone. The pre-watermark `hash_status` table is dropped on open.
 
 Location is `~/.cache/blobforge/hash_index.sqlite3`, overridable with
 `BLOBFORGE_CACHE_DIR` (directory) or `BLOBFORGE_HASH_INDEX_PATH` (file path).

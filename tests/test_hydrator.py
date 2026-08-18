@@ -260,3 +260,41 @@ def test_hydrate_reuses_indexed_hash_without_reading_file(tmp_path, monkeypatch)
     assert result == 0
     assert coordinator.download_calls == [file_hash]
     assert (tmp_path / "known.md").exists()
+
+
+def test_hydrate_redownloads_when_markdown_is_deleted(tmp_path):
+    import shutil
+    pdf = tmp_path / "deleted.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\ndeleted\n%%EOF\n")
+    stat_result = pdf.stat()
+    file_hash = compute_sha256_with_cache(str(pdf))
+
+    archive_data = _build_conversion_zip(
+        markdown_text="![img](assets/image.png)\n",
+        assets={"image.png": b"coordinator-image"},
+    )
+    coordinator = FakeCoordinator({file_hash: "done"}, {file_hash: archive_data})
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_file_hash(str(pdf), stat_result.st_size, stat_result.st_mtime_ns, file_hash)
+    index.add_done_hashes([file_hash])
+
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 0
+    assert coordinator.download_calls == [file_hash]
+    assert (tmp_path / "deleted.md").exists()
+    assert (tmp_path / "deleted.assets" / "image.png").read_bytes() == b"coordinator-image"
+
+    # Simulate the user deleting the hydrated output, then hydrate again: the
+    # done mirror still knows the conversion, so it must re-download and
+    # re-hydrate without re-querying the coordinator's done-set.
+    (tmp_path / "deleted.md").unlink()
+    shutil.rmtree(tmp_path / "deleted.assets")
+    coordinator.download_calls = []
+    coordinator.sync_calls = 0
+
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 0
+    assert coordinator.sync_calls == 1  # delta re-synced as usual, membership still True
+    assert coordinator.download_calls == [file_hash]
+    assert (tmp_path / "deleted.md").exists()
+    assert (tmp_path / "deleted.assets" / "image.png").read_bytes() == b"coordinator-image"

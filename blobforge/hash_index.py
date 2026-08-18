@@ -58,6 +58,7 @@ class HashIndex:
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            DROP TABLE IF EXISTS hash_status;
             """
         )
         self._conn.commit()

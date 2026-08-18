@@ -86,3 +86,25 @@ def test_drop_done_hash(tmp_path):
         assert db.is_done("b" * 64) is True
     finally:
         db.close()
+
+
+def test_legacy_hash_status_table_is_dropped(tmp_path):
+    db_path = str(tmp_path / "index.sqlite3")
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE hash_status (hash TEXT PRIMARY KEY, done INTEGER NOT NULL, checked_at REAL NOT NULL)")
+    conn.execute("INSERT INTO hash_status VALUES ('a', 1, 0.0)")
+    conn.commit()
+    conn.close()
+
+    db = HashIndex(db_path=db_path)
+    try:
+        tables = {
+            row[0]
+            for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        assert "hash_status" not in tables
+        assert "done_hashes" in tables
+        assert "meta" in tables
+    finally:
+        db.close()
