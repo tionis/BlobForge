@@ -1,6 +1,6 @@
 [project]
 name = "blobforge"
-version = "0.1.0"
+version = "0.2.0"
 description = "Distributed PDF conversion system with managed coordination and object storage"
 readme = "README.md"
 license = { text = "MIT" }
