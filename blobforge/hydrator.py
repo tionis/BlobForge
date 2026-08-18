@@ -360,7 +360,9 @@ def _hydrate_with_index(
 
     work_items: List[Dict[str, str]] = []
 
-    for pdf_path in pdf_files:
+    for idx, pdf_path in enumerate(pdf_files, start=1):
+        if idx % 100 == 0:
+            print(f"  [hash] {idx}/{len(pdf_files)} files", flush=True)
         base_dir = os.path.dirname(pdf_path)
         stem = os.path.splitext(os.path.basename(pdf_path))[0]
         markdown_path = os.path.join(base_dir, f"{stem}.md")
