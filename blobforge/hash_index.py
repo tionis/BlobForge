@@ -96,12 +96,20 @@ class HashIndex:
     # Done-set mirror (incremental reconciliation via watermark)
     # ------------------------------------------------------------------
     def get_watermark(self) -> Tuple[int, str]:
-        """Return the (since_ms, cursor) watermark from the last completed sync."""
+        """Return the (since_ms, cursor) watermark from the last completed sync.
+
+        The coordinator's done-sync protocol now pages over a strictly monotonic
+        ``done_seq`` and resumes strictly after the previous ``since``. Watermarks
+        written by older clients (inclusive timestamp + cursor tie-break) are not
+        forward-compatible, so they are treated as absent and force a full resync.
+        """
         row = self._conn.execute("SELECT value FROM meta WHERE key='done_watermark'").fetchone()
         if row is None:
             return 0, ""
         try:
             parsed = json.loads(row[0])
+            if parsed.get("version") != 2:
+                return 0, ""
             since = int(parsed.get("since", 0))
             cursor = str(parsed.get("cursor", ""))
             return since, cursor
@@ -109,7 +117,7 @@ class HashIndex:
             return 0, ""
 
     def set_watermark(self, since_ms: int, cursor: str) -> None:
-        value = json.dumps({"since": int(since_ms), "cursor": cursor or ""})
+        value = json.dumps({"version": 2, "since": int(since_ms), "cursor": cursor or ""})
         self._conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('done_watermark', ?)",
             (value,),

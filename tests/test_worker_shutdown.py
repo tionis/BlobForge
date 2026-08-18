@@ -50,7 +50,7 @@ class TestWorkerGracefulShutdown(unittest.TestCase):
         self.assertEqual(payload["recovered_from"], "graceful_shutdown")
         self.assertEqual(payload["original_name"], "sample.pdf")
 
-        s3.release_lock.assert_called_once_with(job_hash)
+        s3.release_lock.assert_called_once_with(job_hash, worker_id="atlantis")
         s3.deregister_worker.assert_called_once()
         heartbeat.stop.assert_called_once()
         heartbeat.join.assert_called_once()

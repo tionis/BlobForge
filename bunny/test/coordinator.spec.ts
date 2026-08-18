@@ -196,6 +196,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(body).toContain("Bring a Linux machine online");
     expect(body).toContain('href="/console"');
     expect(body).toContain('href="/static/docs-v1.css"');
+    expect(body).toContain("scripts/install-linux-worker.sh");
     expect(page.headers.get("cache-control")).toContain("public, max-age=300");
     expect(page.headers.get("cdn-cache-control")).toContain("max-age=86400");
     expect(page.headers.get("surrogate-control")).toContain("max-age=86400");
@@ -211,8 +212,8 @@ describe("Bunny BlobForge coordinator", () => {
     for (const asset of [
       ["/static/docs-v1.css", "text/css"],
       ["/static/blobforge-v1.svg", "image/svg+xml"],
-      ["/static/app-v7.css", "text/css"],
-      ["/static/app-v8.js", "text/javascript"],
+      ["/static/app-v8.css", "text/css"],
+      ["/static/app-v9.js", "text/javascript"],
       ["/static/markdown-v1.js", "text/javascript"],
       ["/static/login-v4.js", "text/javascript"],
     ]) {
@@ -258,7 +259,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(consoleBody).toContain('id="toc-toggle"');
     expect(consoleBody).toContain('id="failure-viewer"');
     expect(consolePage.headers.get("cache-control")).toContain("no-store");
-    const appScript = await app.fetch(new Request("https://blobforge.example/static/app-v8.js"));
+    const appScript = await app.fetch(new Request("https://blobforge.example/static/app-v9.js"));
     const appBody = await appScript.text();
     expect(() => new Function(appBody)).not.toThrow();
     expect(appBody).toContain("localStorage.setItem");
@@ -275,10 +276,11 @@ describe("Bunny BlobForge coordinator", () => {
     expect(appBody).toContain("showFailures");
     expect(appBody).not.toContain("markdownToHtml");
     expect(appBody).toContain("location.replace('/login')");
+    expect(appBody).toContain("/auth/logout");
     const markdownScript = await app.fetch(new Request("https://blobforge.example/static/markdown-v1.js"));
     expect(markdownScript.headers.get("content-type")).toContain("text/javascript");
     expect((await markdownScript.text()).length).toBeGreaterThan(10_000);
-    const stylesheet = await app.fetch(new Request("https://blobforge.example/static/app-v7.css"));
+    const stylesheet = await app.fetch(new Request("https://blobforge.example/static/app-v8.css"));
     const css = await stylesheet.text();
     expect(css).toContain(".viewer-toc");
     expect(css).toContain(".viewer-toc.open");
@@ -509,23 +511,22 @@ describe("Bunny BlobForge coordinator", () => {
 
   it("lists done hashes via the done-since watermark with keyset pagination", async () => {
     const t0 = 1_700_000_000_000;
-    const done: { hash: string; at: number }[] = [];
+    const done: { hash: string; seq: number }[] = [];
     for (let i = 1; i <= 6; i++) {
       const hash = i.toString().repeat(64);
-      const at = t0 + i * 1000;
       expect((await call(`/api/v1/jobs/${hash}`, "PUT", {
         original_name: `book${i}.pdf`, size_bytes: i, paths: [`books/book${i}.pdf`], tags: [], priority: "3_normal",
       })).status).toBe(200);
       await client.execute({
-        sql: "UPDATE jobs SET status='done',completed_at=?,updated_at=? WHERE file_hash=?",
-        args: [at, at, hash],
+        sql: "UPDATE jobs SET status='done',done_seq=?,completed_at=?,updated_at=? WHERE file_hash=?",
+        args: [i, t0 + i * 1000, t0 + i * 1000, hash],
       });
-      done.push({ hash, at });
+      done.push({ hash, seq: i });
     }
     for (let i = 7; i <= 9; i++) { // still todo
       const hash = i.toString().repeat(64);
       await client.execute({
-        sql: "UPDATE jobs SET status='todo',completed_at=NULL,updated_at=? WHERE file_hash=?",
+        sql: "UPDATE jobs SET status='todo',done_seq=NULL,completed_at=NULL,updated_at=? WHERE file_hash=?",
         args: [t0 + i * 1000, hash],
       });
     }
@@ -535,30 +536,21 @@ describe("Bunny BlobForge coordinator", () => {
     expect(first.status).toBe(200);
     expect(firstBody.hashes).toEqual([done[0]!.hash, done[1]!.hash]);
     expect(firstBody.complete).toBe(false);
-    expect(firstBody.next_since).toBe(done[1]!.at);
-    expect(firstBody.next_cursor).toBe(done[1]!.hash);
+    expect(firstBody.next_since).toBe(done[1]!.seq);
+    expect(firstBody.next_cursor).toBe("");
 
-    const second = await call(
-      `/api/v1/jobs/done-since?since=${firstBody.next_since}&cursor=${firstBody.next_cursor}&limit=2`,
-    );
+    const second = await call(`/api/v1/jobs/done-since?since=${firstBody.next_since}&limit=2`);
     const secondBody = await second.json() as { hashes: string[]; next_since: number; next_cursor: string; complete: boolean };
     expect(secondBody.hashes).toEqual([done[2]!.hash, done[3]!.hash]);
     expect(secondBody.complete).toBe(false);
 
-    const rest = await call(
-      `/api/v1/jobs/done-since?since=${secondBody.next_since}&cursor=${secondBody.next_cursor}&limit=100`,
-    );
+    const rest = await call(`/api/v1/jobs/done-since?since=${secondBody.next_since}&limit=100`);
     const restBody = await rest.json() as { hashes: string[]; next_since: number; next_cursor: string; complete: boolean };
     expect(restBody.hashes).toEqual([done[4]!.hash, done[5]!.hash]);
     expect(restBody.complete).toBe(true);
 
-    // A bare `since` watermark includes the row exactly at that timestamp when no
-    // cursor disambiguates it (keyset tie-break); resuming passes both together.
-    const since = await call(`/api/v1/jobs/done-since?since=${done[3]!.at}`);
-    const sinceBody = await since.json() as { hashes: string[] };
-    expect(sinceBody.hashes).toEqual([done[3]!.hash, done[4]!.hash, done[5]!.hash]);
-
-    const resumed = await call(`/api/v1/jobs/done-since?since=${done[3]!.at}&cursor=${done[3]!.hash}`);
+    // A bare `since` watermark resumes strictly after that done_seq (exclusive).
+    const resumed = await call(`/api/v1/jobs/done-since?since=${done[3]!.seq}`);
     const resumedBody = await resumed.json() as { hashes: string[] };
     expect(resumedBody.hashes).toEqual([done[4]!.hash, done[5]!.hash]);
 
@@ -566,5 +558,120 @@ describe("Bunny BlobForge coordinator", () => {
       headers: { authorization: "Bearer invalid" },
     }));
     expect(unauth.status).toBe(401);
+  });
+
+  it("never skips same-millisecond completions at a page boundary", async () => {
+    const at = 1_700_000_000_000;
+    const hashes: string[] = [];
+    for (let i = 1; i <= 5; i++) {
+      const hash = i.toString().repeat(64);
+      expect((await call(`/api/v1/jobs/${hash}`, "PUT", {
+        original_name: `same-ms-${i}.pdf`, size_bytes: i, paths: [], tags: [], priority: "3_normal",
+      })).status).toBe(200);
+      await client.execute({
+        sql: "UPDATE jobs SET status='done',done_seq=?,completed_at=?,updated_at=? WHERE file_hash=?",
+        args: [i, at, at, hash],
+      });
+      hashes.push(hash);
+    }
+    // All five complete in the same millisecond; a (completed_at, file_hash)
+    // cursor could shadow the lowest hashes, done_seq must return each once.
+    let cursor = 0;
+    let collected: string[] = [];
+    for (let guard = 0; guard < 10; guard++) {
+      const body = await (await call(`/api/v1/jobs/done-since?since=${cursor}&limit=2`)).json() as {
+        hashes: string[]; next_since: number; complete: boolean;
+      };
+      collected = [...collected, ...body.hashes];
+      if (body.complete) break;
+      cursor = body.next_since;
+    }
+    expect(collected).toEqual(hashes);
+  });
+
+  it("reports the recovered lease count and does not mutate state on snapshot", async () => {
+    const hash = "e".repeat(64);
+    await call(`/api/v1/jobs/${hash}`, "PUT", { original_name: "snapshot.pdf", priority: "3_normal" });
+    await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
+    await client.execute({ sql: "UPDATE jobs SET lease_expires_at=0 WHERE file_hash=?", args: [hash] });
+
+    const before = await database.snapshot(false) as { jobs: Record<string, unknown>[] };
+    expect(before.jobs[0]).toMatchObject({ status: "processing", retry_count: 0 });
+    expect(await database.recoverExpiredLeases()).toBe(1);
+    const after = await database.getJob(hash);
+    expect(after?.status).toBe("todo");
+    expect(after?.retry_count).toBe(1);
+  });
+
+  it("fences fail and release against an expired lease", async () => {
+    const hash = "9".repeat(64);
+    await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "test" });
+    await call(`/api/v1/jobs/${hash}`, "PUT", { original_name: "fenced.pdf", priority: "3_normal" });
+    const claimBody = await (await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" })).json() as { job: Record<string, unknown> };
+    const lease = claimBody.job.lease_token;
+    await client.execute({ sql: "UPDATE jobs SET lease_expires_at=0 WHERE file_hash=?", args: [hash] });
+
+    const failed = await call(`/api/v1/jobs/${hash}/fail`, "POST", {
+      worker_id: "worker-1", lease_token: lease, error: "too late",
+    });
+    expect(failed.status).toBe(409);
+    expect((await database.getJob(hash))?.status).toBe("processing");
+
+    const released = await call(`/api/v1/jobs/${hash}/release`, "POST", {
+      worker_id: "worker-1", lease_token: lease,
+    });
+    expect(released.status).toBe(409);
+    expect((await database.getJob(hash))?.status).toBe("processing");
+
+    await client.execute({ sql: "UPDATE jobs SET lease_expires_at=? WHERE file_hash=?", args: [Date.now() + 60_000, hash] });
+    expect((await call(`/api/v1/jobs/${hash}/release`, "POST", {
+      worker_id: "worker-1", lease_token: lease,
+    })).status).toBe(200);
+    expect((await database.getJob(hash))?.status).toBe("todo");
+  });
+
+  it("rejects malformed JSON bodies with 400 and rejects HTTP IndieAuth endpoints", async () => {
+    const bad = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/status", {
+      method: "POST",
+      headers: { authorization: "Bearer client-secret", "content-type": "application/json" },
+      body: "{not json",
+    }));
+    expect(bad.status).toBe(400);
+    const noType = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/status", {
+      method: "POST", headers: { authorization: "Bearer client-secret" }, body: "{}",
+    }));
+    expect(noType.status).toBe(400);
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://alice.example/") return new Response(
+        '<link rel="authorization_endpoint" href="http://auth.example/authorize"><link rel="token_endpoint" href="http://auth.example/token">',
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const login = await app.fetch(new Request("https://blobforge.example/auth/login?me=alice.example"));
+    expect(login.status).toBe(400);
+    await expect(login.json()).resolves.toMatchObject({ error: expect.stringContaining("HTTPS") });
+  });
+
+  it("marks the IndieAuth login redirect as private and non-cacheable", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://alice.example/") return new Response(
+        '<link rel="indieauth-metadata" href="https://auth.example/metadata">',
+        { status: 200, headers: { "content-type": "text/html" } },
+      );
+      if (url === "https://auth.example/metadata") return Response.json({
+        issuer: "https://auth.example/",
+        authorization_endpoint: "https://auth.example/authorize",
+        token_endpoint: "https://auth.example/token",
+      });
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    const login = await app.fetch(new Request("https://blobforge.example/auth/login?me=alice.example"));
+    expect(login.status).toBe(302);
+    expect(login.headers.get("cache-control")).toContain("no-store");
+    expect(login.headers.get("cdn-cache-control")).toContain("no-store");
   });
 });

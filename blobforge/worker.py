@@ -42,6 +42,7 @@ from .config import (
 )
 from .s3_client import S3Client
 from .coordinator_client import CoordinatorClient, CoordinatorError
+from .utils import rewrite_asset_paths, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -831,7 +832,7 @@ class Worker:
                     self.s3.put_object(todo_key, json.dumps(marker_content))
                     recovered_count += 1
                 
-                self.s3.release_lock(job_hash)
+                self.s3.release_lock(job_hash, worker_id=self.id)
         
         if recovered_count > 0 or dead_count > 0:
             if recovered_count > 0:
@@ -856,7 +857,14 @@ class Worker:
         Returns the job hash if acquired, None otherwise.
         """
         if self.coordinator:
-            job = self.coordinator.claim_job(self.id, PRIORITIES)
+            try:
+                job = self.coordinator.claim_job(self.id, PRIORITIES)
+            except CoordinatorError as e:
+                if e.status in (401, 403):
+                    raise
+                logger.warning(f"Coordinator claim failed transiently: {e}")
+                self._empty_poll_count += 1
+                return None
             self.heartbeat.apply_runtime_config(self.coordinator.runtime_config)
             if not job:
                 self._empty_poll_count += 1
@@ -961,12 +969,18 @@ class Worker:
             return
         self.heartbeat.set_suspended(True)
         if self.coordinator:
-            response = self.coordinator.worker_state(
-                self.id,
-                status="suspended",
-                detail=detail,
-            )
-            self.heartbeat.apply_runtime_config(response.get("config") or self.coordinator.runtime_config)
+            try:
+                response = self.coordinator.worker_state(
+                    self.id,
+                    status="suspended",
+                    detail=detail,
+                )
+                self.heartbeat.apply_runtime_config(response.get("config") or self.coordinator.runtime_config)
+            except CoordinatorError as e:
+                if e.status in (401, 403):
+                    raise
+                logger.warning(f"Failed to publish suspended state; will retry: {e}")
+                return
         self._suspension_key = key
 
     def resume(self) -> None:
@@ -974,8 +988,14 @@ class Worker:
         if self._suspension_key is None:
             return
         if self.coordinator:
-            response = self.coordinator.worker_state(self.id, status="idle", detail={})
-            self.heartbeat.apply_runtime_config(response.get("config") or self.coordinator.runtime_config)
+            try:
+                response = self.coordinator.worker_state(self.id, status="idle", detail={})
+                self.heartbeat.apply_runtime_config(response.get("config") or self.coordinator.runtime_config)
+            except CoordinatorError as e:
+                if e.status in (401, 403):
+                    raise
+                logger.warning(f"Failed to publish resumed state; will retry: {e}")
+                return
         self._suspension_key = None
         self.heartbeat.set_suspended(False)
     
@@ -1186,7 +1206,7 @@ class Worker:
             # 3. Create info.json with enriched metadata
             info = {
                 "hash": job_hash,
-                "converted_at": datetime.now().isoformat() + "Z",
+                "converted_at": utc_now_iso(),
                 "worker_id": self.id,
                 "original_filename": s3_meta.get("original-name", "unknown.pdf"),
                 "tags": json.loads(s3_meta.get("tags", "[]")),
@@ -1254,17 +1274,22 @@ class Worker:
         # Update worker metrics in the active coordination backend.
         self._update_worker_metrics()
         if self.coordinator:
-            self.coordinator.complete(
-                job_hash,
-                worker_id=self.id,
-                lease_token=self.current_lease_token or "",
-                result={
-                    "output_key": f"{S3_PREFIX_DONE}/{job_hash}.zip",
-                    "size_bytes": file_size,
-                    "processing_time_seconds": round(processing_time, 2),
-                },
-                metrics=self.get_throughput_metrics(),
-            )
+            try:
+                self.coordinator.complete(
+                    job_hash,
+                    worker_id=self.id,
+                    lease_token=self.current_lease_token or "",
+                    result={
+                        "output_key": f"{S3_PREFIX_DONE}/{job_hash}.zip",
+                        "size_bytes": file_size,
+                        "processing_time_seconds": round(processing_time, 2),
+                    },
+                    metrics=self.get_throughput_metrics(),
+                )
+            except CoordinatorError as e:
+                if e.status in (401, 403):
+                    raise
+                logger.error(f"Failed to record completion for {job_hash[:12]}...: {e}")
             self.heartbeat.set_job(None)
             self.current_job = None
             self.current_priority = None
@@ -1277,8 +1302,8 @@ class Worker:
         for priority in PRIORITIES:
             self.s3.delete_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}")
         
-        # Release processing lock
-        self.s3.release_lock(job_hash)
+        # Release processing lock (only if we still own it)
+        self.s3.release_lock(job_hash, worker_id=self.id)
         
         # Clean up any previous failed marker
         self.s3.delete_object(f"{S3_PREFIX_FAILED}/{job_hash}")
@@ -1300,7 +1325,7 @@ class Worker:
         avg_time = self._total_processing_time / self._jobs_completed if self._jobs_completed > 0 else 0
         
         return {
-            "session_start": datetime.fromtimestamp(self._session_start).isoformat() + "Z",
+            "session_start": utc_now_iso(),
             "session_duration_seconds": round(session_duration, 1),
             "jobs_completed": self._jobs_completed,
             "jobs_failed": self._jobs_failed,
@@ -1341,18 +1366,23 @@ class Worker:
             traceback_str = traceback.format_exc()
         
         if self.coordinator:
-            result = self.coordinator.fail(
-                job_hash,
-                worker_id=self.id,
-                lease_token=self.current_lease_token or "",
-                error=reason,
-                traceback=traceback_str,
-                context=error_context,
-                metrics=self.get_throughput_metrics(),
-            )
-            logger.warning(
-                f"Coordinator recorded job {job_hash} as {result.get('status', 'failed')}"
-            )
+            try:
+                result = self.coordinator.fail(
+                    job_hash,
+                    worker_id=self.id,
+                    lease_token=self.current_lease_token or "",
+                    error=reason,
+                    traceback=traceback_str,
+                    context=error_context,
+                    metrics=self.get_throughput_metrics(),
+                )
+                logger.warning(
+                    f"Coordinator recorded job {job_hash} as {result.get('status', 'failed')}"
+                )
+            except CoordinatorError as e:
+                if e.status in (401, 403):
+                    raise
+                logger.error(f"Failed to record failure for {job_hash[:12]}...: {e}")
             self.heartbeat.set_job(None)
             self.current_job = None
             self.current_priority = None
@@ -1420,8 +1450,7 @@ class Worker:
         text, ext, images = text_from_rendered(rendered)
         
         # Update image paths in markdown to use assets/ prefix
-        for img_name in images.keys():
-            text = text.replace(f"({img_name})", f"(assets/{img_name})")
+        text = rewrite_asset_paths(text, images.keys())
         
         # Extract metadata (convert to JSON-serializable dict)
         meta = {}
@@ -1534,6 +1563,7 @@ class Worker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
         deadline = time.monotonic() + timeout if timeout > 0 else None
         while True:
@@ -1549,7 +1579,12 @@ class Worker:
                     pass
                 if deadline is None or time.monotonic() < deadline:
                     continue
-                proc.kill()
+                # Kill the whole child process group so orphaned marker/PyTorch
+                # helper processes do not survive their parent.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (AttributeError, ProcessLookupError, PermissionError):
+                    proc.kill()
                 stdout, stderr = proc.communicate()
                 if stderr:
                     logger.warning(f"Conversion subprocess stderr after timeout:\n{stderr[-4000:]}")
@@ -1625,12 +1660,13 @@ class Worker:
             except CoordinatorError as e:
                 logger.error(f"Failed to release coordinator lease for {job_hash}: {e}")
                 requeued = False
-            self.heartbeat.set_job(None)
-            self.current_job = None
-            self.current_priority = None
-            self.current_lease_token = None
-            self.current_retry_count = 0
-            self.current_job_data = None
+            if requeued:
+                self.heartbeat.set_job(None)
+                self.current_job = None
+                self.current_priority = None
+                self.current_lease_token = None
+                self.current_retry_count = 0
+                self.current_job_data = None
             return requeued
         
         lock_info = self.s3.get_lock_info(job_hash) or {}
@@ -1663,7 +1699,7 @@ class Worker:
                 logger.error(f"Failed to requeue active job {job_hash} during shutdown: {fallback_error}")
         
         try:
-            self.s3.release_lock(job_hash)
+            self.s3.release_lock(job_hash, worker_id=self.id)
         except Exception as e:
             logger.warning(f"Failed to release lock for {job_hash} during shutdown: {e}")
         
@@ -1754,9 +1790,23 @@ def run_worker_loop(worker: Worker, run_once: bool = False,
             if conditions:
                 worker.resume()
 
-            job = worker.acquire_job()
+            try:
+                job = worker.acquire_job()
+            except CoordinatorError as e:
+                if e.status in (401, 403):
+                    raise
+                logger.warning(f"Coordinator temporarily unavailable during acquisition: {e}")
+                if run_once:
+                    break
+                time.sleep(worker.get_poll_backoff())
+                continue
             if job:
-                worker.process(job, run_schedule=run_schedule)
+                try:
+                    worker.process(job, run_schedule=run_schedule)
+                except CoordinatorError as e:
+                    if e.status in (401, 403):
+                        raise
+                    logger.warning(f"Coordinator temporarily unavailable while processing: {e}")
                 if run_once:
                     break
             else:

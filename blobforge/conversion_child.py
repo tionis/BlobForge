@@ -12,6 +12,8 @@ import sys
 import traceback
 from typing import Callable, Optional
 
+from .utils import rewrite_asset_paths
+
 
 def _extract_marker_meta(rendered) -> dict:
     """Convert marker metadata to a JSON-serializable dictionary."""
@@ -53,8 +55,7 @@ def run_conversion(
     report("Extracting content", 80)
     text, _ext, images = text_from_rendered(rendered)
 
-    for img_name in images.keys():
-        text = text.replace(f"({img_name})", f"(assets/{img_name})")
+    text = rewrite_asset_paths(text, images.keys())
 
     report("Writing output", 90)
     md_path = os.path.join(out_dir, "content.md")

@@ -19,8 +19,9 @@ import socket
 import logging
 import time
 import platform
-from datetime import datetime
 from typing import Dict, Any, Optional
+
+from .utils import utc_now_iso
 
 # =============================================================================
 # Logging Configuration (Local - needed before anything else)
@@ -108,7 +109,7 @@ def get_worker_metadata() -> Dict[str, Any]:
         "python_version": platform.python_version(),
         "cpu_count": cpu_count,
         "memory_gb": memory_gb,
-        "registered_at": datetime.utcnow().isoformat() + "Z",
+        "registered_at": utc_now_iso(),
         "pid": os.getpid(),
     }
 
@@ -213,14 +214,4 @@ def get_remote_config() -> Dict[str, Any]:
     return _remote_config.get_all()
 
 def refresh_remote_config():
-    _remote_config.force_refresh()
-
-# =============================================================================
-# Legacy constants (for backward compatibility, read from remote config)
-# These will use defaults until remote config is fetched
-# =============================================================================
-# Note: Code should migrate to using get_*() functions instead
-MAX_RETRIES = _remote_config.get("max_retries")
-HEARTBEAT_INTERVAL_SECONDS = _remote_config.get("heartbeat_interval")
-STALE_TIMEOUT_MINUTES = _remote_config.get("stale_timeout_minutes")
-CONVERSION_TIMEOUT_SECONDS = _remote_config.get("conversion_timeout") 
+    _remote_config.force_refresh() 

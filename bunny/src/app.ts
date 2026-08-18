@@ -1,9 +1,9 @@
 import { CoordinatorDatabase, PRIORITIES, type JobRecord, type JobStatus, type Priority } from "./database";
 import type { ObjectTransferStore } from "./object_store";
-import { APP_CSS, LOGIN_JS, VIEWER_CSS, renderHome } from "./ui";
+import { APP_CSS, APP_JS_VERSION, APP_CSS_VERSION, BRAND_SVG_VERSION, LOGIN_JS, LOGIN_JS_VERSION, MARKDOWN_JS_VERSION, VIEWER_CSS, renderHome } from "./ui";
 import { APP_JS } from "./management_ui";
 import { MARKDOWN_JS } from "./generated/markdown_bundle";
-import { BRAND_SVG, DOCS_CSS, ROBOTS_TXT, renderDocs } from "./docs_ui";
+import { BRAND_SVG, DOCS_CSS, DOCS_VERSION, ROBOTS_TXT, renderDocs } from "./docs_ui";
 
 export interface AppConfig {
   clientApiToken: string;
@@ -22,6 +22,12 @@ function json(data: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(data), { ...init, headers });
 }
 
+class ClientError extends Error {
+  constructor(message: string, readonly status = 400) {
+    super(message);
+  }
+}
+
 function error(message: string, status = 400): Response {
   return json({ error: message }, { status });
 }
@@ -33,7 +39,6 @@ function html(body: string, status = 200): Response {
     "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
   });
   setPrivateNoCache(headers);
-  headers.set("vary", "Cookie");
   return new Response(body, { status, headers });
 }
 
@@ -168,32 +173,36 @@ function headerLink(response: Response, rel: string): string | null {
 
 async function discoverIndieAuth(me: string): Promise<{ authorization: string; token: string; issuer: string }> {
   const profileUrl = new URL(me);
-  if (profileUrl.protocol !== "https:") throw new Error("Admin profile must use HTTPS");
+  if (profileUrl.protocol !== "https:") throw new ClientError("Admin profile must use HTTPS");
   const response = await fetch(profileUrl, { redirect: "follow", headers: { accept: "text/html" } });
-  if (!response.ok) throw new Error(`Could not fetch admin profile (${response.status})`);
+  if (!response.ok) throw new ClientError(`Could not fetch admin profile (${response.status})`);
   const body = await response.text();
   const base = response.url || profileUrl.toString();
   const metadataRef = headerLink(response, "indieauth-metadata") || linkRelations(body, "indieauth-metadata")[0];
   if (metadataRef) {
     const metadataUrl = new URL(metadataRef, base);
-    if (metadataUrl.protocol !== "https:") throw new Error("IndieAuth metadata must use HTTPS");
+    if (metadataUrl.protocol !== "https:") throw new ClientError("IndieAuth metadata must use HTTPS");
     const metadataResponse = await fetch(metadataUrl, { headers: { accept: "application/json" } });
-    if (!metadataResponse.ok) throw new Error(`Could not fetch IndieAuth metadata (${metadataResponse.status})`);
+    if (!metadataResponse.ok) throw new ClientError(`Could not fetch IndieAuth metadata (${metadataResponse.status})`);
     const metadata = await metadataResponse.json() as Record<string, unknown>;
     const discovered = {
       authorization: String(metadata.authorization_endpoint || ""),
       token: String(metadata.token_endpoint || ""),
       issuer: String(metadata.issuer || ""),
     };
-    if (!discovered.authorization || !discovered.token || !discovered.issuer) throw new Error("Incomplete IndieAuth metadata");
-    for (const endpoint of Object.values(discovered)) if (new URL(endpoint).protocol !== "https:") throw new Error("IndieAuth endpoints must use HTTPS");
+    if (!discovered.authorization || !discovered.token || !discovered.issuer) throw new ClientError("Incomplete IndieAuth metadata");
+    for (const endpoint of Object.values(discovered)) if (new URL(endpoint).protocol !== "https:") throw new ClientError("IndieAuth endpoints must use HTTPS");
     return discovered;
   }
   const authorization = headerLink(response, "authorization_endpoint") || linkRelations(body, "authorization_endpoint")[0];
   const token = headerLink(response, "token_endpoint") || linkRelations(body, "token_endpoint")[0];
-  if (!authorization || !token) throw new Error("No IndieAuth endpoints found on admin profile");
+  if (!authorization || !token) throw new ClientError("No IndieAuth endpoints found on admin profile");
   const resolvedAuthorization = new URL(authorization, base);
-  return { authorization: resolvedAuthorization.toString(), token: new URL(token, base).toString(), issuer: resolvedAuthorization.origin + "/" };
+  const resolvedToken = new URL(token, base);
+  for (const endpoint of [resolvedAuthorization, resolvedToken]) {
+    if (endpoint.protocol !== "https:") throw new ClientError("IndieAuth endpoints must use HTTPS");
+  }
+  return { authorization: resolvedAuthorization.toString(), token: resolvedToken.toString(), issuer: resolvedAuthorization.origin + "/" };
 }
 
 function jobJson(job: JobRecord, includeLease = true): Record<string, unknown> {
@@ -218,13 +227,13 @@ export class BlobForgeApp {
     try {
       const url = new URL(request.url);
       const staticRequest = request.method === "GET" || request.method === "HEAD";
-      if (staticRequest && url.pathname === "/") return publicHtml(request, renderDocs(), "blobforge-docs-v1");
-      if (staticRequest && url.pathname === "/static/docs-v1.css") return publicResponse(request, DOCS_CSS, "text/css; charset=utf-8", "blobforge-docs-css-v1", true);
-      if (staticRequest && url.pathname === "/static/blobforge-v1.svg") return publicResponse(request, BRAND_SVG, "image/svg+xml; charset=utf-8", "blobforge-brand-v1", true);
-      if (staticRequest && url.pathname === "/static/app-v7.css") return publicResponse(request, `${APP_CSS}${VIEWER_CSS}`, "text/css; charset=utf-8", "blobforge-app-css-v7", true);
-      if (staticRequest && url.pathname === "/static/app-v8.js") return publicResponse(request, APP_JS, "text/javascript; charset=utf-8", "blobforge-app-js-v8", true);
-      if (staticRequest && url.pathname === "/static/markdown-v1.js") return publicResponse(request, MARKDOWN_JS, "text/javascript; charset=utf-8", "blobforge-markdown-v1", true);
-      if (staticRequest && url.pathname === "/static/login-v4.js") return publicResponse(request, LOGIN_JS, "text/javascript; charset=utf-8", "blobforge-login-v4", true);
+      if (staticRequest && url.pathname === "/") return publicHtml(request, renderDocs(), `blobforge-docs-v${DOCS_VERSION}`);
+      if (staticRequest && url.pathname === `/static/docs-v${DOCS_VERSION}.css`) return publicResponse(request, DOCS_CSS, "text/css; charset=utf-8", `blobforge-docs-css-v${DOCS_VERSION}`, true);
+      if (staticRequest && url.pathname === `/static/blobforge-v${BRAND_SVG_VERSION}.svg`) return publicResponse(request, BRAND_SVG, "image/svg+xml; charset=utf-8", `blobforge-brand-v${BRAND_SVG_VERSION}`, true);
+      if (staticRequest && url.pathname === `/static/app-v${APP_CSS_VERSION}.css`) return publicResponse(request, `${APP_CSS}${VIEWER_CSS}`, "text/css; charset=utf-8", `blobforge-app-css-v${APP_CSS_VERSION}`, true);
+      if (staticRequest && url.pathname === `/static/app-v${APP_JS_VERSION}.js`) return publicResponse(request, APP_JS, "text/javascript; charset=utf-8", `blobforge-app-js-v${APP_JS_VERSION}`, true);
+      if (staticRequest && url.pathname === `/static/markdown-v${MARKDOWN_JS_VERSION}.js`) return publicResponse(request, MARKDOWN_JS, "text/javascript; charset=utf-8", `blobforge-markdown-v${MARKDOWN_JS_VERSION}`, true);
+      if (staticRequest && url.pathname === `/static/login-v${LOGIN_JS_VERSION}.js`) return publicResponse(request, LOGIN_JS, "text/javascript; charset=utf-8", `blobforge-login-v${LOGIN_JS_VERSION}`, true);
       if (staticRequest && url.pathname === "/robots.txt") return publicResponse(request, ROBOTS_TXT, "text/plain; charset=utf-8", "blobforge-robots-v1");
       if (staticRequest && url.pathname === "/client-metadata.json") return this.clientMetadata(request, url);
       if (url.pathname === "/console" && request.method === "GET") return html(renderHome(true, "", `${url.origin}/auth/callback`));
@@ -232,17 +241,18 @@ export class BlobForgeApp {
       if (!url.pathname.startsWith("/api/v1/") && !url.pathname.startsWith("/auth/")) return error("Not found", 404);
 
       await this.db.ensureSchema();
-      if (url.pathname === "/auth/login" && request.method === "GET") return this.login(request);
-      if (url.pathname === "/auth/callback" && request.method === "GET") return this.callback(request);
-      if (url.pathname === "/auth/logout" && request.method === "POST") return this.logout(request);
-      if (url.pathname === "/auth/status" && request.method === "GET") return this.authStatus(request);
+      if (url.pathname === "/auth/login" && request.method === "GET") return await this.login(request);
+      if (url.pathname === "/auth/callback" && request.method === "GET") return await this.callback(request);
+      if (url.pathname === "/auth/logout" && request.method === "POST") return await this.logout(request);
+      if (url.pathname === "/auth/status" && request.method === "GET") return await this.authStatus(request);
       if (url.pathname === "/api/v1/health" && request.method === "GET") return json({ ok: true, service: "blobforge-bunny-coordinator", database: "connected" });
-      if (url.pathname.startsWith("/api/v1/admin/")) return this.adminApi(request, url);
-      if (url.pathname.startsWith("/api/v1/")) return this.workerApi(request, url);
+      if (url.pathname.startsWith("/api/v1/admin/")) return await this.adminApi(request, url);
+      if (url.pathname.startsWith("/api/v1/")) return await this.workerApi(request, url);
       return error("Not found", 404);
     } catch (cause) {
+      if (cause instanceof ClientError) return error(cause.message, cause.status);
       console.error(cause);
-      return error(cause instanceof Error ? cause.message : "Internal error", 500);
+      return error("Internal error", 500);
     }
   }
 
@@ -257,9 +267,14 @@ export class BlobForgeApp {
   }
 
   private async body(request: Request): Promise<Record<string, unknown>> {
-    if (!(request.headers.get("content-type") || "").includes("application/json")) throw new Error("Expected application/json");
-    const value = await request.json();
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected a JSON object");
+    if (!(request.headers.get("content-type") || "").includes("application/json")) throw new ClientError("Expected application/json");
+    let value: unknown;
+    try {
+      value = await request.json();
+    } catch {
+      throw new ClientError("Invalid JSON body");
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new ClientError("Expected a JSON object");
     return value as Record<string, unknown>;
   }
 
@@ -328,11 +343,11 @@ export class BlobForgeApp {
     }
     if (url.pathname === "/api/v1/jobs/done-since" && request.method === "GET") {
       if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
-      const since = Number(url.searchParams.get("since") ?? 0);
-      const cursor = String(url.searchParams.get("cursor") ?? "");
+      const rawSince = Number(url.searchParams.get("since") ?? 0);
+      const since = Number.isFinite(rawSince) ? Math.max(0, Math.floor(rawSince)) : 0;
       const rawLimit = Number(url.searchParams.get("limit") ?? 5000);
-      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 20000) : 5000;
-      return json(await this.db.listDoneSince(Number.isFinite(since) ? since : 0, cursor, limit));
+      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 20000) : 5000;
+      return json(await this.db.listDoneSince(since, limit));
     }
     const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url|download-url|raw-upload-url))?$/);
     if (jobMatch && !jobMatch[2]) {
@@ -343,7 +358,7 @@ export class BlobForgeApp {
         if (!validPriority(body.priority ?? "3_normal")) return error("Invalid priority");
         return json(jobJson(await this.db.enqueue(hash, body)));
       }
-      if (request.method === "GET") { const job = await this.db.getJob(hash); return job ? json(jobJson(job)) : error("Job not found", 404); }
+      if (request.method === "GET") { const job = await this.db.getJob(hash); return job ? json(jobJson(job, false)) : error("Job not found", 404); }
       return error("Method not allowed", 405);
     }
     if (jobMatch && jobMatch[2] === "download-url" && request.method === "POST") {
@@ -574,7 +589,9 @@ export class BlobForgeApp {
     const state = await this.signPayload({ me, verifier, token_endpoint: discovered.token, issuer: discovered.issuer, exp: Date.now() + 600_000, nonce: randomToken() });
     const auth = new URL(discovered.authorization);
     for (const [key, value] of Object.entries({ response_type: "code", client_id: `${url.origin}/client-metadata.json`, redirect_uri: `${url.origin}/auth/callback`, state, code_challenge: challenge, code_challenge_method: "S256", scope: "profile", me })) auth.searchParams.set(key, value);
-    return Response.redirect(auth.toString(), 302);
+    const headers = new Headers({ location: auth.toString() });
+    setPrivateNoCache(headers);
+    return new Response(null, { status: 302, headers });
   }
 
   private async callback(request: Request): Promise<Response> {

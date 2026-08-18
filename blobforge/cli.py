@@ -23,10 +23,10 @@ from .config import (
 )
 from .s3_client import S3Client
 from . import ingestor
-from . import janitor as janitor_module
 from . import status as status_module
 from . import hydrator as hydrator_module
 from .coordinator_client import CoordinatorClient, CoordinatorError
+from .utils import rewrite_asset_paths, utc_now_iso
 
 
 def _coordinator_client():
@@ -98,63 +98,9 @@ def cmd_cleanup_legacy(args):
 
 
 def cmd_reprioritize(args):
-    """Change the priority of a queued job."""
-    if _require_management_ui("reprioritize"):
-        return 1
-    s3 = S3Client()
-    job_hash = args.hash
-    new_prio = args.priority
-    
-    # 1. Check if Processing
-    if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
-        print(f"Error: Job {job_hash} is currently being processed. Cannot reprioritize.")
-        return 1
-    
-    # 2. Check if Done
-    if s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
-        print(f"Error: Job {job_hash} is already finished.")
-        return 1
-    
-    # 3. Check if Dead
-    if s3.exists(f"{S3_PREFIX_DEAD}/{job_hash}"):
-        print(f"Error: Job {job_hash} is in dead-letter queue. Use 'retry' command first.")
-        return 1
-    
-    # 4. Find current priority
-    current_prio = None
-    current_key = None
-    
-    for p in PRIORITIES:
-        key = f"{S3_PREFIX_TODO}/{p}/{job_hash}"
-        if s3.exists(key):
-            current_prio = p
-            current_key = key
-            break
-    
-    if not current_prio:
-        # Check if in failed queue
-        if s3.exists(f"{S3_PREFIX_FAILED}/{job_hash}"):
-            print(f"Error: Job {job_hash} is in failed queue. It will be retried by janitor.")
-            return 1
-        print(f"Error: Job {job_hash} not found in any queue.")
-        return 1
-    
-    if current_prio == new_prio:
-        print(f"Job is already in {new_prio}.")
-        return 0
-    
-    # 5. Move to new priority (preserve retry count if present)
-    print(f"Moving {job_hash} from {current_prio} to {new_prio}...")
-    
-    # Read existing marker content
-    existing_content = s3.get_object(current_key)
-    
-    new_key = f"{S3_PREFIX_TODO}/{new_prio}/{job_hash}"
-    s3.copy_object(current_key, new_key)
-    s3.delete_object(current_key)
-    
-    print("Done.")
-    return 0
+    """Change the priority of a queued job (managed by the coordinator UI)."""
+    _require_management_ui("reprioritize")
+    return 1
 
 
 def cmd_status(args):
@@ -305,78 +251,9 @@ def cmd_list(args):
 
 
 def cmd_retry(args):
-    if _require_management_ui("retry"):
-        return 1
-    """Retry a failed or dead-letter job."""
-    s3 = S3Client()
-    job_hash = args.hash
-    priority = args.priority
-    
-    # Check if already done
-    if s3.exists(f"{S3_PREFIX_DONE}/{job_hash}.zip"):
-        print(f"Error: Job {job_hash} is already completed.")
-        return 1
-    
-    # Check if already queued
-    for p in PRIORITIES:
-        if s3.exists(f"{S3_PREFIX_TODO}/{p}/{job_hash}"):
-            print(f"Error: Job {job_hash} is already queued (priority: {p}).")
-            return 1
-    
-    # Check if processing
-    if s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
-        print(f"Error: Job {job_hash} is currently being processed.")
-        return 1
-    
-    # Check dead-letter queue
-    dead_key = f"{S3_PREFIX_DEAD}/{job_hash}"
-    failed_key = f"{S3_PREFIX_FAILED}/{job_hash}"
-    
-    source = None
-    if s3.exists(dead_key):
-        source = "dead-letter"
-        data = s3.get_object_json(dead_key)
-    elif s3.exists(failed_key):
-        source = "failed"
-        data = s3.get_object_json(failed_key)
-    else:
-        # Check if raw exists
-        if s3.exists(f"{S3_PREFIX_RAW}/{job_hash}.pdf"):
-            print(f"Job {job_hash} is not in failed or dead-letter queue.")
-            print(f"Creating new todo marker...")
-            source = "raw"
-            data = None
-        else:
-            print(f"Error: Job {job_hash} not found anywhere.")
-            return 1
-    
-    # Reset retry count if requested
-    retry_count = 0
-    if not args.reset_retries and data:
-        retry_count = data.get('retries', data.get('total_retries', 0))
-    
-    # Create new todo marker
-    marker_content = json.dumps({
-        "retries": retry_count,
-        "queued_at": int(__import__('time').time() * 1000),
-        "recovered_from": f"manual_retry_{source}",
-        "previous_error": data.get('error', 'Unknown') if data else None
-    })
-    
-    print(f"Retrying job {job_hash} from {source}...")
-    print(f"  Priority: {priority}")
-    print(f"  Retry count: {retry_count} {'(reset)' if args.reset_retries else ''}")
-    
-    s3.put_object(f"{S3_PREFIX_TODO}/{priority}/{job_hash}", marker_content)
-    
-    # Clean up source
-    if source == "dead-letter":
-        s3.delete_object(dead_key)
-    elif source == "failed":
-        s3.delete_object(failed_key)
-    
-    print("Done. Job queued for processing.")
-    return 0
+    """Retry a failed or dead-letter job (managed by the coordinator UI)."""
+    _require_management_ui("retry")
+    return 1
 
 
 def cmd_convert(args):
@@ -425,8 +302,7 @@ def cmd_convert(args):
     text, _, images = text_from_rendered(rendered)
     
     # Update image paths in markdown
-    for img_name in images.keys():
-        text = text.replace(f"({img_name})", f"(assets/{img_name})")
+    text = rewrite_asset_paths(text, images.keys())
     
     # Save markdown
     md_path = os.path.join(output_dir, "content.md")
@@ -442,7 +318,7 @@ def cmd_convert(args):
     
     # Save metadata
     meta = {
-        "converted_at": datetime.now().isoformat() + "Z",
+        "converted_at": utc_now_iso(),
         "original_filename": os.path.basename(input_path),
         "processing_time_seconds": round(time.time() - start_time, 2),
     }
@@ -488,10 +364,9 @@ def cmd_hydrate(args):
 
 
 def cmd_janitor(args):
-    if _require_management_ui("janitor"):
-        return 1
-    """Run the janitor to recover stale jobs."""
-    janitor_module.run_janitor(dry_run=args.dry_run, verbose=args.verbose)
+    """Run the janitor to recover stale jobs (managed by the coordinator UI)."""
+    _require_management_ui("janitor")
+    return 1
 
 
 def cmd_worker(args):
@@ -557,31 +432,22 @@ def cmd_workers(args):
     if not coordinator:
         print("Error: coordinator URL and token are required")
         return 1
-    if coordinator:
-        workers = coordinator.snapshot().get("workers", [])
-        workers = [
-            {
-                **(worker.get("metadata") or {}),
-                **worker,
-                "metrics": worker.get("metrics") or {},
-                "system": (worker.get("metrics") or {}).get("system", {}),
-            }
-            for worker in workers
-        ]
-        if args.active:
-            cutoff = __import__("time").time() * 1000 - stale_timeout * 60 * 1000
-            workers = [worker for worker in workers if float(worker.get("last_heartbeat") or 0) >= cutoff and worker.get("status") not in {"stopped", "stale"}]
-            title = f"Active Workers (coordinator heartbeat < {stale_timeout}m ago)"
-        else:
-            title = "All Coordinator Workers"
+    workers = coordinator.snapshot().get("workers", [])
+    workers = [
+        {
+            **(worker.get("metadata") or {}),
+            **worker,
+            "metrics": worker.get("metrics") or {},
+            "system": (worker.get("metrics") or {}).get("system", {}),
+        }
+        for worker in workers
+    ]
+    if args.active:
+        cutoff = __import__("time").time() * 1000 - stale_timeout * 60 * 1000
+        workers = [worker for worker in workers if float(worker.get("last_heartbeat") or 0) >= cutoff and worker.get("status") not in {"stopped", "stale"}]
+        title = f"Active Workers (coordinator heartbeat < {stale_timeout}m ago)"
     else:
-        s3 = S3Client()
-        if args.active:
-            workers = s3.get_active_workers(stale_minutes=stale_timeout)
-            title = f"Active Workers (heartbeat < {stale_timeout}m ago)"
-        else:
-            workers = s3.list_workers()
-            title = "All Registered Workers"
+        title = "All Coordinator Workers"
     
     print(f"{'=' * 70}")
     print(f"  {title}")
@@ -1090,135 +956,21 @@ def cmd_preview(args):
 
 
 def cmd_retry_all(args):
-    if _require_management_ui("retry-all"):
-        return 1
-    """Retry all failed or dead-letter jobs."""
-    s3 = S3Client()
-    
-    count = 0
-    
-    if args.failed or not args.dead:
-        # Retry failed jobs
-        failed_jobs = s3.list_failed()
-        for job in failed_jobs:
-            key = job['Key']
-            if key.endswith("/"):
-                continue
-            job_hash = key.split('/')[-1]
-            
-            if args.dry_run:
-                print(f"[DRY-RUN] Would retry failed job: {job_hash}")
-            else:
-                # Move back to todo
-                data = s3.get_object_json(key)
-                retry_count = data.get('retries', 0) if data else 0
-                if not args.reset_retries:
-                    retry_count += 1
-                
-                marker = json.dumps({"retries": retry_count, "queued_at": int(__import__('time').time() * 1000)})
-                s3.put_object(f"{S3_PREFIX_TODO}/{args.priority}/{job_hash}", marker)
-                s3.delete_object(key)
-                print(f"Retried: {job_hash}")
-            count += 1
-    
-    if args.dead:
-        # Retry dead-letter jobs
-        dead_jobs = s3.list_dead()
-        for job in dead_jobs:
-            key = job['Key']
-            if key.endswith("/"):
-                continue
-            job_hash = key.split('/')[-1]
-            
-            if args.dry_run:
-                print(f"[DRY-RUN] Would retry dead job: {job_hash}")
-            else:
-                retry_count = 0 if args.reset_retries else 0  # Dead jobs always reset
-                marker = json.dumps({"retries": retry_count, "queued_at": int(__import__('time').time() * 1000)})
-                s3.put_object(f"{S3_PREFIX_TODO}/{args.priority}/{job_hash}", marker)
-                s3.delete_object(key)
-                print(f"Retried (from dead): {job_hash}")
-            count += 1
-    
-    if args.dry_run:
-        print(f"\n[DRY-RUN] Would retry {count} jobs")
-    else:
-        print(f"\nRetried {count} jobs")
-    
-    return 0
+    """Retry all failed or dead-letter jobs (managed by the coordinator UI)."""
+    _require_management_ui("retry-all")
+    return 1
 
 
 def cmd_clear_dead(args):
-    if _require_management_ui("clear-dead"):
-        return 1
-    """Clear the dead-letter queue."""
-    s3 = S3Client()
-    
-    dead_jobs = s3.list_dead()
-    dead_jobs = [j for j in dead_jobs if not j['Key'].endswith("/")]
-    
-    if not dead_jobs:
-        print("Dead-letter queue is empty.")
-        return 0
-    
-    print(f"Found {len(dead_jobs)} jobs in dead-letter queue.")
-    
-    if not args.force:
-        confirm = input("Delete all? This cannot be undone. [y/N] ").strip().lower()
-        if confirm != 'y':
-            print("Aborted.")
-            return 1
-    
-    for job in dead_jobs:
-        key = job['Key']
-        job_hash = key.split('/')[-1]
-        
-        if args.dry_run:
-            print(f"[DRY-RUN] Would delete: {job_hash}")
-        else:
-            s3.delete_object(key)
-            print(f"Deleted: {job_hash}")
-    
-    if not args.dry_run:
-        print(f"\nCleared {len(dead_jobs)} jobs from dead-letter queue.")
-    
-    return 0
+    """Clear the dead-letter queue (managed by the coordinator UI)."""
+    _require_management_ui("clear-dead")
+    return 1
 
 
 def cmd_cancel(args):
-    if _require_management_ui("cancel"):
-        return 1
-    """Cancel a running job (move back to queue)."""
-    s3 = S3Client()
-    job_hash = args.hash
-    
-    # Check if job is processing
-    if not s3.exists(f"{S3_PREFIX_PROCESSING}/{job_hash}"):
-        print(f"Error: Job {job_hash} is not currently processing.")
-        return 1
-    
-    lock_data = s3.get_lock_info(job_hash)
-    priority = lock_data.get('priority', DEFAULT_PRIORITY) if lock_data else DEFAULT_PRIORITY
-    
-    if args.priority:
-        priority = args.priority
-    
-    print(f"Cancelling job {job_hash}...")
-    print(f"  Current worker: {lock_data.get('worker', '?') if lock_data else '?'}")
-    print(f"  Moving to: {priority}")
-    
-    if args.dry_run:
-        print("[DRY-RUN] Would cancel job")
-        return 0
-    
-    # Move back to todo
-    s3.move_to_todo(job_hash, priority, increment_retry=False)
-    s3.release_lock(job_hash)
-    
-    print("Job cancelled and re-queued.")
-    print("Note: The worker may still be processing. It will fail on completion.")
-    
-    return 0
+    """Cancel a running job (managed by the coordinator UI)."""
+    _require_management_ui("cancel")
+    return 1
 
 
 def main():
@@ -1296,7 +1048,6 @@ def main():
     
     # Worker
     p_worker = subparsers.add_parser("worker", help="Start a worker to process jobs")
-    p_worker.add_argument("--dry-run", action="store_true", help="Don't actually modify S3")
     p_worker.add_argument("--run-once", action="store_true", help="Process one job and exit")
     p_worker.add_argument(
         "--run-window",
@@ -1333,7 +1084,6 @@ def main():
     
     # Config
     p_config = subparsers.add_parser("config", help="View coordinator configuration")
-    p_config.add_argument("--show", action="store_true", help="Show current configuration")
     p_config.set_defaults(func=cmd_config)
     
     # Workers
@@ -1398,7 +1148,19 @@ def main():
         sys.exit(1)
     
     args = parser.parse_args()
-    result = args.func(args)
+    try:
+        result = args.func(args)
+    except KeyboardInterrupt:
+        print("Interrupted.")
+        sys.exit(130)
+    except CoordinatorError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    except Exception as exc:
+        if os.getenv("BLOBFORGE_DEBUG"):
+            raise
+        print(f"Error: {type(exc).__name__}: {exc}")
+        sys.exit(1)
     sys.exit(result if result else 0)
 
 

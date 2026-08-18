@@ -51,7 +51,7 @@ class TestWorkerStartupRecovery(unittest.TestCase):
         self.assertEqual(payload["original_name"], "sample.pdf")
 
         s3.mark_dead.assert_not_called()
-        s3.release_lock.assert_called_once_with(job_hash)
+        s3.release_lock.assert_called_once_with(job_hash, worker_id="atlantis")
 
     def test_recovered_job_exceeding_retry_limit_moves_to_dead_letter(self):
         s3 = MagicMock()
@@ -86,7 +86,7 @@ class TestWorkerStartupRecovery(unittest.TestCase):
             ),
             "Did not expect todo requeue for dead-lettered recovered job",
         )
-        s3.release_lock.assert_called_once_with(job_hash)
+        s3.release_lock.assert_called_once_with(job_hash, worker_id="atlantis")
 
     def test_recovery_ignores_locks_from_other_workers(self):
         s3 = MagicMock()

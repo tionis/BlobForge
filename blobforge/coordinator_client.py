@@ -141,10 +141,11 @@ class CoordinatorClient:
     ) -> Tuple[List[str], int, str]:
         """Page the coordinator's done-set since a watermark, returning new hashes.
 
-        Uses keyset pagination over ``(completed_at, file_hash)`` matching the
-        server's `done-since` endpoint. Returns ``(hashes, next_since,
-        next_cursor)``; the caller stores the watermark and only re-queries the
-        delta on subsequent runs.
+        Pages the server's `done-since` endpoint, which orders done jobs by a
+        strictly monotonic ``done_seq`` and resumes strictly after the previous
+        ``since``, so same-millisecond completions can never be skipped. Returns
+        ``(hashes, next_since, next_cursor)``; the caller stores the watermark and
+        only re-queries the delta on subsequent runs.
         """
         collected: List[str] = []
         current_since = int(since_ms)

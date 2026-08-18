@@ -47,18 +47,20 @@ The virtual environment is located at `.venv/` and should be activated automatic
   `(since_ms, cursor)` watermark in a `meta` table. Hydration reconciles the
   done-set incrementally with the coordinator's `GET /api/v1/jobs/done-since`
   endpoint: each run pulls only hashes completed after the last watermark
-  (keyset-paginated over `(completed_at, file_hash)`, default page 5,000, max
-  20,000), merges them into the mirror, and answers membership locally. There
-  is no status TTL — content-addressed outputs are immutable, so known-done
-  hashes never expire; `--refresh-status` resets the mirror and watermark and
-  re-syncs from scratch; a signed download rejected definitively (coordinator
-  404/409) drops the hash from the mirror, while transient failures keep it so
-  the next run retries. The done-sync client refuses to loop if keyset
-  pagination ever fails to advance. The S3 done-hash index and per-hash
-  existence checks remain only as fallbacks when no coordinator is configured. A full range-based
-  reconciliation protocol was considered and rejected: the candidate payload is
-  only ~2 MB for tens of thousands of hashes, so the client-side delta snapshot
-  is the fitting optimization.
+  (keyset-paginated over `(completed_at, done_seq)`, default page 5,000, max
+  20,000), merges them into the mirror, and answers membership locally. The
+  watermark is versioned (`{version: 2, since, cursor}`) — an old-format
+  watermark (pre-`done_seq`) is treated as `(0, "")` and forces a full resync.
+  There is no status TTL — content-addressed outputs are immutable, so
+  known-done hashes never expire; `--refresh-status` resets the mirror and
+  watermark and re-syncs from scratch; a signed download rejected definitively
+  (coordinator 404/409) drops the hash from the mirror, while transient
+  failures keep it so the next run retries. The done-sync client refuses to
+  loop if keyset pagination ever fails to advance. The S3 done-hash index and
+  per-hash existence checks remain only as fallbacks when no coordinator is
+  configured. A full range-based reconciliation protocol was considered and
+  rejected: the candidate payload is only ~2 MB for tens of thousands of
+  hashes, so the client-side delta snapshot is the fitting optimization.
 
 - **2026-08-18:** Client-side ingestion and hydration now use revocable
   per-operator admin tokens (`bfa_...`) instead of direct S3 access. Admins
@@ -74,13 +76,36 @@ The virtual environment is located at `.venv/` and should be activated automatic
   `BLOBFORGE_S3_*` credentials. The S3 done-hash index and per-hash existence
   checks remain only as fallbacks when no coordinator is configured.
 
-- **2026-08-18:** The management console's JavaScript bundle is served at the
-  versioned `/static/app-vN.js` path; any change to `management_ui.ts` must bump
-  that path (and the ETag name) together with the inline `<script>` reference in
-  `ui.ts` and the coordinator tests, because the old path is cached immutable
-  for one year. The admin-token credential panel shows the exact
-  `BLOBFORGE_COORDINATOR_URL`/`BLOBFORGE_COORDINATOR_TOKEN` exports and example
-  `blobforge ingest`/`hydrate`/`download` invocations.
+- **2026-08-18:** Coordination hardening review fixes are in. `GET
+  /api/v1/jobs/done-since` pages over `(completed_at, done_seq)` with a
+  `file_hash` prefix filter on `completed_at` only for backwards compat;
+  `fail()`/`release()` fence on the lease token (`lease_token`/`worker_id`
+  match, 409 on mismatch), while expired leases are recovered only by
+  `recoverExpiredLeases()` (a `count` is now returned); `snapshot()` is pure and
+  never mutates lease state. `POST /api/v1/jobs/{hash}/fail` and `/release`
+  return 409 for fencing violations. `ensureSchema()` tolerates ALTER races on
+  replica SQLite. The CLI management commands that need admin
+  mutation endpoints (`reprioritize`, `retry`, `janitor`, `retry-all`,
+  `clear-dead`, `cancel`) are thin stubs (`--management-ui` required) because
+  admin mutations use IndieAuth session auth that per-worker `bfa_` tokens
+  cannot perform. `app.ts` `fetch()` uses `return await` on every handler call
+  so rejected promises stay inside the try/catch and become 4xx ClientErrors
+  instead of unhandled rejections. `blobforge/utils.py::rewrite_asset_paths`
+  centralizes the markdown asset-link rewrite (previously copy-pasted in
+  worker.py, conversion_child.py, cli.py) and only rewrites markdown link
+  targets that name a known extracted image.
+- **2026-08-18:** The management console JavaScript bundle is served at the
+  versioned `/static/app-v9.js` path and the stylesheet at `/static/app-v8.css`;
+  any change to `management_ui.ts`/`ui.ts` must bump those paths (and the ETag
+  names) together with the inline `<script>`/`<link>` references in `ui.ts` and
+  the coordinator tests, because the old paths are cached immutable for one
+  year. Version constants (`APP_JS_VERSION`, `APP_CSS_VERSION`,
+  `LOGIN_JS_VERSION`, `MARKDOWN_JS_VERSION`, `BRAND_SVG_VERSION`) are
+  centralized in `bunny/src/ui.ts` and drive the routes/ETags in `app.ts`
+  (`DOCS_VERSION` drives the docs route too). Sign-out now POSTs
+  `/auth/logout` (clearing the cookie/session) instead of a GET. The viewer CSS
+  no longer conflicts with the console layout. The `%PDF-` sniff scans the
+  first 1024 bytes.
 
 - **2026-07-21:** The Bunny Edge Script root is a public static BlobForge
   handbook; administrator login is `/login` and the private application shell is

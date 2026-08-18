@@ -5,7 +5,7 @@ Single source of truth for all S3 operations.
 import os
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
 from .config import (
@@ -15,7 +15,7 @@ from .config import (
     WORKER_ID, get_worker_metadata, get_s3_supports_conditional_writes,
     get_stale_timeout_minutes
 )
-from .utils import sanitize_metadata, decode_metadata
+from .utils import sanitize_metadata, decode_metadata, utc_now_iso
 
 
 class S3Client:
@@ -29,6 +29,7 @@ class S3Client:
         self.mock = False
         self.s3 = None
         self.ClientError = Exception  # Default fallback
+        self._mock_store: Dict[str, str] = {}
         
         try:
             import boto3
@@ -64,7 +65,7 @@ class S3Client:
     def exists(self, key: str) -> bool:
         """Check if an object exists in S3."""
         if self.mock:
-            return False
+            return key in self._mock_store
         try:
             self.s3.head_object(Bucket=S3_BUCKET, Key=key)
             return True
@@ -103,6 +104,8 @@ class S3Client:
         """Delete an object from S3."""
         if self.dry_run or self.mock:
             print(f"[DRY-RUN/MOCK] Deleting {key}")
+            if self.mock:
+                self._mock_store.pop(key, None)
             return
         self.s3.delete_object(Bucket=S3_BUCKET, Key=key)
 
@@ -117,10 +120,10 @@ class S3Client:
         """
         if self.dry_run or self.mock:
             print(f"[DRY-RUN/MOCK] Putting {key}")
-            if if_none_match and self.mock:
-                import random
-                if random.random() < 0.1:
-                    raise Exception("Mock Precondition Failed")
+            if if_none_match and self.mock and key in self._mock_store:
+                raise Exception("Mock Precondition Failed")
+            if self.mock:
+                self._mock_store[key] = body
             return
         
         kwargs = {'Bucket': S3_BUCKET, 'Key': key, 'Body': body}
@@ -132,7 +135,7 @@ class S3Client:
     def get_object(self, key: str) -> Optional[str]:
         """Read object content as string."""
         if self.mock:
-            return None
+            return self._mock_store.get(key)
         try:
             response = self.s3.get_object(Bucket=S3_BUCKET, Key=key)
             return response['Body'].read().decode('utf-8')
@@ -629,8 +632,20 @@ class S3Client:
         except Exception:
             return False
 
-    def release_lock(self, job_hash: str) -> None:
-        """Release a processing lock (delete lock file)."""
+    def release_lock(self, job_hash: str, worker_id: Optional[str] = None) -> None:
+        """Release a processing lock (delete lock file).
+
+        When ``worker_id`` is given, the lock is only released if that worker
+        still owns it, so a stale worker can never delete another worker's live
+        lease. Janitorial/force-release callers omit ``worker_id``.
+        """
+        if worker_id is not None:
+            try:
+                current = self.get_object_json(f"{S3_PREFIX_PROCESSING}/{job_hash}")
+            except Exception:
+                current = None
+            if not current or current.get('worker') != worker_id:
+                return
         self.delete_object(f"{S3_PREFIX_PROCESSING}/{job_hash}")
 
     def get_lock_info(self, job_hash: str) -> Optional[Dict[str, Any]]:
@@ -649,7 +664,7 @@ class S3Client:
         payload = json.dumps({
             "error": str(error),
             "worker": worker_id,
-            "failed_at": datetime.now().isoformat() + "Z",
+            "failed_at": utc_now_iso(),
             "timestamp": int(time.time() * 1000),
             "retries": retry_count
         })
@@ -657,8 +672,8 @@ class S3Client:
         key = f"{S3_PREFIX_FAILED}/{job_hash}"
         self.put_object(key, payload)
         
-        # Release processing lock
-        self.release_lock(job_hash)
+        # Release processing lock (only if we still own it)
+        self.release_lock(job_hash, worker_id=worker_id)
 
     def mark_dead(self, job_hash: str, error: str, total_retries: int) -> None:
         """
@@ -666,7 +681,7 @@ class S3Client:
         """
         payload = json.dumps({
             "error": str(error),
-            "moved_to_dead_at": datetime.now().isoformat() + "Z",
+            "moved_to_dead_at": utc_now_iso(),
             "total_retries": total_retries,
             "reason": "exceeded_max_retries"
         })
@@ -815,7 +830,7 @@ class S3Client:
         if extra_metadata:
             metadata.update(extra_metadata)
         
-        metadata["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+        metadata["last_heartbeat"] = utc_now_iso()
         metadata["status"] = "active"
         
         if self.dry_run or self.mock:
@@ -854,7 +869,7 @@ class S3Client:
         try:
             # Get existing metadata
             existing = self.get_object_json(key) or get_worker_metadata()
-            existing["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+            existing["last_heartbeat"] = utc_now_iso()
             existing["status"] = "processing" if current_job else "idle"
             if current_job:
                 existing["current_job"] = current_job
@@ -891,9 +906,9 @@ class S3Client:
         
         try:
             existing = self.get_object_json(key) or get_worker_metadata()
-            existing["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+            existing["last_heartbeat"] = utc_now_iso()
             existing["status"] = "stopped"
-            existing["stopped_at"] = datetime.utcnow().isoformat() + "Z"
+            existing["stopped_at"] = utc_now_iso()
             if "current_job" in existing:
                 del existing["current_job"]
             
@@ -926,7 +941,7 @@ class S3Client:
         try:
             existing = self.get_object_json(key) or get_worker_metadata()
             existing["metrics"] = metrics
-            existing["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
+            existing["last_heartbeat"] = utc_now_iso()
             
             self.s3.put_object(
                 Bucket=S3_BUCKET,
@@ -975,12 +990,12 @@ class S3Client:
             List of active worker metadata dicts
         """
         workers = self.list_workers()
-        cutoff = datetime.utcnow() - timedelta(minutes=stale_minutes)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
         
         active = []
         for w in workers:
             try:
-                last_hb = datetime.fromisoformat(w.get("last_heartbeat", "").rstrip("Z"))
+                last_hb = datetime.fromisoformat(w.get("last_heartbeat", "").replace("Z", "+00:00"))
                 if last_hb > cutoff and w.get("status") != "stopped":
                     active.append(w)
             except (ValueError, TypeError):

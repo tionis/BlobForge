@@ -8,8 +8,10 @@ Provides:
 """
 import os
 import hashlib
+import re
 import urllib.parse
-from typing import Dict, Optional
+from datetime import datetime, timezone
+from typing import Dict, Iterable, Optional
 
 # xattr support is optional - works on Linux/macOS with ext4, btrfs, xfs, zfs, etc.
 try:
@@ -21,6 +23,40 @@ except ImportError:
 # Extended attribute keys following the specification in docs/file_hashing_via_xattrs.md
 XATTR_HASH_KEY = "user.checksum.sha256"
 XATTR_MTIME_KEY = "user.checksum.mtime"
+
+
+def utc_now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string with a literal ``Z`` suffix.
+
+    Unlike ``datetime.now().isoformat() + "Z"`` this is actually UTC rather than
+    the host's wall-clock time masquerading as UTC.
+    """
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_MARKDOWN_LINK_RE = re.compile(r"(!?\[[^\]]*\]\()([^)\s]+)(\))")
+
+
+def rewrite_asset_paths(text: str, image_names: Iterable[str]) -> str:
+    """Rewrite extracted-image references in markdown to the ``assets/`` prefix.
+
+    Marker emits image links like ``![caption](page-3-image.png)`` while the
+    output archive stores the images under ``assets/``. Only markdown link
+    targets whose basename names a known extracted image are rewritten, so
+    occurrences inside URLs or prose are left untouched.
+    """
+    known = set(image_names)
+    if not known:
+        return text
+
+    def replace(match: "re.Match[str]") -> str:
+        prefix, target, suffix = match.groups()
+        base = target.rsplit("/", 1)[-1]
+        if base in known:
+            return f"{prefix}assets/{base}{suffix}"
+        return match.group(0)
+
+    return _MARKDOWN_LINK_RE.sub(replace, text)
 
 
 def sanitize_metadata_value(value: str) -> str:

@@ -1,5 +1,49 @@
 # Work Log
 
+## 2026-08-18 (Cross-stack review fixes)
+- **Objective:** Close the full-app review findings across the Python client and
+  the Bunny coordinator.
+- **Coordination hardening:** `GET /api/v1/jobs/done-since` now pages over
+  `(completed_at, done_seq)` with a `file_hash` prefix filter on `completed_at`
+  only for backwards compatibility; the schema gained a `done_seq` column
+  (backfilled) and an index. `fail()`/`release()` fence on the lease token
+  (`lease_token`/`worker_id` match, 409 on mismatch); expired leases are
+  recovered only by `recoverExpiredLeases()` which now returns a `count`.
+  `snapshot()` is pure and never mutates lease state. `ensureSchema()` tolerates
+  ALTER races on replica SQLite. `app.ts` `fetch()` uses `return await` on every
+  handler so rejected promises become 4xx ClientErrors instead of escaping the
+  try/catch; expected 4xx errors no longer spam `console.error`. The duplicate
+  `timestamp` in `fail()` was removed.
+- **Client hardening:** `hash_index.py` watermark is now versioned
+  (`{version: 2, since, cursor}`); a pre-`done_seq` watermark forces a full
+  resync. Worker catches transient `CoordinatorError` at acquire/suspend/resume/
+  complete/fail and loop boundaries (401/403 re-raised fatal) and only clears
+  local state after a successful release. `utc_now_iso()` in `utils.py` replaces
+  local-wall-clock + `"Z"` timestamps. Conversion children are killed as a
+  process group (`start_new_session` + `os.killpg`, `proc.kill()` fallback).
+  `release_lock` now checks ownership when a `worker_id` is supplied. The mock
+  S3 became a deterministic in-memory store (removed the random 10% failure).
+  CLI management commands that need admin mutations (`reprioritize`, `retry`,
+  `janitor`, `retry-all`, `clear-dead`, `cancel`) are thin stubs
+  (`--management-ui` required) because admin endpoints use IndieAuth session
+  auth; `main()` reports clean errors with `BLOBFORGE_DEBUG` for tracebacks;
+  dead `worker --dry-run` and `config --show` flags were removed.
+  `rewrite_asset_paths()` in `utils.py` centralizes the markdown asset-link
+  rewrite (worker.py, conversion_child.py, cli.py) and only rewrites markdown
+  link targets naming a known extracted image. Removed the legacy
+  `MAX_RETRIES`/`HEARTBEAT_INTERVAL_SECONDS`/`STALE_TIMEOUT_MINUTES`/
+  `CONVERSION_TIMEOUT_SECONDS` constants from `config.py` (getters remain);
+  tests now assert through `get_*()`.
+- **Console:** Version constants (`APP_JS_VERSION`, `APP_CSS_VERSION`,
+  `LOGIN_JS_VERSION`, `MARKDOWN_JS_VERSION`, `BRAND_SVG_VERSION`) are centralized
+  in `ui.ts` and drive the routes/ETags in `app.ts` (`DOCS_VERSION` drives the
+  docs route). JS bumped to `app-v9.js` and CSS to `app-v8.css` (bytes changed).
+  Sign-out POSTs `/auth/logout`. The viewer CSS no longer conflicts with the
+  console layout. The `%PDF-` sniff scans the first 1024 bytes. The vestigial
+  `Vary: Cookie` on private HTML responses was removed.
+- **Validation:** Full Python suite `126 passed`; bunny `21 passed`; `npm run
+  check` (tsc + generate-markdown) clean.
+
 ## 2026-08-18 (Coordinator done-since watermark reconciliation)
 - **Objective:** Replace the 6h status TTL with an efficient watermark sync.
   The user rejected the TTL approach; the coordinator's done-set can be

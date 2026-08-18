@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from blobforge.config import PRIORITIES, DEFAULT_PRIORITY, MAX_RETRIES, STALE_TIMEOUT_MINUTES
+from blobforge.config import PRIORITIES, DEFAULT_PRIORITY
 from blobforge.config import S3_PREFIX_RAW, S3_PREFIX_DONE, S3_PREFIX_PROCESSING, S3_PREFIX_FAILED, S3_PREFIX_DEAD, S3_PREFIX_TODO
 from blobforge.s3_client import S3Client
 from blobforge import cli as cli_module
@@ -588,13 +588,15 @@ class TestStaleDetection(unittest.TestCase):
     
     def test_stale_timeout_config(self):
         """Verify stale timeout is configured correctly."""
+        from blobforge.config import get_stale_timeout_minutes
         # Default should be 15 minutes
-        self.assertEqual(STALE_TIMEOUT_MINUTES, 15)
+        self.assertEqual(get_stale_timeout_minutes(), 15)
     
     def test_max_retries_config(self):
         """Verify max retries is configured correctly."""
+        from blobforge.config import get_max_retries
         # Default should be 3
-        self.assertEqual(MAX_RETRIES, 3)
+        self.assertEqual(get_max_retries(), 3)
 
 
 class TestWorkerIdGeneration(unittest.TestCase):

@@ -28,10 +28,10 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS files (hash TEXT PRIMARY KEY CHECK(length(hash)=64), original_name TEXT, size_bytes INTEGER NOT NULL DEFAULT 0, source TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS file_paths (file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(file_hash,path))`,
   `CREATE TABLE IF NOT EXISTS file_tags (file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(file_hash,tag))`,
-  `CREATE TABLE IF NOT EXISTS jobs (file_hash TEXT PRIMARY KEY REFERENCES files(hash) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('todo','processing','failed','dead','done')), priority TEXT NOT NULL CHECK(priority IN ('1_critical','2_high','3_normal','4_low','5_background')), retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}')`,
+  `CREATE TABLE IF NOT EXISTS jobs (file_hash TEXT PRIMARY KEY REFERENCES files(hash) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('todo','processing','failed','dead','done')), priority TEXT NOT NULL CHECK(priority IN ('1_critical','2_high','3_normal','4_low','5_background')), retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, done_seq INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,available_at,priority,created_at)`,
   `CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status,lease_expires_at)`,
-  `CREATE INDEX IF NOT EXISTS jobs_done_since_idx ON jobs(status,completed_at,file_hash)`,
+  `CREATE INDEX IF NOT EXISTS jobs_done_since_idx ON jobs(status,done_seq)`,
   `CREATE TABLE IF NOT EXISTS job_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, attempt INTEGER NOT NULL, worker_id TEXT, failed_at INTEGER NOT NULL, error_message TEXT NOT NULL, traceback TEXT, context_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS job_failures_job_idx ON job_failures(file_hash,failed_at DESC,id DESC)`,
   `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', state_json TEXT NOT NULL DEFAULT '{}')`,
@@ -102,10 +102,42 @@ export class CoordinatorDatabase {
       this.initialized = (async () => {
         await this.client.execute("PRAGMA foreign_keys=ON");
         await this.client.batch(SCHEMA.map((sql) => statement(sql)), "write");
-        const workerColumns = await this.client.execute("PRAGMA table_info(workers)");
-        if (!workerColumns.rows.some((row) => String(row.name) === "state_json")) {
-          await this.client.execute("ALTER TABLE workers ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'");
+
+        const addColumnIfMissing = async (table: string, column: string, ddl: string): Promise<void> => {
+          const columns = await this.client.execute(`PRAGMA table_info(${table})`);
+          if (columns.rows.some((row) => String(row.name) === column)) return;
+          try {
+            await this.client.execute(ddl);
+          } catch (error) {
+            // Concurrent Edge Script instances can race the same ALTER; if the
+            // column now exists the migration was applied by the other instance.
+            const recheck = await this.client.execute(`PRAGMA table_info(${table})`);
+            if (!recheck.rows.some((row) => String(row.name) === column)) throw error;
+          }
+        };
+
+        await addColumnIfMissing(
+          "workers",
+          "state_json",
+          "ALTER TABLE workers ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'",
+        );
+
+        // done_seq gives completion a strictly monotonic order so the done-set
+        // watermark can never skip a hash (a same-millisecond completion can no
+        // longer land "behind" a (completed_at, file_hash) keyset cursor).
+        await addColumnIfMissing("jobs", "done_seq", "ALTER TABLE jobs ADD COLUMN done_seq INTEGER");
+        if ((await this.client.execute("PRAGMA table_info(jobs)")).rows.some((row) => String(row.name) === "done_seq")) {
+          await this.client.execute(
+            `UPDATE jobs SET done_seq = (
+               SELECT COUNT(*) FROM jobs d
+               WHERE d.status='done'
+                 AND (d.completed_at < jobs.completed_at OR (d.completed_at = jobs.completed_at AND d.file_hash <= jobs.file_hash))
+             ) WHERE status='done' AND done_seq IS NULL`,
+          );
+          await this.client.execute("DROP INDEX IF EXISTS jobs_done_since_idx");
+          await this.client.execute("CREATE INDEX IF NOT EXISTS jobs_done_since_idx ON jobs(status,done_seq)");
         }
+
         const timestamp = Date.now();
         await this.client.batch(Object.entries(DEFAULT_CONFIG).map(([key, value]) => statement(
           "INSERT OR IGNORE INTO config(key,value_json,updated_at) VALUES(?,?,?)",
@@ -284,13 +316,17 @@ export class CoordinatorDatabase {
   async getJobStatuses(hashes: string[]): Promise<Record<string, { status: JobStatus; original_name: string | null; size_bytes: number }>> {
     if (!hashes.length) return {};
     const results: Record<string, { status: JobStatus; original_name: string | null; size_bytes: number }> = {};
+    const statements: InStatement[] = [];
     for (let start = 0; start < hashes.length; start += 400) {
       const batch = hashes.slice(start, start + 400);
       const placeholders = batch.map(() => "?").join(",");
-      const query = await this.client.execute(statement(
+      statements.push(statement(
         `SELECT j.file_hash,j.status,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE j.file_hash IN (${placeholders})`,
         batch,
       ));
+    }
+    const chunked = await this.client.batch(statements, "read");
+    for (const query of chunked) {
       for (const row of query.rows) {
         results[String(row.file_hash)] = {
           status: String(row.status) as JobStatus,
@@ -302,18 +338,20 @@ export class CoordinatorDatabase {
     return results;
   }
 
-  async listDoneSince(since: number, cursor: string, limit: number): Promise<{
+  async listDoneSince(since: number, limit: number): Promise<{
     hashes: string[];
     next_since: number;
     next_cursor: string;
     complete: boolean;
   }> {
+    // Paginate over the strictly monotonic done_seq assigned on completion, so a
+    // job finishing at the same millisecond as a page boundary can never fall
+    // "behind" the watermark and be skipped forever.
     const result = await this.client.execute(statement(
-      `SELECT file_hash, completed_at FROM jobs
-       WHERE status='done'
-         AND (completed_at > ? OR (completed_at = ? AND file_hash > ?))
-       ORDER BY completed_at ASC, file_hash ASC LIMIT ?`,
-      [since, since, cursor, limit],
+      `SELECT file_hash, done_seq FROM jobs
+       WHERE status='done' AND done_seq > ?
+       ORDER BY done_seq ASC LIMIT ?`,
+      [since, limit],
     ));
     const rows = result.rows;
     const hashes = rows.map((row) => String(row.file_hash));
@@ -321,16 +359,16 @@ export class CoordinatorDatabase {
       const last = rows.length ? rows[rows.length - 1] : null;
       return {
         hashes,
-        next_since: last ? numeric(last.completed_at) : since,
-        next_cursor: last ? String(last.file_hash) : cursor,
+        next_since: last ? numeric(last.done_seq) : since,
+        next_cursor: "",
         complete: true,
       };
     }
     const last = rows[rows.length - 1];
     return {
       hashes,
-      next_since: numeric(last.completed_at),
-      next_cursor: String(last.file_hash),
+      next_since: numeric(last.done_seq),
+      next_cursor: "",
       complete: false,
     };
   }
@@ -371,7 +409,9 @@ export class CoordinatorDatabase {
       statement(`UPDATE jobs SET status=CASE WHEN retry_count+1>max_retries THEN 'dead' ELSE 'todo' END,retry_count=retry_count+1,available_at=?,error_message='Worker lease expired',updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE status='processing' AND lease_expires_at<? RETURNING file_hash`, [timestamp, timestamp, timestamp]),
       statement("UPDATE workers SET status='stale',current_job=NULL WHERE current_job IS NOT NULL AND NOT EXISTS(SELECT 1 FROM jobs WHERE jobs.file_hash=workers.current_job AND jobs.status='processing')"),
     ], "write");
-    return results[0]?.rows.length || 0;
+    // The INSERT ... SELECT at index 0 never returns rows; the recovered hashes
+    // come from the UPDATE ... RETURNING at index 1.
+    return results[1]?.rows.length || 0;
   }
 
   async claim(workerId: string, priorities: Priority[], leaseToken: string, leaseSeconds: number): Promise<JobRecord | null> {
@@ -422,7 +462,7 @@ export class CoordinatorDatabase {
   async complete(hash: string, workerId: string, leaseToken: string, result: unknown, metrics: unknown): Promise<"completed" | "done" | "conflict"> {
     const timestamp = Date.now();
     const results = await this.client.batch([
-      statement("UPDATE jobs SET status='done',completed_at=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json=? WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?", [timestamp, timestamp, JSON.stringify(result || {}), hash, workerId, leaseToken]),
+      statement(`UPDATE jobs SET status='done',done_seq=(SELECT COALESCE(MAX(done_seq),0)+1 FROM jobs),completed_at=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json=? WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?`, [timestamp, timestamp, JSON.stringify(result || {}), hash, workerId, leaseToken]),
       statement("UPDATE workers SET status='idle',current_job=NULL,last_heartbeat=?,metrics_json=? WHERE worker_id=? AND current_job=?", [timestamp, JSON.stringify(metrics || {}), workerId, hash]),
     ], "write");
     if (results[0].rowsAffected) {
@@ -441,9 +481,9 @@ export class CoordinatorDatabase {
     const results = await this.client.batch([
       statement(`INSERT INTO job_failures(file_hash,attempt,worker_id,failed_at,error_message,traceback,context_json,progress_json)
         SELECT file_hash,retry_count+1,worker_id,?,?,?,?,progress_json FROM jobs
-        WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?`,
-        [timestamp, message, traceback, JSON.stringify(context), hash, workerId, leaseToken]),
-      statement(`UPDATE jobs SET status=CASE WHEN retry_count+1>max_retries THEN 'dead' ELSE 'failed' END,retry_count=retry_count+1,available_at=?+MIN(3600000,60000*(1 << retry_count)),error_message=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? RETURNING file_hash`, [timestamp, message, timestamp, hash, workerId, leaseToken]),
+        WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? AND lease_expires_at>=?`,
+        [timestamp, message, traceback, JSON.stringify(context), hash, workerId, leaseToken, timestamp]),
+      statement(`UPDATE jobs SET status=CASE WHEN retry_count+1>max_retries THEN 'dead' ELSE 'failed' END,retry_count=retry_count+1,available_at=?+MIN(3600000,60000*(1 << retry_count)),error_message=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? AND lease_expires_at>=? RETURNING file_hash`, [timestamp, message, timestamp, hash, workerId, leaseToken, timestamp]),
       statement("UPDATE workers SET status='idle',current_job=NULL,last_heartbeat=?,metrics_json=? WHERE worker_id=? AND current_job=?", [timestamp, JSON.stringify(metrics || {}), workerId, hash]),
     ], "write");
     return results[0].rowsAffected ? this.getJob(hash) : null;
@@ -452,7 +492,7 @@ export class CoordinatorDatabase {
   async release(hash: string, workerId: string, leaseToken: string): Promise<"released" | "todo" | "conflict"> {
     const timestamp = Date.now();
     const results = await this.client.batch([
-      statement("UPDATE jobs SET status='todo',available_at=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?", [timestamp, timestamp, hash, workerId, leaseToken]),
+      statement("UPDATE jobs SET status='todo',available_at=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json='{}' WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? AND lease_expires_at>=?", [timestamp, timestamp, hash, workerId, leaseToken, timestamp]),
       statement("UPDATE workers SET status='idle',current_job=NULL,last_heartbeat=? WHERE worker_id=? AND current_job=?", [timestamp, workerId, hash]),
     ], "write");
     if (results[0].rowsAffected) return "released";
@@ -479,7 +519,6 @@ export class CoordinatorDatabase {
   }
 
   async snapshot(includeLeaseTokens = true, includeJobs = true): Promise<Record<string, unknown>> {
-    await this.recoverExpiredLeases();
     const results = await this.client.batch([
       statement("SELECT status,COUNT(*) count FROM jobs GROUP BY status"),
       statement("SELECT priority,COUNT(*) count FROM jobs WHERE status IN ('todo','failed') GROUP BY priority"),

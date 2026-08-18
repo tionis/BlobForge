@@ -1,3 +1,5 @@
+import { INSTALLER_URL } from "./ui";
+
 export const DOCS_VERSION = "1";
 
 export function renderDocs(): string {
@@ -50,7 +52,7 @@ export function renderDocs(): string {
       <div class="section-heading"><p class="kicker">Worker guide</p><h2>Bring a Linux machine online</h2><p>Workers need Podman or Docker, a systemd user session, and an enrollment token created in the administration console. No repository clone or Python environment is required.</p></div>
       <ol class="steps">
         <li><span>1</span><div><h3>Create an enrollment</h3><p>Open the console, create a worker with a unique label, and keep the one-time token. A token belongs to exactly one worker identity.</p></div></li>
-        <li><span>2</span><div><h3>Run the installer</h3><pre><code>curl -fsSLO https://raw.githubusercontent.com/tionis/BlobForge/main/scripts/install-linux-worker.sh
+        <li><span>2</span><div><h3>Run the installer</h3><pre><code>curl -fsSLO ${INSTALLER_URL}
 chmod +x install-linux-worker.sh
 ./install-linux-worker.sh \
   --coordinator-url https://blobforge.example \
