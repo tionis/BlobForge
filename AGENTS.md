@@ -40,15 +40,20 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 - **2026-08-18:** Hydration keeps a persistent local SQLite index
   (`~/.cache/blobforge/hash_index.sqlite3`, overridable via `BLOBFORGE_CACHE_DIR`
-  or `BLOBFORGE_HASH_INDEX_PATH`) with two tables: file hashes keyed by
-  `(path, size, mtime_ns)` — so unchanged files are reused without re-reading on
-  any filesystem, unlike the xattr cache which silently misses on mounts without
-  `user_xattr` — and done-status answers keyed by content hash with a timestamp.
-  Hydration reconciles incrementally: known-done hashes are never re-sent to the
-  coordinator (immutable content-addressed outputs), previously-missing hashes
-  are re-queried only after a TTL (default 6h,
-  `BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS` or `--status-ttl`), and
-  `--refresh-status` forces a fresh query for every hash. A full range-based
+  or `BLOBFORGE_HASH_INDEX_PATH`) with file hashes keyed by `(path, size,
+  mtime_ns)` — so unchanged files are reused without re-reading on any
+  filesystem, unlike the xattr cache which silently misses on mounts without
+  `user_xattr` — plus a done-set mirror (`done_hashes` table) and a
+  `(since_ms, cursor)` watermark in a `meta` table. Hydration reconciles the
+  done-set incrementally with the coordinator's `GET /api/v1/jobs/done-since`
+  endpoint: each run pulls only hashes completed after the last watermark
+  (keyset-paginated over `(completed_at, file_hash)`, default page 5,000, max
+  20,000), merges them into the mirror, and answers membership locally. There
+  is no status TTL — content-addressed outputs are immutable, so known-done
+  hashes never expire; `--refresh-status` resets the mirror and watermark and
+  re-syncs from scratch; a failed signed download drops the hash from the
+  mirror. The S3 done-hash index and per-hash existence checks remain only as
+  fallbacks when no coordinator is configured. A full range-based
   reconciliation protocol was considered and rejected: the candidate payload is
   only ~2 MB for tens of thousands of hashes, so the client-side delta snapshot
   is the fitting optimization.

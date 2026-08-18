@@ -17,15 +17,16 @@ Given one or more input paths (PDF files and/or directories), the command:
      re-reading them on any filesystem. Only index misses fall through to the
      existing xattr-aware hash path (`compute_sha256_with_cache`).
 3. Runs remote preflight as incremental reconciliation:
-   - Known-done hashes (content-addressed outputs are immutable) are trusted
-     from the local index and never re-sent.
-   - Previously-missing hashes are only re-queried after a TTL (default 6
-     hours, `BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS` or `--status-ttl`).
-   - The remaining delta is sent to the coordinator in `POST
-     /api/v1/jobs/status` bulk requests (automatically chunked to the 5,000
-     hash-per-request server limit) and resolved for completion.
-   - `--refresh-status` forces a fresh query for every hash, ignoring cached
-     answers.
+   - When a coordinator is configured, the local done-set mirror is reconciled
+     against the coordinator's `GET /api/v1/jobs/done-since` watermark
+     endpoint: the client stores `(since_ms, cursor)` and each run pulls only
+     hashes that completed after the last sync (keyset-paginated over
+     `(completed_at, file_hash)`), merges them into the local mirror, then
+     answers membership entirely locally. Content-addressed outputs are
+     immutable, so known-done hashes never need re-querying and there is no
+     status TTL.
+   - `--refresh-status` discards the local mirror and watermark and re-syncs
+     the done-set from scratch.
    - If a coordinator is not configured, falls back to the legacy S3 done-hash
      index scan or per-hash existence checks.
 4. When conversion output exists, downloads `<hash>.zip` through a
@@ -47,21 +48,24 @@ Hydration maintains a SQLite database (WAL mode) that makes repeat runs fast:
   precision. This removes the dependency on filesystem extended-attribute
   support (the xattr cache silently misses on mounts without `user_xattr`),
   so unchanged files are never re-read.
-- **Done-status answers** — content hash to `(done, checked_at)`. Known-done
-  answers never expire (immutable content-addressed outputs); missing answers
-  expire after the status TTL.
+- **Done-set mirror** — the full set of content hashes known to have completed
+  conversions (`done_hashes`) plus a `(since_ms, cursor)` watermark in a
+  `meta` table. The mirror is append-only: content-addressed outputs never
+  expire, and entries are dropped only when a signed download proves the
+  output is gone.
 
 Location is `~/.cache/blobforge/hash_index.sqlite3`, overridable with
 `BLOBFORGE_CACHE_DIR` (directory) or `BLOBFORGE_HASH_INDEX_PATH` (file path).
 
 This is a practical form of set reconciliation: instead of re-transferring the
 whole candidate set each run, the client holds a local snapshot of the
-done-set and only exchanges the delta (new/changed files plus expired missing
-answers). A full range-based reconciliation protocol (IBLT/Merkle-style) was
-considered and rejected as overkill — the candidate payload is only ~2 MB for
-tens of thousands of hashes, and the dominant costs on repeat runs are
-re-reading unchanged files and re-querying the full set, both of which the
-local index eliminates.
+done-set and pulls only the coordinator-side delta since the last watermark.
+A full range-based reconciliation protocol (IBLT/Merkle-style) was considered
+and rejected as overkill — the candidate payload is only ~2 MB for tens of
+thousands of hashes, and the dominant costs on repeat runs are re-reading
+unchanged files and re-querying the full set, both of which the local index
+eliminates. The watermark sync keeps the coordinator exchange proportional to
+new completions rather than to the candidate set size.
 
 ## Asset Path Rewriting
 
@@ -74,7 +78,9 @@ During hydration, those references are rewritten to `<stem>.assets/...` so multi
 - Asset extraction uses a staging directory before final placement.
 - `--dry-run` reports intended writes without changing local files.
 - Archive download is cached by hash to avoid repeated network fetches for duplicate files.
-- Remote checks are deduplicated by hash.
+- Remote checks are deduplicated by hash; a completed output whose signed
+  download fails is dropped from the local done-set mirror so it is not
+  retried as available on every run.
 
 ## Exit Semantics
 

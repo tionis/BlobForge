@@ -1,5 +1,32 @@
 # Work Log
 
+## 2026-08-18 (Coordinator done-since watermark reconciliation)
+- **Objective:** Replace the 6h status TTL with an efficient watermark sync.
+  The user rejected the TTL approach; the coordinator's done-set can be
+  encapsulated into a single SQL query so each hydrate run pulls only hashes
+  completed since the last sync and answers membership locally.
+- **Server:** Added `jobs_done_since_idx` on `jobs(status, completed_at,
+  file_hash)` and `listDoneSince(since, cursor, limit)` in
+  `bunny/src/database.ts` — keyset pagination `WHERE status='done' AND
+  (completed_at > ? OR (completed_at = ? AND file_hash > ?)) ORDER BY
+  completed_at ASC, file_hash ASC LIMIT ?` — plus `GET /api/v1/jobs/done-since`
+  (`since`, `cursor`, `limit` default 5,000, max 20,000) in
+  `bunny/src/app.ts`, authorized for client tokens and admin tokens.
+- **Client:** Rewrote `blobforge/hash_index.py` to a done-set mirror
+  (`done_hashes`) + `(since_ms, cursor)` watermark in a `meta` table, replacing
+  the TTL `hash_status` table. `CoordinatorClient.sync_done_hashes` pages
+  `done-since` until `complete` and returns `(hashes, next_since, next_cursor)`.
+  Hydrator reconciles via watermark, answers membership with `is_done`, resets
+  on `--refresh-status`, and drops a hash from the mirror when a signed
+  download fails. Removed `--status-ttl` and
+  `BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS`.
+- **Validation:** Rewrote `tests/test_hash_index.py` for the new API; updated
+  hydrate tests (watermark sync, mirror reuse, refresh resets, hash reuse
+  without read) with a `sync_done_hashes`-aware FakeCoordinator; added
+  `sync_done_hashes` pagination tests to `tests/test_coordinator_client.py`;
+  added a bunny spec covering done-since pagination, watermark resume, and auth.
+  Full suite: Python `121 passed`, bunny `16 passed`; `npm run check` clean.
+
 ## 2026-08-18 (Persistent hydration index and incremental reconciliation)
 - **Objective:** Speed up `blobforge hydrate` on large libraries (30k+ PDFs).
   Repeated runs were slow because the xattr-only hash cache silently misses on
