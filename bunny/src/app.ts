@@ -330,7 +330,8 @@ export class BlobForgeApp {
       if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
       const since = Number(url.searchParams.get("since") ?? 0);
       const cursor = String(url.searchParams.get("cursor") ?? "");
-      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 5000), 1), 20000);
+      const rawLimit = Number(url.searchParams.get("limit") ?? 5000);
+      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 20000) : 5000;
       return json(await this.db.listDoneSince(Number.isFinite(since) ? since : 0, cursor, limit));
     }
     const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url|download-url|raw-upload-url))?$/);

@@ -236,6 +236,19 @@ def test_sync_done_hashes_single_page_with_defaults():
     assert url == "https://coord.example/api/v1/jobs/done-since?since=0&cursor=&limit=5000"
 
 
+def test_sync_done_hashes_refuses_to_loop_without_advance():
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    stalled = {
+        "hashes": [],
+        "next_since": 100,
+        "next_cursor": "a" * 64,
+        "complete": False,
+    }
+    with patch("urllib.request.urlopen", return_value=FakeResponse(stalled)):
+        with pytest.raises(CoordinatorError, match="did not advance"):
+            client.sync_done_hashes(100, "a" * 64)
+
+
 def test_raw_upload_streams_to_signed_url_with_headers(tmp_path):
     pdf = tmp_path / "book.pdf"
     pdf.write_bytes(b"%PDF upload")

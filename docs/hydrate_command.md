@@ -78,9 +78,11 @@ During hydration, those references are rewritten to `<stem>.assets/...` so multi
 - Asset extraction uses a staging directory before final placement.
 - `--dry-run` reports intended writes without changing local files.
 - Archive download is cached by hash to avoid repeated network fetches for duplicate files.
-- Remote checks are deduplicated by hash; a completed output whose signed
-  download fails is dropped from the local done-set mirror so it is not
-  retried as available on every run.
+- Remote checks are deduplicated by hash. A completed output whose signed
+  download is rejected definitively (coordinator 404/409, i.e. the output is
+  gone) is dropped from the local done-set mirror so it is not retried as
+  available on every run; transient download failures keep the mirror entry so
+  the next run retries.
 
 ## Exit Semantics
 

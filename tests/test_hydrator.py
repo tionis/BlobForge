@@ -3,6 +3,7 @@ import json
 import zipfile
 
 from blobforge.config import S3_PREFIX_DONE
+from blobforge.coordinator_client import CoordinatorError
 from blobforge.hash_index import HashIndex
 from blobforge.hydrator import hydrate
 from blobforge.utils import compute_sha256_with_cache
@@ -298,3 +299,54 @@ def test_hydrate_redownloads_when_markdown_is_deleted(tmp_path):
     assert coordinator.download_calls == [file_hash]
     assert (tmp_path / "deleted.md").exists()
     assert (tmp_path / "deleted.assets" / "image.png").read_bytes() == b"coordinator-image"
+
+
+def test_hydrate_keeps_done_hash_on_transient_download_error(tmp_path):
+    pdf = tmp_path / "transient.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\ntransient\n%%EOF\n")
+    stat_result = pdf.stat()
+    file_hash = compute_sha256_with_cache(str(pdf))
+
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_file_hash(str(pdf), stat_result.st_size, stat_result.st_mtime_ns, file_hash)
+    index.add_done_hashes([file_hash])
+
+    class FlakyCoordinator:
+        def __init__(self):
+            self.attempts = 0
+
+        def sync_done_hashes(self, since_ms=0, cursor="", progress=None):
+            return [], since_ms, cursor
+
+        def download_output(self, file_hash, local_path):
+            self.attempts += 1
+            raise CoordinatorError("Output download failed: temporary network issue")
+
+    coordinator = FlakyCoordinator()
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 1
+    assert coordinator.attempts == 1
+    assert index.is_done(file_hash) is True  # transient -> mirror entry preserved
+
+
+def test_hydrate_drops_done_hash_when_output_definitively_gone(tmp_path):
+    pdf = tmp_path / "gone.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\ngone\n%%EOF\n")
+    stat_result = pdf.stat()
+    file_hash = compute_sha256_with_cache(str(pdf))
+
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    index.set_file_hash(str(pdf), stat_result.st_size, stat_result.st_mtime_ns, file_hash)
+    index.add_done_hashes([file_hash])
+
+    class GoneCoordinator:
+        def sync_done_hashes(self, since_ms=0, cursor="", progress=None):
+            return [], since_ms, cursor
+
+        def download_output(self, file_hash, local_path):
+            raise CoordinatorError("Completed output not available", status=409)
+
+    coordinator = GoneCoordinator()
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 1
+    assert index.is_done(file_hash) is False  # 409 -> mirror entry dropped

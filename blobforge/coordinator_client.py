@@ -164,8 +164,15 @@ class CoordinatorClient:
                 next_since = int(payload.get("next_since", current_since))
                 next_cursor = str(payload.get("next_cursor", current_cursor))
                 return collected, next_since, next_cursor
-            current_since = int(payload.get("next_since", current_since))
-            current_cursor = str(payload.get("next_cursor", current_cursor))
+            next_since = int(payload.get("next_since", current_since))
+            next_cursor = str(payload.get("next_cursor", current_cursor))
+            # Keyset pagination must always advance; a page that neither completes
+            # nor advances the watermark indicates a coordinator protocol bug.
+            if (next_since, next_cursor) == (current_since, current_cursor):
+                raise CoordinatorError(
+                    "Done-sync pagination did not advance; refusing to loop"
+                )
+            current_since, current_cursor = next_since, next_cursor
 
     def check_statuses(
         self,

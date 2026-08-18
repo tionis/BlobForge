@@ -14,6 +14,7 @@ import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .config import S3_PREFIX_DONE
+from .coordinator_client import CoordinatorError
 from .hash_index import HashIndex, default_db_path
 from .s3_client import S3Client
 from .utils import compute_sha256_with_cache
@@ -465,18 +466,25 @@ def _hydrate_with_index(
                 stats["hydrated"] += 1
                 continue
 
-            done_key = f"{S3_PREFIX_DONE}/{file_hash}.zip"
             archive_path = archive_cache.get(file_hash)
             if archive_path is None:
                 archive_path = os.path.join(tmp_dir, f"{file_hash}.zip")
                 try:
                     _download_conversion_archive(client, file_hash, archive_path)
                     archive_cache[file_hash] = archive_path
+                except CoordinatorError as exc:
+                    print(f"  [ERROR] Failed to download conversion zip: {exc}")
+                    stats["errors"] += 1
+                    # Only drop the done-mirror entry when the coordinator
+                    # definitively reports the output is gone (404 job removed,
+                    # 409 output unavailable). Transient failures keep the
+                    # mirror entry so the next run retries the download.
+                    if exc.status in (404, 409) and index.is_done(file_hash):
+                        index.drop_done_hash(file_hash)
+                    continue
                 except Exception as exc:
                     print(f"  [ERROR] Failed to download conversion zip: {exc}")
                     stats["errors"] += 1
-                    if index.is_done(file_hash):
-                        index.drop_done_hash(file_hash)
                     continue
 
             try:

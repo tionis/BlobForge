@@ -51,9 +51,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
   20,000), merges them into the mirror, and answers membership locally. There
   is no status TTL — content-addressed outputs are immutable, so known-done
   hashes never expire; `--refresh-status` resets the mirror and watermark and
-  re-syncs from scratch; a failed signed download drops the hash from the
-  mirror. The S3 done-hash index and per-hash existence checks remain only as
-  fallbacks when no coordinator is configured. A full range-based
+  re-syncs from scratch; a signed download rejected definitively (coordinator
+  404/409) drops the hash from the mirror, while transient failures keep it so
+  the next run retries. The done-sync client refuses to loop if keyset
+  pagination ever fails to advance. The S3 done-hash index and per-hash
+  existence checks remain only as fallbacks when no coordinator is configured. A full range-based
   reconciliation protocol was considered and rejected: the candidate payload is
   only ~2 MB for tens of thousands of hashes, so the client-side delta snapshot
   is the fitting optimization.
