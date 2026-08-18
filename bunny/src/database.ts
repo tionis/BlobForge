@@ -31,6 +31,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS jobs (file_hash TEXT PRIMARY KEY REFERENCES files(hash) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('todo','processing','failed','dead','done')), priority TEXT NOT NULL CHECK(priority IN ('1_critical','2_high','3_normal','4_low','5_background')), retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,available_at,priority,created_at)`,
   `CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status,lease_expires_at)`,
+  `CREATE INDEX IF NOT EXISTS jobs_done_since_idx ON jobs(status,completed_at,file_hash)`,
   `CREATE TABLE IF NOT EXISTS job_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, attempt INTEGER NOT NULL, worker_id TEXT, failed_at INTEGER NOT NULL, error_message TEXT NOT NULL, traceback TEXT, context_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS job_failures_job_idx ON job_failures(file_hash,failed_at DESC,id DESC)`,
   `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', state_json TEXT NOT NULL DEFAULT '{}')`,
@@ -299,6 +300,39 @@ export class CoordinatorDatabase {
       }
     }
     return results;
+  }
+
+  async listDoneSince(since: number, cursor: string, limit: number): Promise<{
+    hashes: string[];
+    next_since: number;
+    next_cursor: string;
+    complete: boolean;
+  }> {
+    const result = await this.client.execute(statement(
+      `SELECT file_hash, completed_at FROM jobs
+       WHERE status='done'
+         AND (completed_at > ? OR (completed_at = ? AND file_hash > ?))
+       ORDER BY completed_at ASC, file_hash ASC LIMIT ?`,
+      [since, since, cursor, limit],
+    ));
+    const rows = result.rows;
+    const hashes = rows.map((row) => String(row.file_hash));
+    if (hashes.length < limit) {
+      const last = rows.length ? rows[rows.length - 1] : null;
+      return {
+        hashes,
+        next_since: last ? numeric(last.completed_at) : since,
+        next_cursor: last ? String(last.file_hash) : cursor,
+        complete: true,
+      };
+    }
+    const last = rows[rows.length - 1];
+    return {
+      hashes,
+      next_since: numeric(last.completed_at),
+      next_cursor: String(last.file_hash),
+      complete: false,
+    };
   }
 
   async registerWorker(body: Record<string, unknown>): Promise<void> {

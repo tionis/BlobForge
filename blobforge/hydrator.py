@@ -297,7 +297,6 @@ def hydrate(
     client: Optional[Any] = None,
     index: Optional[HashIndex] = None,
     refresh_status: bool = False,
-    status_ttl_seconds: Optional[float] = None,
 ) -> int:
     """
     Hydrate local markdown and assets for PDFs that already have completed
@@ -306,9 +305,9 @@ def hydrate(
     Uses a persistent local index for two purposes:
     - Skip re-hashing unchanged files via (size, mtime_ns) instead of relying
       on filesystem xattr support.
-    - Reconcile the done-set incrementally: known-done hashes are never
-      re-queried, and previously-missing hashes are only re-queried after
-      ``status_ttl_seconds`` (default 6 hours).
+    - Mirror the coordinator's done-set and reconcile it incrementally with a
+      watermark: each run pulls only hashes completed since the last sync and
+      answers membership locally, with no per-hash status queries and no TTL.
     """
     if client is None:
         if S3Client is not None:
@@ -319,11 +318,6 @@ def hydrate(
     own_index = index is None
     if index is None:
         index = HashIndex(db_path=os.getenv("BLOBFORGE_HASH_INDEX_PATH") or default_db_path())
-    if status_ttl_seconds is None:
-        try:
-            status_ttl_seconds = float(os.getenv("BLOBFORGE_HYDRATE_STATUS_TTL_SECONDS", "21600"))
-        except ValueError:
-            status_ttl_seconds = 21600
 
     try:
         return _hydrate_with_index(
@@ -333,7 +327,6 @@ def hydrate(
             client=client,
             index=index,
             refresh_status=refresh_status,
-            status_ttl_seconds=status_ttl_seconds,
         )
     finally:
         if own_index:
@@ -347,7 +340,6 @@ def _hydrate_with_index(
     client: Any,
     index: HashIndex,
     refresh_status: bool,
-    status_ttl_seconds: float,
 ) -> int:
     pdf_files = discover_pdf_files(paths)
 
@@ -420,32 +412,35 @@ def _hydrate_with_index(
         f"{len(unique_hashes)} unique hash(es)."
     )
 
-    # Incremental reconciliation: partition into hashes we can trust locally
-    # (known-done, or missing within TTL) versus hashes that need a fresh query.
-    conversion_available: Dict[str, bool] = {}
-    to_query: Set[str] = set()
-    for file_hash in unique_hashes:
-        cached_status = None if refresh_status else index.get_status(file_hash, status_ttl_seconds)
-        if cached_status is None:
-            to_query.add(file_hash)
+    # Reconcile the done-set with the coordinator's watermark protocol when
+    # available: pull only hashes completed since the last sync, merge them into
+    # the local mirror, then answer membership locally. Content-addressed outputs
+    # are immutable, so known-done hashes never need re-querying and there is no
+    # status TTL. Older clients / S3 fall back to bulk status or per-hash checks.
+    if hasattr(client, "sync_done_hashes") and index is not None:
+        if refresh_status:
+            index.reset_done_set()
+            since_ms, cursor = 0, ""
+            print("Preflight: refreshing done-set from scratch (--refresh-status).")
         else:
-            conversion_available[file_hash] = cached_status
-
-    if to_query:
-        print(
-            f"Preflight: checking {len(to_query)} hash(es) against the completed-output store"
-            f" ({len(unique_hashes) - len(to_query)} resolved from cache)."
+            since_ms, cursor = index.get_watermark()
+        def _report_sync(fetched: int) -> None:
+            print(f"  [status] synced {fetched} done hashes so far", flush=True)
+        new_hashes, next_since, next_cursor = client.sync_done_hashes(
+            since_ms, cursor, progress=_report_sync
         )
+        index.add_done_hashes(new_hashes)
+        index.set_watermark(next_since, next_cursor)
+        conversion_available = {file_hash: index.is_done(file_hash) for file_hash in unique_hashes}
+        print(
+            f"Preflight: reconciled done-set via coordinator watermark "
+            f"({len(new_hashes)} new since watermark, "
+            f"{index.done_count()} known done total)."
+        )
+    else:
         def _report_status(checked: int, total: int) -> None:
             print(f"  [status] {checked}/{total} hashes", flush=True)
-        fresh = _resolve_done_availability(client, to_query, progress=_report_status)
-        index.set_statuses(fresh)
-        conversion_available.update(fresh)
-    else:
-        print(
-            f"Preflight: all {len(unique_hashes)} hash(es) resolved from local index, "
-            "no coordinator query needed."
-        )
+        conversion_available = _resolve_done_availability(client, unique_hashes, progress=_report_status)
 
     archive_cache: Dict[str, str] = {}
 
@@ -480,6 +475,8 @@ def _hydrate_with_index(
                 except Exception as exc:
                     print(f"  [ERROR] Failed to download conversion zip: {exc}")
                     stats["errors"] += 1
+                    if index.is_done(file_hash):
+                        index.drop_done_hash(file_hash)
                     continue
 
             try:

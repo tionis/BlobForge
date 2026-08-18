@@ -1,5 +1,4 @@
 import os
-import time
 
 from blobforge.hash_index import HashIndex, default_cache_dir, default_db_path
 
@@ -34,40 +33,56 @@ def test_file_hashes_bulk_upsert(tmp_path):
         db.close()
 
 
-def test_status_done_is_sticky(tmp_path):
+def test_done_set_defaults_empty(tmp_path):
     db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
     try:
-        db.set_status("a" * 64, True)
-        time.sleep(0.05)
-        assert db.get_status("a" * 64, 0.01) is True  # done never expires
+        assert db.done_count() == 0
+        assert db.is_done("a" * 64) is False
+        assert db.get_watermark() == (0, "")
     finally:
         db.close()
 
 
-def test_status_missing_expires_after_ttl(tmp_path):
+def test_done_set_membership_and_bulk_insert(tmp_path):
     db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
     try:
-        db.set_status("a" * 64, False)
-        assert db.get_status("a" * 64, 3600) is False
-        assert db.get_status("a" * 64, 0.0001) is None  # stale -> must re-query
+        db.add_done_hashes(["a" * 64, "b" * 64, "a" * 64])  # dedup
+        assert db.is_done("a" * 64) is True
+        assert db.is_done("b" * 64) is True
+        assert db.is_done("c" * 64) is False
+        assert db.done_count() == 2
+        assert set(db.done_hashes()) == {"a" * 64, "b" * 64}
     finally:
         db.close()
 
 
-def test_status_unknown_returns_none(tmp_path):
+def test_watermark_roundtrip(tmp_path):
     db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
     try:
-        assert db.get_status("b" * 64, 3600) is None
+        db.set_watermark(1234567890, "a" * 64)
+        assert db.get_watermark() == (1234567890, "a" * 64)
     finally:
         db.close()
 
 
-def test_set_statuses_batch_and_known_hashes(tmp_path):
+def test_reset_done_set_clears_mirror_and_watermark(tmp_path):
     db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
     try:
-        db.set_statuses({"a" * 64: True, "b" * 64: False})
-        done, missing = db.known_hashes()
-        assert done == {"a" * 64}
-        assert missing == {"b" * 64}
+        db.add_done_hashes(["a" * 64])
+        db.set_watermark(5, "b" * 64)
+        db.reset_done_set()
+        assert db.done_count() == 0
+        assert db.get_watermark() == (0, "")
+    finally:
+        db.close()
+
+
+def test_drop_done_hash(tmp_path):
+    db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    try:
+        db.add_done_hashes(["a" * 64, "b" * 64])
+        db.drop_done_hash("a" * 64)
+        assert db.is_done("a" * 64) is False
+        assert db.is_done("b" * 64) is True
     finally:
         db.close()

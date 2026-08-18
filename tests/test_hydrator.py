@@ -140,14 +140,21 @@ class FakeCoordinator:
     def __init__(self, statuses_by_hash, archives_by_hash):
         self.statuses_by_hash = statuses_by_hash
         self.archives_by_hash = archives_by_hash
-        self.status_calls = 0
+        self.sync_calls = 0
         self.download_calls = []
 
-    def check_statuses(self, hashes, progress=None):
-        self.status_calls += 1
+    def sync_done_hashes(self, since_ms=0, cursor="", progress=None):
+        self.sync_calls += 1
+        hashes = [h for h, s in self.statuses_by_hash.items() if s == "done"]
+        hashes.sort()
         if progress:
-            progress(len(hashes), len(hashes))
-        return {file_hash: {"status": self.statuses_by_hash.get(file_hash, "todo")} for file_hash in hashes}
+            progress(len(hashes))
+        next_since = since_ms
+        next_cursor = cursor
+        for file_hash in hashes:
+            next_since += 1
+            next_cursor = file_hash
+        return hashes, next_since, next_cursor
 
     def download_output(self, file_hash, local_path):
         self.download_calls.append(file_hash)
@@ -155,7 +162,7 @@ class FakeCoordinator:
             handle.write(self.archives_by_hash[file_hash])
 
 
-def test_hydrate_uses_coordinator_bulk_status(tmp_path):
+def test_hydrate_uses_coordinator_watermark_sync(tmp_path):
     pdf_done = tmp_path / "done.pdf"
     pdf_todo = tmp_path / "pending.pdf"
     _write_pdf(pdf_done, b"%PDF-1.4\ndone\n%%EOF\n")
@@ -173,7 +180,7 @@ def test_hydrate_uses_coordinator_bulk_status(tmp_path):
     result = hydrate([str(tmp_path)], client=coordinator)
     assert result == 0
 
-    assert coordinator.status_calls == 1
+    assert coordinator.sync_calls == 1
     assert coordinator.download_calls == [done_hash]
 
     assert (tmp_path / "done.md").exists()
@@ -181,62 +188,51 @@ def test_hydrate_uses_coordinator_bulk_status(tmp_path):
     assert (tmp_path / "done.assets" / "image.png").read_bytes() == b"coordinator-image"
 
 
-def test_hydrate_skips_status_query_for_known_done_hashes(tmp_path):
+def test_hydrate_syncs_done_set_once_and_reuses_mirror(tmp_path):
     pdf_done = tmp_path / "done.pdf"
     _write_pdf(pdf_done, b"%PDF-1.4\ndone\n%%EOF\n")
     done_hash = compute_sha256_with_cache(str(pdf_done))
-
-    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
-    index.set_status(done_hash, True)
 
     archive_data = _build_conversion_zip(
         markdown_text="![img](assets/image.png)\n",
         assets={"image.png": b"coordinator-image"},
     )
     coordinator = FakeCoordinator({done_hash: "done"}, {done_hash: archive_data})
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
 
     result = hydrate([str(tmp_path)], client=coordinator, index=index)
     assert result == 0
+    assert coordinator.sync_calls == 1
+    assert index.is_done(done_hash) is True
+    assert index.done_count() == 1
 
-    assert coordinator.status_calls == 0
-    assert coordinator.download_calls == [done_hash]
-    assert (tmp_path / "done.md").exists()
+    # A second run needs no sync: markdown already exists and no work remains.
+    coordinator.sync_calls = 0
+    coordinator.download_calls = []
+    result = hydrate([str(tmp_path)], client=coordinator, index=index)
+    assert result == 0
+    assert coordinator.sync_calls == 0
+    assert coordinator.download_calls == []
 
 
-def test_hydrate_requeries_only_after_status_ttl_expires(tmp_path):
-    pdf = tmp_path / "pending.pdf"
-    _write_pdf(pdf, b"%PDF-1.4\npending\n%%EOF\n")
+def test_hydrate_refresh_status_resets_done_mirror(tmp_path):
+    pdf = tmp_path / "known.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\nknown\n%%EOF\n")
     file_hash = compute_sha256_with_cache(str(pdf))
 
     index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
-    index.set_status(file_hash, False)
-    coordinator = FakeCoordinator({}, {})
+    index.add_done_hashes([file_hash])
+    index.set_watermark(999, "a" * 64)
 
-    result = hydrate([str(tmp_path)], client=coordinator, index=index, status_ttl_seconds=3600)
-    assert result == 0
-    assert coordinator.status_calls == 0  # missing still within TTL -> no query
-    assert not (tmp_path / "pending.md").exists()
-
-    index.set_statuses({file_hash: False})
-    coordinator.status_calls = 0
-    result = hydrate([str(tmp_path)], client=coordinator, index=index, status_ttl_seconds=0.0001)
-    assert result == 0
-    assert coordinator.status_calls == 1  # stale -> re-queried
-
-
-def test_hydrate_refresh_status_forces_query_even_when_cached(tmp_path):
-    pdf = tmp_path / "pending.pdf"
-    _write_pdf(pdf, b"%PDF-1.4\npending\n%%EOF\n")
-    file_hash = compute_sha256_with_cache(str(pdf))
-
-    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
-    index.set_status(file_hash, False)
     coordinator = FakeCoordinator({}, {})
 
     result = hydrate([str(tmp_path)], client=coordinator, index=index, refresh_status=True)
     assert result == 0
-    assert coordinator.status_calls == 1
-    assert not (tmp_path / "pending.md").exists()
+    assert coordinator.sync_calls == 1
+    assert index.done_count() == 0  # mirror rebuilt from empty coordinator result
+    assert index.get_watermark() == (0, "")  # watermark reset and re-advanced from zero
+
+    assert not (tmp_path / "known.md").exists()  # coordinator reported nothing done
 
 
 def test_hydrate_reuses_indexed_hash_without_reading_file(tmp_path, monkeypatch):
@@ -247,7 +243,7 @@ def test_hydrate_reuses_indexed_hash_without_reading_file(tmp_path, monkeypatch)
 
     index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
     index.set_file_hash(str(pdf), stat_result.st_size, stat_result.st_mtime_ns, file_hash)
-    index.set_status(file_hash, True)
+    index.add_done_hashes([file_hash])
 
     archive_data = _build_conversion_zip(
         markdown_text="![img](assets/image.png)\n",
@@ -262,5 +258,5 @@ def test_hydrate_reuses_indexed_hash_without_reading_file(tmp_path, monkeypatch)
 
     result = hydrate([str(tmp_path)], client=coordinator, index=index)
     assert result == 0
-    assert coordinator.status_calls == 0
+    assert coordinator.download_calls == [file_hash]
     assert (tmp_path / "known.md").exists()

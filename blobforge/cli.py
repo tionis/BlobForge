@@ -484,7 +484,6 @@ def cmd_hydrate(args):
         dry_run=args.dry_run,
         client=coordinator,
         refresh_status=args.refresh_status,
-        status_ttl_seconds=args.status_ttl,
     )
 
 
@@ -1259,9 +1258,7 @@ def main():
     p_hydrate.add_argument("--force", action="store_true", help="Overwrite existing markdown/assets")
     p_hydrate.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
     p_hydrate.add_argument("--refresh-status", action="store_true",
-                           help="Re-query the coordinator for every hash, ignoring cached status answers")
-    p_hydrate.add_argument("--status-ttl", type=float, default=None,
-                           help="Seconds before a previously-missing hash is re-queried (default 21600)")
+                           help="Rebuild the local done-set mirror from scratch, re-syncing every hash")
     p_hydrate.add_argument("--coordinator-url", help="Coordinator base URL")
     p_hydrate.add_argument("--token", help="Admin token for the coordinator")
     p_hydrate.set_defaults(func=cmd_hydrate)

@@ -506,4 +506,65 @@ describe("Bunny BlobForge coordinator", () => {
     }));
     expect(deniedAfterRevoke.status).toBe(401);
   });
+
+  it("lists done hashes via the done-since watermark with keyset pagination", async () => {
+    const t0 = 1_700_000_000_000;
+    const done: { hash: string; at: number }[] = [];
+    for (let i = 1; i <= 6; i++) {
+      const hash = i.toString().repeat(64);
+      const at = t0 + i * 1000;
+      expect((await call(`/api/v1/jobs/${hash}`, "PUT", {
+        original_name: `book${i}.pdf`, size_bytes: i, paths: [`books/book${i}.pdf`], tags: [], priority: "3_normal",
+      })).status).toBe(200);
+      await client.execute({
+        sql: "UPDATE jobs SET status='done',completed_at=?,updated_at=? WHERE file_hash=?",
+        args: [at, at, hash],
+      });
+      done.push({ hash, at });
+    }
+    for (let i = 7; i <= 9; i++) { // still todo
+      const hash = i.toString().repeat(64);
+      await client.execute({
+        sql: "UPDATE jobs SET status='todo',completed_at=NULL,updated_at=? WHERE file_hash=?",
+        args: [t0 + i * 1000, hash],
+      });
+    }
+
+    const first = await call("/api/v1/jobs/done-since?since=0&limit=2");
+    const firstBody = await first.json() as { hashes: string[]; next_since: number; next_cursor: string; complete: boolean };
+    expect(first.status).toBe(200);
+    expect(firstBody.hashes).toEqual([done[0]!.hash, done[1]!.hash]);
+    expect(firstBody.complete).toBe(false);
+    expect(firstBody.next_since).toBe(done[1]!.at);
+    expect(firstBody.next_cursor).toBe(done[1]!.hash);
+
+    const second = await call(
+      `/api/v1/jobs/done-since?since=${firstBody.next_since}&cursor=${firstBody.next_cursor}&limit=2`,
+    );
+    const secondBody = await second.json() as { hashes: string[]; next_since: number; next_cursor: string; complete: boolean };
+    expect(secondBody.hashes).toEqual([done[2]!.hash, done[3]!.hash]);
+    expect(secondBody.complete).toBe(false);
+
+    const rest = await call(
+      `/api/v1/jobs/done-since?since=${secondBody.next_since}&cursor=${secondBody.next_cursor}&limit=100`,
+    );
+    const restBody = await rest.json() as { hashes: string[]; next_since: number; next_cursor: string; complete: boolean };
+    expect(restBody.hashes).toEqual([done[4]!.hash, done[5]!.hash]);
+    expect(restBody.complete).toBe(true);
+
+    // A bare `since` watermark includes the row exactly at that timestamp when no
+    // cursor disambiguates it (keyset tie-break); resuming passes both together.
+    const since = await call(`/api/v1/jobs/done-since?since=${done[3]!.at}`);
+    const sinceBody = await since.json() as { hashes: string[] };
+    expect(sinceBody.hashes).toEqual([done[3]!.hash, done[4]!.hash, done[5]!.hash]);
+
+    const resumed = await call(`/api/v1/jobs/done-since?since=${done[3]!.at}&cursor=${done[3]!.hash}`);
+    const resumedBody = await resumed.json() as { hashes: string[] };
+    expect(resumedBody.hashes).toEqual([done[4]!.hash, done[5]!.hash]);
+
+    const unauth = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/done-since?since=0", {
+      headers: { authorization: "Bearer invalid" },
+    }));
+    expect(unauth.status).toBe(401);
+  });
 });

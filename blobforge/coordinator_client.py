@@ -15,7 +15,7 @@ import socket
 import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 class CoordinatorError(RuntimeError):
@@ -130,6 +130,42 @@ class CoordinatorClient:
 
     def get_job(self, file_hash: str) -> Dict[str, Any]:
         return self._request("GET", f"/api/v1/jobs/{file_hash}") or {}
+
+    def sync_done_hashes(
+        self,
+        since_ms: int = 0,
+        cursor: str = "",
+        *,
+        progress: Optional[Any] = None,
+        chunk_size: int = 5000,
+    ) -> Tuple[List[str], int, str]:
+        """Page the coordinator's done-set since a watermark, returning new hashes.
+
+        Uses keyset pagination over ``(completed_at, file_hash)`` matching the
+        server's `done-since` endpoint. Returns ``(hashes, next_since,
+        next_cursor)``; the caller stores the watermark and only re-queries the
+        delta on subsequent runs.
+        """
+        collected: List[str] = []
+        current_since = int(since_ms)
+        current_cursor = cursor
+        while True:
+            path = (
+                f"/api/v1/jobs/done-since?since={current_since}"
+                f"&cursor={current_cursor}&limit={chunk_size}"
+            )
+            payload = self._request("GET", path) or {}
+            batch = payload.get("hashes")
+            if isinstance(batch, list):
+                collected.extend(str(h) for h in batch if isinstance(h, str))
+            if progress is not None:
+                progress(len(collected))
+            if payload.get("complete"):
+                next_since = int(payload.get("next_since", current_since))
+                next_cursor = str(payload.get("next_cursor", current_cursor))
+                return collected, next_since, next_cursor
+            current_since = int(payload.get("next_since", current_since))
+            current_cursor = str(payload.get("next_cursor", current_cursor))
 
     def check_statuses(
         self,

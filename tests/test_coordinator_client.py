@@ -179,6 +179,63 @@ def test_output_download_streams_signed_url_to_disk(tmp_path):
     assert opened.call_args.args[0].full_url == "https://s3.example/done.zip?signed=yes"
 
 
+def test_sync_done_hashes_paginates_until_complete_and_reports_progress():
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    page1 = [f"a{i:063d}" for i in range(5000)]
+    page2 = ["b" * 64]
+    calls = {"count": 0}
+    urls = []
+
+    def urlopen(request, *_args, **_kwargs):
+        calls["count"] += 1
+        urls.append(request.full_url)
+        if calls["count"] == 1:
+            return FakeResponse({
+                "hashes": page1,
+                "next_since": 1000,
+                "next_cursor": page1[-1],
+                "complete": False,
+            })
+        return FakeResponse({
+            "hashes": page2,
+            "next_since": 1001,
+            "next_cursor": page2[0],
+            "complete": True,
+        })
+
+    progress = []
+    with patch("urllib.request.urlopen", side_effect=urlopen):
+        hashes, next_since, next_cursor = client.sync_done_hashes(
+            500, "c" * 64, progress=lambda n: progress.append(n)
+        )
+
+    assert calls["count"] == 2
+    assert "since=500" in urls[0] and f"cursor={'c' * 64}" in urls[0] and "limit=5000" in urls[0]
+    assert "since=1000" in urls[1] and urls[1].endswith(f"cursor={page1[-1]}&limit=5000")
+    assert hashes == page1 + page2
+    assert next_since == 1001
+    assert next_cursor == page2[0]
+    assert progress == [len(page1), len(page1) + len(page2)]
+
+
+def test_sync_done_hashes_single_page_with_defaults():
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    hashes = ["a" * 64]
+    with patch("urllib.request.urlopen", return_value=FakeResponse({
+        "hashes": hashes,
+        "next_since": 42,
+        "next_cursor": hashes[0],
+        "complete": True,
+    })) as opened:
+        result, next_since, next_cursor = client.sync_done_hashes()
+
+    assert result == hashes
+    assert next_since == 42
+    assert next_cursor == hashes[0]
+    url = opened.call_args.args[0].full_url
+    assert url == "https://coord.example/api/v1/jobs/done-since?since=0&cursor=&limit=5000"
+
+
 def test_raw_upload_streams_to_signed_url_with_headers(tmp_path):
     pdf = tmp_path / "book.pdf"
     pdf.write_bytes(b"%PDF upload")

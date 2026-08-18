@@ -326,6 +326,13 @@ export class BlobForgeApp {
       if (!hashes.length) return error("Provide at least one valid SHA-256 hash");
       return json({ results: await this.db.getJobStatuses([...new Set(hashes)]) });
     }
+    if (url.pathname === "/api/v1/jobs/done-since" && request.method === "GET") {
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
+      const since = Number(url.searchParams.get("since") ?? 0);
+      const cursor = String(url.searchParams.get("cursor") ?? "");
+      const limit = Math.min(Math.max(Number(url.searchParams.get("limit") ?? 5000), 1), 20000);
+      return json(await this.db.listDoneSince(Number.isFinite(since) ? since : 0, cursor, limit));
+    }
     const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url|download-url|raw-upload-url))?$/);
     if (jobMatch && !jobMatch[2]) {
       if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);

@@ -7,15 +7,16 @@ Two caches live in one SQLite database (WAL mode):
    filesystem, including ones without extended-attribute support where the
    xattr-based hash cache silently misses and every file is re-read.
 
-2. Done-status answers keyed by content hash, timestamped. This makes repeated
-   hydration runs incremental: hashes that are known-done are never re-sent to
-   the coordinator, and hashes that were previously missing are only re-queried
-   after a TTL. New/changed files are the only real delta each run.
+2. A mirror of the coordinator's done-set, reconciled incrementally with a
+   watermark: each run pulls only hashes completed since the last sync and
+   merges them locally. Membership of a local hash is then answered from the
+   mirror without re-sending the candidate set to the coordinator. Content-
+   addressed outputs are immutable, so done hashes never need re-querying.
 """
+import json
 import os
 import sqlite3
-import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def default_cache_dir() -> str:
@@ -34,7 +35,7 @@ def default_db_path() -> str:
 
 
 class HashIndex:
-    """SQLite-backed hash and status cache with nanosecond mtime precision."""
+    """SQLite-backed file-hash cache and done-set mirror with a sync watermark."""
 
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or default_db_path()
@@ -50,10 +51,12 @@ class HashIndex:
                 mtime_ns  INTEGER NOT NULL,
                 hash      TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS hash_status (
-                hash        TEXT PRIMARY KEY,
-                done        INTEGER NOT NULL,
-                checked_at  REAL NOT NULL
+            CREATE TABLE IF NOT EXISTS done_hashes (
+                hash TEXT PRIMARY KEY
+            );
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             );
             """
         )
@@ -89,48 +92,59 @@ class HashIndex:
         self._conn.commit()
 
     # ------------------------------------------------------------------
-    # Done-status cache (incremental reconciliation)
+    # Done-set mirror (incremental reconciliation via watermark)
     # ------------------------------------------------------------------
-    def get_status(self, file_hash: str, missing_ttl_seconds: float) -> Optional[bool]:
-        """
-        Return the cached done-status for a hash.
-
-        Returns:
-            True  if the hash is known-done (content-addressed outputs are
-                  immutable, so this never expires).
-            False if the hash was previously missing and the answer is still
-                  within missing_ttl_seconds.
-            None  if unknown or stale (must be re-queried).
-        """
-        row = self._conn.execute(
-            "SELECT done, checked_at FROM hash_status WHERE hash=?",
-            (file_hash,),
-        ).fetchone()
+    def get_watermark(self) -> Tuple[int, str]:
+        """Return the (since_ms, cursor) watermark from the last completed sync."""
+        row = self._conn.execute("SELECT value FROM meta WHERE key='done_watermark'").fetchone()
         if row is None:
-            return None
-        done, checked_at = row
-        if done:
-            return True
-        if time.time() - checked_at < missing_ttl_seconds:
-            return False
-        return None
+            return 0, ""
+        try:
+            parsed = json.loads(row[0])
+            since = int(parsed.get("since", 0))
+            cursor = str(parsed.get("cursor", ""))
+            return since, cursor
+        except (ValueError, TypeError, AttributeError):
+            return 0, ""
 
-    def set_statuses(self, results: Dict[str, bool]) -> None:
-        """Record done-status answers for a batch of hashes."""
-        now = time.time()
-        self._conn.executemany(
-            "INSERT OR REPLACE INTO hash_status (hash, done, checked_at) VALUES (?,?,?)",
-            [(file_hash, 1 if done else 0, now) for file_hash, done in results.items()],
+    def set_watermark(self, since_ms: int, cursor: str) -> None:
+        value = json.dumps({"since": int(since_ms), "cursor": cursor or ""})
+        self._conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('done_watermark', ?)",
+            (value,),
         )
         self._conn.commit()
 
-    def set_status(self, file_hash: str, done: bool) -> None:
-        self.set_statuses({file_hash: done})
+    def reset_done_set(self) -> None:
+        """Clear the done mirror and watermark, forcing a full re-sync next run."""
+        self._conn.execute("DELETE FROM done_hashes")
+        self._conn.execute("DELETE FROM meta WHERE key='done_watermark'")
+        self._conn.commit()
 
-    def known_hashes(self) -> Tuple[set, set]:
-        """Return (done_hashes, missing_hashes) currently cached, for tests."""
-        done: set = set()
-        missing: set = set()
-        for row in self._conn.execute("SELECT hash, done FROM hash_status"):
-            (done if row[1] else missing).add(row[0])
-        return done, missing
+    def add_done_hashes(self, hashes) -> None:
+        """Bulk-insert newly-synced done hashes (deduplicated)."""
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO done_hashes (hash) VALUES (?)",
+            [(h,) for h in hashes],
+        )
+        self._conn.commit()
+
+    def drop_done_hash(self, file_hash: str) -> None:
+        """Remove a hash from the mirror (e.g. its output is no longer available)."""
+        self._conn.execute("DELETE FROM done_hashes WHERE hash=?", (file_hash,))
+        self._conn.commit()
+
+    def is_done(self, file_hash: str) -> bool:
+        """Return True if the hash is in the local done-set mirror."""
+        row = self._conn.execute("SELECT 1 FROM done_hashes WHERE hash=?", (file_hash,)).fetchone()
+        return row is not None
+
+    def done_count(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) FROM done_hashes").fetchone()
+        return int(row[0]) if row else 0
+
+    def done_hashes(self) -> List[str]:
+        return [row[0] for row in self._conn.execute("SELECT hash FROM done_hashes")]
+
+    def file_hashes(self) -> Dict[str, str]:
+        return {path: file_hash for path, file_hash in self._conn.execute("SELECT path, hash FROM file_hashes")}
