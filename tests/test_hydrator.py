@@ -138,9 +138,10 @@ def test_hydrate_checks_each_unique_hash_for_completed_output(tmp_path):
 
 
 class FakeCoordinator:
-    def __init__(self, statuses_by_hash, archives_by_hash):
+    def __init__(self, statuses_by_hash, archives_by_hash, base_url=""):
         self.statuses_by_hash = statuses_by_hash
         self.archives_by_hash = archives_by_hash
+        self.base_url = base_url
         self.sync_calls = 0
         self.download_calls = []
 
@@ -261,6 +262,51 @@ def test_hydrate_reuses_indexed_hash_without_reading_file(tmp_path, monkeypatch)
     assert result == 0
     assert coordinator.download_calls == [file_hash]
     assert (tmp_path / "known.md").exists()
+
+
+def test_hydrate_persists_newly_computed_hash_for_next_run(tmp_path, monkeypatch):
+    pdf = tmp_path / "missing.pdf"
+    _write_pdf(pdf, b"%PDF-1.4\nmissing\n%%EOF\n")
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    coordinator = FakeCoordinator({}, {})
+    calls = 0
+    original_compute = compute_sha256_with_cache
+
+    def _count_compute(path):
+        nonlocal calls
+        calls += 1
+        return original_compute(path)
+
+    monkeypatch.setattr("blobforge.hydrator.compute_sha256_with_cache", _count_compute)
+
+    assert hydrate([str(pdf)], client=coordinator, index=index) == 0
+    assert hydrate([str(pdf)], client=coordinator, index=index) == 0
+    assert calls == 1
+    assert index.file_hashes()[str(pdf)] == original_compute(str(pdf))
+
+
+def test_hydrate_keeps_coordinator_done_mirrors_separate(tmp_path):
+    pdf_a = tmp_path / "a.pdf"
+    pdf_b = tmp_path / "b.pdf"
+    _write_pdf(pdf_a, b"%PDF-1.4\na\n%%EOF\n")
+    _write_pdf(pdf_b, b"%PDF-1.4\nb\n%%EOF\n")
+    hash_a = compute_sha256_with_cache(str(pdf_a))
+    hash_b = compute_sha256_with_cache(str(pdf_b))
+    archive = _build_conversion_zip("content\n", {})
+    index = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    coordinator_a = FakeCoordinator(
+        {hash_a: "done"}, {hash_a: archive}, "HTTPS://COORD-A.example/"
+    )
+    coordinator_b = FakeCoordinator(
+        {hash_b: "done"}, {hash_b: archive}, "https://coord-b.example"
+    )
+
+    assert hydrate([str(pdf_a)], client=coordinator_a, index=index) == 0
+    assert hydrate([str(pdf_b)], client=coordinator_b, index=index) == 0
+
+    assert index.is_done(hash_a, "https://coord-a.example") is True
+    assert index.is_done(hash_a, "https://coord-b.example") is False
+    assert index.is_done(hash_b, "https://coord-b.example") is True
 
 
 def test_hydrate_redownloads_when_markdown_is_deleted(tmp_path):

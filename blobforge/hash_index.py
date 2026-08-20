@@ -7,11 +7,10 @@ Two caches live in one SQLite database (WAL mode):
    filesystem, including ones without extended-attribute support where the
    xattr-based hash cache silently misses and every file is re-read.
 
-2. A mirror of the coordinator's done-set, reconciled incrementally with a
+2. Per-coordinator mirrors of each done-set, reconciled incrementally with a
    watermark: each run pulls only hashes completed since the last sync and
    merges them locally. Membership of a local hash is then answered from the
-   mirror without re-sending the candidate set to the coordinator. Content-
-   addressed outputs are immutable, so done hashes never need re-querying.
+   matching mirror without re-sending the candidate set to the coordinator.
 """
 import json
 import os
@@ -52,7 +51,9 @@ class HashIndex:
                 hash      TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS done_hashes (
-                hash TEXT PRIMARY KEY
+                scope TEXT NOT NULL,
+                hash  TEXT NOT NULL,
+                PRIMARY KEY (scope, hash)
             );
             CREATE TABLE IF NOT EXISTS meta (
                 key   TEXT PRIMARY KEY,
@@ -61,6 +62,24 @@ class HashIndex:
             DROP TABLE IF EXISTS hash_status;
             """
         )
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(done_hashes)")
+        }
+        if "scope" not in columns:
+            # A legacy mirror cannot safely be assigned to whichever coordinator
+            # happens to run first after upgrade. Preserve file hashes, but force
+            # every coordinator to rebuild its own done-set from sequence zero.
+            self._conn.executescript(
+                """
+                DROP TABLE done_hashes;
+                CREATE TABLE done_hashes (
+                    scope TEXT NOT NULL,
+                    hash  TEXT NOT NULL,
+                    PRIMARY KEY (scope, hash)
+                );
+                DELETE FROM meta WHERE key='done_watermark';
+                """
+            )
         self._conn.commit()
 
     def close(self) -> None:
@@ -95,7 +114,11 @@ class HashIndex:
     # ------------------------------------------------------------------
     # Done-set mirror (incremental reconciliation via watermark)
     # ------------------------------------------------------------------
-    def get_watermark(self) -> Tuple[int, str]:
+    @staticmethod
+    def _watermark_key(scope: str) -> str:
+        return f"done_watermark:{scope}"
+
+    def get_watermark(self, scope: str = "") -> Tuple[int, str]:
         """Return the (since_ms, cursor) watermark from the last completed sync.
 
         The coordinator's done-sync protocol now pages over a strictly monotonic
@@ -103,12 +126,14 @@ class HashIndex:
         written by older clients (inclusive timestamp + cursor tie-break) are not
         forward-compatible, so they are treated as absent and force a full resync.
         """
-        row = self._conn.execute("SELECT value FROM meta WHERE key='done_watermark'").fetchone()
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key=?", (self._watermark_key(scope),)
+        ).fetchone()
         if row is None:
             return 0, ""
         try:
             parsed = json.loads(row[0])
-            if parsed.get("version") != 2:
+            if parsed.get("version") != 3 or parsed.get("scope") != scope:
                 return 0, ""
             since = int(parsed.get("since", 0))
             cursor = str(parsed.get("cursor", ""))
@@ -116,44 +141,62 @@ class HashIndex:
         except (ValueError, TypeError, AttributeError):
             return 0, ""
 
-    def set_watermark(self, since_ms: int, cursor: str) -> None:
-        value = json.dumps({"version": 2, "since": int(since_ms), "cursor": cursor or ""})
+    def set_watermark(self, since_ms: int, cursor: str, scope: str = "") -> None:
+        value = json.dumps({
+            "version": 3,
+            "scope": scope,
+            "since": int(since_ms),
+            "cursor": cursor or "",
+        })
         self._conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('done_watermark', ?)",
-            (value,),
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (self._watermark_key(scope), value),
         )
         self._conn.commit()
 
-    def reset_done_set(self) -> None:
-        """Clear the done mirror and watermark, forcing a full re-sync next run."""
-        self._conn.execute("DELETE FROM done_hashes")
-        self._conn.execute("DELETE FROM meta WHERE key='done_watermark'")
+    def reset_done_set(self, scope: str = "") -> None:
+        """Clear one coordinator's mirror and watermark, forcing a full re-sync."""
+        self._conn.execute("DELETE FROM done_hashes WHERE scope=?", (scope,))
+        self._conn.execute(
+            "DELETE FROM meta WHERE key=?", (self._watermark_key(scope),)
+        )
         self._conn.commit()
 
-    def add_done_hashes(self, hashes) -> None:
+    def add_done_hashes(self, hashes, scope: str = "") -> None:
         """Bulk-insert newly-synced done hashes (deduplicated)."""
         self._conn.executemany(
-            "INSERT OR IGNORE INTO done_hashes (hash) VALUES (?)",
-            [(h,) for h in hashes],
+            "INSERT OR IGNORE INTO done_hashes (scope, hash) VALUES (?, ?)",
+            [(scope, h) for h in hashes],
         )
         self._conn.commit()
 
-    def drop_done_hash(self, file_hash: str) -> None:
+    def drop_done_hash(self, file_hash: str, scope: str = "") -> None:
         """Remove a hash from the mirror (e.g. its output is no longer available)."""
-        self._conn.execute("DELETE FROM done_hashes WHERE hash=?", (file_hash,))
+        self._conn.execute(
+            "DELETE FROM done_hashes WHERE scope=? AND hash=?", (scope, file_hash)
+        )
         self._conn.commit()
 
-    def is_done(self, file_hash: str) -> bool:
+    def is_done(self, file_hash: str, scope: str = "") -> bool:
         """Return True if the hash is in the local done-set mirror."""
-        row = self._conn.execute("SELECT 1 FROM done_hashes WHERE hash=?", (file_hash,)).fetchone()
+        row = self._conn.execute(
+            "SELECT 1 FROM done_hashes WHERE scope=? AND hash=?", (scope, file_hash)
+        ).fetchone()
         return row is not None
 
-    def done_count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM done_hashes").fetchone()
+    def done_count(self, scope: str = "") -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM done_hashes WHERE scope=?", (scope,)
+        ).fetchone()
         return int(row[0]) if row else 0
 
-    def done_hashes(self) -> List[str]:
-        return [row[0] for row in self._conn.execute("SELECT hash FROM done_hashes")]
+    def done_hashes(self, scope: str = "") -> List[str]:
+        return [
+            row[0]
+            for row in self._conn.execute(
+                "SELECT hash FROM done_hashes WHERE scope=?", (scope,)
+            )
+        ]
 
     def file_hashes(self) -> Dict[str, str]:
         return {path: file_hash for path, file_hash in self._conn.execute("SELECT path, hash FROM file_hashes")}

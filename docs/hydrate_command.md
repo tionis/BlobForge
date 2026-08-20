@@ -19,9 +19,10 @@ Given one or more input paths (PDF files and/or directories), the command:
 3. Runs remote preflight as incremental reconciliation:
    - When a coordinator is configured, the local done-set mirror is reconciled
      against the coordinator's `GET /api/v1/jobs/done-since` watermark
-     endpoint: the client stores `(since_ms, cursor)` and each run pulls only
+     endpoint: the client stores `(since_ms, cursor)` per normalized coordinator
+     URL and each run pulls only
      hashes that completed after the last sync (keyset-paginated over
-     `(completed_at, file_hash)`), merges them into the local mirror, then
+     the monotonic `done_seq`), merges them into that coordinator's local mirror, then
      answers membership entirely locally. Content-addressed outputs are
      immutable, so known-done hashes never need re-querying and there is no
      status TTL.
@@ -48,11 +49,14 @@ Hydration maintains a SQLite database (WAL mode) that makes repeat runs fast:
   precision. This removes the dependency on filesystem extended-attribute
   support (the xattr cache silently misses on mounts without `user_xattr`),
   so unchanged files are never re-read.
-- **Done-set mirror** — the full set of content hashes known to have completed
-  conversions (`done_hashes`) plus a `(since_ms, cursor)` watermark in a
-  `meta` table. The mirror is append-only: content-addressed outputs never
+- **Done-set mirrors** — for each normalized coordinator URL, the full set of
+  content hashes known to have completed conversions (`done_hashes`) plus a
+  `(since_ms, cursor)` watermark in a `meta` table. Each mirror is append-only:
+  content-addressed outputs never
   expire, and entries are dropped only when a signed download proves the
-  output is gone. The pre-watermark `hash_status` table is dropped on open.
+  output is gone. Legacy unscoped done data is discarded on open because it
+  cannot safely be attributed to a coordinator; cached local file hashes are
+  preserved.
 
 Location is `~/.cache/blobforge/hash_index.sqlite3`, overridable with
 `BLOBFORGE_CACHE_DIR` (directory) or `BLOBFORGE_HASH_INDEX_PATH` (file path).

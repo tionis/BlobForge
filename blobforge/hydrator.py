@@ -12,6 +12,7 @@ import tempfile
 import uuid
 import zipfile
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 from .config import S3_PREFIX_DONE
 from .coordinator_client import CoordinatorError
@@ -21,6 +22,21 @@ from .utils import compute_sha256_with_cache
 
 # Use a bulk done-index scan for larger runs to avoid many per-hash HEAD requests.
 DONE_INDEX_THRESHOLD = 200
+
+
+def _done_set_scope(client: Any) -> str:
+    """Return a stable, credential-free identity for a coordinator endpoint."""
+    base_url = str(getattr(client, "base_url", "") or "").rstrip("/")
+    if not base_url:
+        return ""
+    parsed = urlsplit(base_url)
+    hostname = (parsed.hostname or "").lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunsplit((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", ""))
 
 
 def discover_pdf_files(paths: List[str]) -> List[str]:
@@ -358,7 +374,8 @@ def _hydrate_with_index(
         "errors": 0,
     }
 
-    work_items: List[Dict[str, str]] = []
+    work_items: List[Dict[str, Any]] = []
+    new_hash_entries: List[Tuple[str, int, int, str]] = []
 
     for idx, pdf_path in enumerate(pdf_files, start=1):
         if idx % 100 == 0:
@@ -379,6 +396,9 @@ def _hydrate_with_index(
             hash_cached = file_hash is not None
             if not hash_cached:
                 file_hash = compute_sha256_with_cache(pdf_path)
+                new_hash_entries.append(
+                    (pdf_path, stat_result.st_size, stat_result.st_mtime_ns, file_hash)
+                )
         except Exception as exc:
             print(f"[ERROR] Failed to compute hash for {pdf_path}: {exc}")
             stats["errors"] += 1
@@ -392,6 +412,9 @@ def _hydrate_with_index(
             "assets_dir_path": assets_dir_path,
             "hash_cached": hash_cached,
         })
+
+    if new_hash_entries:
+        index.set_file_hashes(new_hash_entries)
 
     cached_hash_count = sum(1 for item in work_items if item["hash_cached"])
     print(
@@ -420,25 +443,29 @@ def _hydrate_with_index(
     # the local mirror, then answer membership locally. Content-addressed outputs
     # are immutable, so known-done hashes never need re-querying and there is no
     # status TTL. Older clients / S3 fall back to bulk status or per-hash checks.
+    done_scope = _done_set_scope(client)
     if hasattr(client, "sync_done_hashes") and index is not None:
         if refresh_status:
-            index.reset_done_set()
+            index.reset_done_set(done_scope)
             since_ms, cursor = 0, ""
             print("Preflight: refreshing done-set from scratch (--refresh-status).")
         else:
-            since_ms, cursor = index.get_watermark()
+            since_ms, cursor = index.get_watermark(done_scope)
         def _report_sync(fetched: int) -> None:
             print(f"  [status] synced {fetched} done hashes so far", flush=True)
         new_hashes, next_since, next_cursor = client.sync_done_hashes(
             since_ms, cursor, progress=_report_sync
         )
-        index.add_done_hashes(new_hashes)
-        index.set_watermark(next_since, next_cursor)
-        conversion_available = {file_hash: index.is_done(file_hash) for file_hash in unique_hashes}
+        index.add_done_hashes(new_hashes, done_scope)
+        index.set_watermark(next_since, next_cursor, done_scope)
+        conversion_available = {
+            file_hash: index.is_done(file_hash, done_scope)
+            for file_hash in unique_hashes
+        }
         print(
             f"Preflight: reconciled done-set via coordinator watermark "
             f"({len(new_hashes)} new since watermark, "
-            f"{index.done_count()} known done total)."
+            f"{index.done_count(done_scope)} known done total)."
         )
     else:
         def _report_status(checked: int, total: int) -> None:
@@ -481,8 +508,8 @@ def _hydrate_with_index(
                     # definitively reports the output is gone (404 job removed,
                     # 409 output unavailable). Transient failures keep the
                     # mirror entry so the next run retries the download.
-                    if exc.status in (404, 409) and index.is_done(file_hash):
-                        index.drop_done_hash(file_hash)
+                    if exc.status in (404, 409) and index.is_done(file_hash, done_scope):
+                        index.drop_done_hash(file_hash, done_scope)
                     continue
                 except Exception as exc:
                     print(f"  [ERROR] Failed to download conversion zip: {exc}")
