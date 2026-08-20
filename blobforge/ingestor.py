@@ -205,7 +205,9 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
                     pull_lfs_file(base_path, rel_path)
                     materialized = True
                     size = os.path.getsize(full_path)
-                    coordinator.upload_raw(file_hash, full_path, transfer=transfer)
+                    # Materializing a large LFS object can outlive the URL from
+                    # the initial existence check, so request a fresh transfer.
+                    coordinator.upload_raw(file_hash, full_path)
                     stats["uploaded"] += 1
                 except subprocess.CalledProcessError as e:
                     print(f"  [ERROR] Git LFS pull failed: {e}")
@@ -215,7 +217,13 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
                     continue
                 finally:
                     if materialized:
-                        cleanup_lfs_file(base_path, rel_path)
+                        try:
+                            cleanup_lfs_file(base_path, rel_path)
+                        except Exception as exc:
+                            print(
+                                "  [WARNING] Raw upload completed, but the LFS "
+                                f"pointer could not be restored: {exc}"
+                            )
             else:
                 try:
                     coordinator.upload_raw(file_hash, full_path, transfer=transfer)

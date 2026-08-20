@@ -1,4 +1,5 @@
 import hashlib
+import subprocess
 from unittest.mock import MagicMock, patch
 
 from blobforge.coordinator_client import CoordinatorError
@@ -85,3 +86,29 @@ def test_existing_orphaned_lfs_raw_is_enqueued_with_unknown_size(tmp_path):
         tags=["book"],
         source=tmp_path.name,
     )
+
+
+def test_lfs_upload_refreshes_url_and_cleanup_failure_does_not_block_enqueue(
+    tmp_path,
+):
+    file_hash = "b" * 64
+    pointer = tmp_path / "book.pdf"
+    pointer.write_text(
+        "version https://git-lfs.github.com/spec/v1\n"
+        f"oid sha256:{file_hash}\n"
+        "size 1234\n"
+    )
+    coordinator = _coordinator()
+
+    def materialize(_repo_path, _relative_path):
+        pointer.write_bytes(b"%PDF-1.7 materialized LFS content")
+
+    cleanup_error = subprocess.CalledProcessError(1, ["git", "checkout"])
+    with patch("blobforge.ingestor.CoordinatorClient", return_value=coordinator), \
+         patch("blobforge.ingestor.pull_lfs_file", side_effect=materialize), \
+         patch("blobforge.ingestor.cleanup_lfs_file", side_effect=cleanup_error):
+        ingest([str(pointer)])
+
+    coordinator.upload_raw.assert_called_once_with(file_hash, str(pointer))
+    coordinator.enqueue.assert_called_once()
+    assert coordinator.enqueue.call_args.kwargs["size_bytes"] == pointer.stat().st_size

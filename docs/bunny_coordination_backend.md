@@ -359,7 +359,9 @@ transfer goes through coordinator-issued signed URLs.
   `already_exists`; `blobforge ingest` uploads raw PDFs through it instead of
   holding S3 credentials. Dry runs stop before that PUT or any enqueue. If a
   prior PUT succeeded but its enqueue did not, a later run reuses the existing
-  raw object and recreates the missing coordinator job.
+  raw object and recreates the missing coordinator job. Git LFS ingestion asks
+  for a fresh signed URL after materialization because pulling a large object
+  may outlive the URL used for the initial existence check.
 - `GET/POST /api/v1/jobs/{hash}` accept admin tokens in addition to
   `CLIENT_API_TOKEN`, so operators can enqueue and query jobs with a revocable
   per-person credential.
