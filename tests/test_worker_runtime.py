@@ -22,6 +22,10 @@ from blobforge.worker import (
     WorkerSchedule,
     run_worker_loop,
 )
+from blobforge.conversion_runtime import (
+    CONVERSION_CONFIGURATION_EXIT_CODE,
+    WorkerConfigurationError,
+)
 
 
 class TestConversionTimeout(unittest.TestCase):
@@ -195,8 +199,86 @@ class TestConversionTimeout(unittest.TestCase):
             "tqdm_stage": "Converting PDF", "tqdm_percent": 40,
         })
 
+    def test_isolated_configuration_failure_is_classified(self):
+        worker = self._build_worker()
+
+        class FakeProcess:
+            returncode = CONVERSION_CONFIGURATION_EXIT_CODE
+
+            def communicate(self, timeout=None):
+                return "", "Marker conversion runtime is unavailable"
+
+        with tempfile.TemporaryDirectory() as out_dir, \
+             patch("blobforge.worker.subprocess.Popen", return_value=FakeProcess()):
+            with self.assertRaisesRegex(
+                WorkerConfigurationError, "runtime is unavailable"
+            ):
+                worker._run_conversion_subprocess(
+                    "source.pdf", out_dir, timeout_seconds=5
+                )
+
 
 class TestCoordinatorObjectTransfers(unittest.TestCase):
+    def test_worker_checks_conversion_runtime_before_coordinator_contact(self):
+        coordinator = MagicMock()
+        coordinator.available = True
+
+        with patch(
+            "blobforge.worker.ensure_conversion_runtime",
+            side_effect=WorkerConfigurationError("missing Marker"),
+        ):
+            with self.assertRaisesRegex(WorkerConfigurationError, "missing Marker"):
+                Worker(None, coordinator_client=coordinator)
+
+        coordinator.worker_identity.assert_not_called()
+        coordinator.register_worker.assert_not_called()
+
+    def test_late_configuration_failure_releases_without_failing_job(self):
+        job_hash = "a" * 64
+        s3 = MagicMock()
+        s3.mock = True
+        coordinator = MagicMock()
+        coordinator.available = True
+        coordinator.worker_identity.return_value = "enrolled-worker"
+        coordinator.claim_job.return_value = {
+            "hash": job_hash,
+            "priority": "3_normal",
+            "lease_token": "lease-1",
+            "retry_count": 0,
+            "original_name": "source.pdf",
+            "size_bytes": 123,
+            "tags": [],
+            "input": {"url": "https://objects.example/source.pdf"},
+            "output_exists": False,
+        }
+
+        def download(_job, path):
+            with open(path, "wb") as target:
+                target.write(b"%PDF-1.4 test")
+
+        coordinator.download_job_input.side_effect = download
+        heartbeat = MagicMock()
+        with patch("blobforge.worker.HeartbeatThread", return_value=heartbeat), \
+             patch("blobforge.worker.get_pdf_page_count", return_value=1):
+            worker = Worker(
+                s3, isolate_conversion=True, coordinator_client=coordinator
+            )
+            self.assertEqual(worker.acquire_job(), job_hash)
+            worker.s3 = None
+            with patch.object(
+                worker,
+                "_run_conversion_subprocess",
+                side_effect=WorkerConfigurationError("runtime disappeared"),
+            ), patch.object(worker, "_requeue_active_job", return_value=True) as requeue, \
+                 patch.object(worker, "_handle_failure") as fail:
+                with self.assertRaisesRegex(
+                    WorkerConfigurationError, "runtime disappeared"
+                ):
+                    worker.process(job_hash)
+
+        requeue.assert_called_once_with(reason="worker_configuration_error")
+        fail.assert_not_called()
+
     def test_worker_uses_enrollment_identity_and_signed_transfers(self):
         job_hash = "a" * 64
         s3 = MagicMock()
@@ -325,6 +407,33 @@ class TestHeartbeatPolicy(unittest.TestCase):
 
         coordinator.heartbeat.assert_not_called()
         coordinator.worker_heartbeat.assert_not_called()
+
+    def test_prompt_update_does_not_publish_a_released_lease(self):
+        coordinator = MagicMock()
+        heartbeat = HeartbeatThread(
+            None,
+            "worker-1",
+            coordinator,
+            runtime_config={"heartbeat_enabled": True, "heartbeat_interval": 60},
+        )
+        coalescing_started = threading.Event()
+        original_wait = heartbeat._stop_event.wait
+
+        def release_during_coalescing(timeout=None):
+            if timeout and timeout > 1:
+                heartbeat.set_job(None)
+                coalescing_started.set()
+                return False
+            return original_wait(timeout)
+
+        heartbeat._stop_event.wait = release_during_coalescing
+        heartbeat.start()
+        heartbeat.set_job("a" * 64, lease_token="lease-1")
+        self.assertTrue(coalescing_started.wait(timeout=1))
+        heartbeat.stop()
+        heartbeat.join(timeout=1)
+
+        coordinator.heartbeat.assert_not_called()
 
 
 class TestScheduledWorkerRunLoop(unittest.TestCase):

@@ -12,6 +12,11 @@ import sys
 import traceback
 from typing import Callable, Optional
 
+from .conversion_runtime import (
+    CONVERSION_CONFIGURATION_EXIT_CODE,
+    WorkerConfigurationError,
+    ensure_conversion_runtime,
+)
 from .utils import rewrite_asset_paths
 
 
@@ -39,6 +44,7 @@ def run_conversion(
     """Convert a PDF with marker and write content/assets/metadata to out_dir."""
     report = report or (lambda _stage, _percent: None)
     report("Loading models", 5)
+    ensure_conversion_runtime()
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
     from marker.output import text_from_rendered
@@ -112,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
             args.out_dir,
             _progress_reporter(args.progress_path) if args.progress_path else None,
         )
+    except WorkerConfigurationError as exc:
+        print(str(exc), file=sys.stderr)
+        return CONVERSION_CONFIGURATION_EXIT_CODE
     except Exception:
         traceback.print_exc()
         return 1

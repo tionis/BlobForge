@@ -42,6 +42,11 @@ from .config import (
 )
 from .s3_client import S3Client
 from .coordinator_client import CoordinatorClient, CoordinatorError
+from .conversion_runtime import (
+    CONVERSION_CONFIGURATION_EXIT_CODE,
+    WorkerConfigurationError,
+    ensure_conversion_runtime,
+)
 from .utils import rewrite_asset_paths, utc_now_iso
 
 logger = logging.getLogger(__name__)
@@ -648,6 +653,17 @@ class HeartbeatThread(threading.Thread):
                 delay = 2.0 - elapsed
                 if delay > 0 and self._stop_event.wait(timeout=delay):
                     break
+                # A failure/release can clear the job while progress updates are
+                # being coalesced. Never renew the lease captured before that
+                # wait, including when the same hash has a newer lease token.
+                with self._lock:
+                    if (
+                        self.current_job != job
+                        or self.lease_token != lease_token
+                        or self._suspended
+                    ):
+                        continue
+                    progress_data = self._build_progress_data()
 
             runtime_config: Dict[str, Any] = {}
             if job:
@@ -716,6 +732,11 @@ class Worker:
     
     def __init__(self, s3_client: Optional[S3Client], isolate_conversion: bool = False,
                  coordinator_client: Optional[CoordinatorClient] = None):
+        # The legacy mock backend deliberately emits mock conversion output.
+        # Every real worker must prove it can import Marker before it contacts
+        # the coordinator or becomes eligible to lease work.
+        if not bool(getattr(s3_client, "mock", False)):
+            ensure_conversion_runtime()
         self.s3 = s3_client
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
@@ -1160,6 +1181,10 @@ class Worker:
                 logger.info(f"Schedule window closed for {job_hash[:12]}... Requeueing active job.")
                 self._requeue_active_job(reason="schedule_window_closed")
                 return
+            except WorkerConfigurationError as exc:
+                logger.error(f"Worker conversion configuration failed: {exc}")
+                self._requeue_active_job(reason="worker_configuration_error")
+                raise
             except Exception as e:
                 logger.error(f"Marker failed: {type(e).__name__}: {e}")
                 self._handle_failure(
@@ -1426,11 +1451,12 @@ class Worker:
                 config={},
             )
             logger.info("Marker models initialized successfully.")
-        except ImportError as e:
-            raise RuntimeError(
-                f"marker-pdf not installed. Install with: pip install marker-pdf\n"
-                f"Error: {e}"
-            )
+        except ImportError as exc:
+            raise WorkerConfigurationError(
+                "Marker conversion imports became unavailable after worker startup. "
+                "Run `uv sync --extra convert` and restart the worker. "
+                f"Underlying error: {exc}"
+            ) from exc
     
     def _run_marker_conversion(self, pdf_path: str) -> tuple:
         """
@@ -1599,6 +1625,8 @@ class Worker:
 
         if proc.returncode != 0:
             detail = stderr.strip() or stdout.strip() or "no subprocess output"
+            if proc.returncode == CONVERSION_CONFIGURATION_EXIT_CODE:
+                raise WorkerConfigurationError(detail[-2000:])
             if proc.returncode < 0:
                 detail = f"terminated by {_signal_name(-proc.returncode)}: {detail}"
             raise RuntimeError(

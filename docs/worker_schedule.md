@@ -29,6 +29,15 @@ Windows may cross midnight.
 - Scheduled aborts requeue the active job and release the processing lock immediately.
 - `--abort-outside-window` automatically runs marker conversion in an isolated child process.
 - `--isolate-conversion` can be used without a schedule to keep native marker/PyTorch crashes from killing the worker process.
+- Real workers validate Marker imports before registration or job acquisition.
+  A missing/broken conversion extra is a host configuration error: startup
+  exits with `uv sync --extra convert` guidance. If that runtime disappears
+  after startup, an isolated child reports a distinct configuration exit code;
+  the parent releases the active lease without consuming a document retry and
+  stops instead of continuing through the queue.
+- Prompt progress publication rechecks the current hash and lease token after
+  its coalescing delay, so a just-released lease cannot receive a stale
+  heartbeat.
 
 ## Abort Mechanism
 

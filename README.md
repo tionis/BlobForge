@@ -101,10 +101,8 @@ blobforge --help
 Requires Python 3.10+ and system dependencies for PDF conversion (`tesseract-ocr`, `ghostscript`). Python 3.9 is no longer supported because the compatible legacy Marker dependency branch retains known-vulnerable packages.
 
 ```bash
-pip install .
-
-# With PDF conversion support
-pip install ".[convert]"
+# Install the project with PDF conversion support
+uv sync --extra convert
 ```
 
 ## 💻 Usage (CLI)
@@ -168,6 +166,9 @@ blobforge ingest ./library --dry-run
 
 Workers automatically find jobs, lock them, process them, and upload results.
 Worker IDs are persistent (based on machine fingerprint) so cleanup works across restarts.
+Worker startup validates the optional Marker conversion runtime before it
+contacts the coordinator. A base-only checkout therefore exits without
+claiming work; run `uv sync --extra convert` before starting a native worker.
 
 ```bash
 # Start a worker (runs continuously)
