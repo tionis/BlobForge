@@ -1064,3 +1064,104 @@
     - `cd bunny && npm run build` -> successful Edge Script bundle (`306.5kb`).
     - `git diff --check` -> clean.
 - **Status:** All 29 applicable alerts are remediated in the local universal lock. The three non-applicable Transformers alerts and one unpatched, unused TorchScript alert are documented for dismissal after the change reaches the default branch.
+## 2026-08-21 (Inclusive Change-Range Review)
+
+- **Objective:** Review all changes from commit `7ff1c5f3bc01f5eb0382278c7f4f0c481b44d335` (inclusive) through the current working tree for correctness, regressions, edge cases, and test gaps.
+- **Progress:**
+    1. Confirmed the inclusive base as `7ff1c5f^` (`c9a5a991...`) and enumerated 17 commits through `91c2d24`.
+    2. Verified the starting worktree was clean and scoped 35 changed files (2,147 insertions, 550 deletions).
+    3. Read the repository task-management, work-log, and findings protocols and registered this review in `TODO.md`.
+    4. Traced the Python coordinator client, ingestion, hydration, persistent index, worker/S3 fallback, CLI, Bunny API/database migrations, management UI, and their tests.
+    5. Reproduced three uncovered failures with focused in-memory/mock probes: two consecutive hydration runs recomputed the hash and left `file_hashes` empty; `ingest --dry-run` called `upload_raw`; and a pre-existing raw object with no coordinator job prevented `enqueue` from being called.
+    6. Identified the unscoped done-set mirror/watermark by tracing the single global index path across coordinator URL changes.
+    7. Completed the review, recorded significant findings in `AGENTS.md`, and marked the review task complete in `TODO.md`.
+- **Tooling:** Used `git status`/`log`/`diff`/`show`, `rg`, `sed`, and `nl` for code/history tracing; `apply_patch` for required repository records; pytest through `uv`; Vitest, TypeScript, and esbuild through npm; Ruff for a supplemental static pass; and focused Python mock probes for uncovered control-flow paths.
+- **Validation:**
+    - `UV_CACHE_DIR=/tmp/uv-cache uv run --no-project --with pytest --with xattr --with packaging --with boto3 python -m pytest tests/` -> `126 passed`.
+    - `cd bunny && npm test -- --run` -> `22 passed`.
+    - `cd bunny && npm run check` -> passed.
+    - `cd bunny && npm run build` -> passed (`dist/index.js`, 343.2 kb).
+    - `ruff check --select F821 blobforge bunny/src` -> passed; the unrestricted legacy lint baseline reports many pre-existing style findings.
+    - `git diff --check c9a5a991...` -> one trailing-space error in `blobforge/config.py:217`.
+- **Status:** Review complete with four reportable correctness findings; no product code was modified.
+## 2026-08-21 (Missing Worker Conversion Dependency Diagnosis)
+
+- **Objective:** Diagnose a native worker that rapidly failed multiple jobs
+  with `ModuleNotFoundError: No module named 'marker'` while isolated conversion
+  was enabled by `--abort-outside-window`.
+- **Findings:**
+    1. Confirmed the active `.venv` resolves no `marker` module; Marker is only
+       present in the optional `convert`/`all` dependency groups.
+    2. `Worker.__init__()` authenticates, registers, and starts heartbeats
+       without validating conversion capability. The polling loop can therefore
+       acquire a lease on a base-only CLI installation.
+    3. Isolated conversion imports Marker only inside the child after a job is
+       claimed. `conversion_child.main()` maps every exception to exit code 1;
+       the parent wraps that as `RuntimeError`, and `process()` routes it to
+       `_handle_failure()` as though the PDF were defective. Non-isolated mode
+       also defers `_init_marker()` until after acquisition and has the same
+       failure-classification problem.
+    4. The later `Lease is no longer valid` heartbeat is a secondary race: the
+       heartbeat thread can retain an old job snapshot across its two-second
+       prompt-update coalescing wait and publish it after `fail()` closed the
+       lease. It does not cause the conversion failures.
+    5. Git history shows the missing startup preflight predates the reviewed
+       `7ff1c5f...` range; the August changes only touched isolated child process
+       group creation in this path.
+- **Tooling:** Used `rg`, `sed`, `nl`, `git blame`, `git log`, and an import-spec
+  probe through `uv run --no-sync` to trace runtime, packaging, documentation,
+  and history. Consulted the current uv documentation endpoint for optional
+  dependency invocation; no external state was changed.
+- **Status:** Root cause confirmed. No product code or coordinator state was
+  changed; the repository-required TODO/work-log/findings records were updated.
+
+## 2026-08-21 (Review Remediation and Final Verification)
+
+- **Objective:** Fix the four findings from the inclusive `7ff1c5f3...` review
+  plus the observed missing-Marker worker failure loop, commit the work
+  atomically, and perform a final code review.
+- **Implementation:**
+    1. Made ingestion stop before raw PUT/enqueue in dry-run mode, recover an
+       orphaned raw upload without requiring existing job metadata, and reuse
+       the checked transfer for immediate local uploads (`66d1c73`).
+    2. Persisted hydration hash misses in the SQLite index; added coordinator
+       scope to done rows and version-3 watermarks; migrated legacy unscoped
+       mirrors by clearing only ambiguous done data (`29aef30`).
+    3. Added a shared conversion-runtime validator and configuration error;
+       workers now validate before coordinator contact, isolated children use
+       a distinct configuration exit code, late failures release rather than
+       fail the lease, and prompt heartbeats revalidate the lease after their
+       coalescing delay (`48c0999`).
+    4. During the final diff review, noticed that Git LFS materialization could
+       outlive the initially checked signed URL. LFS uploads now request a fresh
+       transfer after materialization, and a pointer-cleanup failure no longer
+       blocks enqueue after a successful upload (`1a032a4`).
+- **Regression coverage:** Added tests for dry-run side effects, orphaned
+  regular/LFS uploads, transfer reuse/refresh, hash persistence across runs,
+  legacy done-mirror migration, coordinator isolation, worker preflight
+  ordering, child error classification, no-retry release, and the stale
+  heartbeat race.
+- **Tooling:** Used `sed`, `rg`, `git log/diff/status`, and focused source/test
+  inspection; applied all edits with `apply_patch`; ran tests and Ruff through
+  `uv`; ran the Bunny Vitest/TypeScript/esbuild checks through npm; staged
+  explicit file sets and created atomic Git commits. A sandboxed first attempt
+  to resolve a temporary xattr test environment could not reach PyPI, so the
+  approved uv test environment was used. The first long full-suite invocations
+  yielded before pytest termination; the runner was corrected to retain and
+  poll the session through its exit code.
+- **Validation:**
+    - Focused ingestion suite -> `22 passed`.
+    - Focused hydration/index suite -> `24 passed`.
+    - Focused worker/child suite -> `25 passed`; broader worker/recovery/CLI
+      checks also passed.
+    - Complete Python suite -> `141 passed, 5 subtests passed`.
+    - `cd bunny && npm run check` -> passed.
+    - `cd bunny && npm test -- --run` -> `22 passed`.
+    - `cd bunny && npm run build` -> passed (`dist/index.js`, 343.2 kb).
+    - Ruff `F821` pass across `blobforge` and `tests` -> passed.
+    - `git diff --check 91c2d24..HEAD` -> passed before the records-only commit.
+- **Final review:** Re-read the complete remediation diff after the tests. The
+  LFS URL lifetime issue found during that pass was fixed and revalidated; no
+  remaining reportable correctness issue was found.
+- **Status:** All five requested findings are fixed, documented, tested, and
+  committed atomically; final repository records are ready to commit.

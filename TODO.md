@@ -12,6 +12,10 @@
 ## Low Priority
 
 ## Done
+- [x] Fix the four correctness regressions found in the inclusive `7ff1c5f3...` review: dry-run uploads, orphaned raw enqueue recovery, hydration hash persistence, and coordinator-scoped done mirrors.
+- [x] Make workers validate Marker before coordinator contact, classify late conversion-runtime failures as host configuration errors, release rather than fail affected leases, and suppress stale post-release heartbeats.
+- [x] Diagnose the native `uv run blobforge worker` failure loop when the optional Marker conversion dependency is absent.
+- [x] Review the inclusive change range from `7ff1c5f3bc01f5eb0382278c7f4f0c481b44d335` through the current working tree for correctness and regressions.
 - [x] Add revocable per-operator admin tokens and an optimized bulk job-status API so `ingest`/`hydrate`/`download`/`preview` need no direct S3 credentials.
 - [x] Add a public, CDN-cacheable Edge Script documentation landing page.
 - [x] Reduce coordinator heartbeat traffic with suspension-aware workers, dynamic intervals, and lease-only mode.

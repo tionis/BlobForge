@@ -38,19 +38,36 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-21:** Real workers validate the optional Marker runtime before any
+  coordinator identity request, registration, heartbeat startup, or lease
+  acquisition; native repository checkouts should run `uv sync --extra
+  convert`. Isolated children use exit code 78 for a conversion-host
+  configuration failure, and the parent releases the active lease without
+  incrementing the document's retry count before stopping. Prompt heartbeat
+  publication revalidates both hash and lease token after its coalescing delay,
+  preventing the stale post-release heartbeat that previously produced a 409.
+
+- **2026-08-21:** The four regressions found by the inclusive `7ff1c5f3...`
+  review are fixed with dedicated regression coverage. Ingestion honors
+  `--dry-run` before PUT/enqueue and recreates coordinator metadata after an
+  orphaned raw upload; LFS uploads refresh their signed URL after potentially
+  lengthy materialization. Hydration bulk-persists newly computed file hashes.
+  Its done rows and version-3 watermarks are keyed by normalized coordinator
+  URL; migration discards ambiguous legacy done data but preserves file hashes.
+
 - **2026-08-18:** Hydration keeps a persistent local SQLite index
   (`~/.cache/blobforge/hash_index.sqlite3`, overridable via `BLOBFORGE_CACHE_DIR`
   or `BLOBFORGE_HASH_INDEX_PATH`) with file hashes keyed by `(path, size,
   mtime_ns)` — so unchanged files are reused without re-reading on any
   filesystem, unlike the xattr cache which silently misses on mounts without
-  `user_xattr` — plus a done-set mirror (`done_hashes` table) and a
-  `(since_ms, cursor)` watermark in a `meta` table. Hydration reconciles the
+  `user_xattr` — plus per-coordinator done-set mirrors (`done_hashes` table) and
+  `(since_ms, cursor)` watermarks in a `meta` table. Hydration reconciles the
   done-set incrementally with the coordinator's `GET /api/v1/jobs/done-since`
   endpoint: each run pulls only hashes completed after the last watermark
   (keyset-paginated over `(completed_at, done_seq)`, default page 5,000, max
   20,000), merges them into the mirror, and answers membership locally. The
-  watermark is versioned (`{version: 2, since, cursor}`) — an old-format
-  watermark (pre-`done_seq`) is treated as `(0, "")` and forces a full resync.
+  watermark is versioned (`{version: 3, scope, since, cursor}`); unscoped or
+  pre-`done_seq` data forces a safe full resync for that coordinator.
   There is no status TTL — content-addressed outputs are immutable, so
   known-done hashes never expire; `--refresh-status` resets the mirror and
   watermark and re-syncs from scratch; a signed download rejected definitively
