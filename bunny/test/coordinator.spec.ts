@@ -67,6 +67,34 @@ describe("Bunny BlobForge coordinator", () => {
     expect((await call("/api/v1/workers/register", "POST", { worker_id: "another-worker" }, workerHeaders)).status).toBe(403);
   });
 
+  it("upgrades a pre-done_seq schema without failing the SCHEMA batch", async () => {
+    const oldClient = createClient({ url: "file::memory:" });
+    await oldClient.execute(
+      `CREATE TABLE jobs (file_hash TEXT PRIMARY KEY, status TEXT NOT NULL, priority TEXT NOT NULL, retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}')`,
+    );
+    const oldDatabase = new CoordinatorDatabase(oldClient);
+    const oldApp = new BlobForgeApp(oldDatabase, {
+      clientApiToken: "client-secret",
+      sessionSigningSecret: "session-secret-that-is-different-from-worker-secret",
+      adminMes: ["https://eric.wendland.dev/"],
+      objectStore: {
+        rawKey: () => "", outputKey: () => "", download: async () => ({ url: "", expiresAt: 0 }),
+        upload: async () => ({ url: "", expiresAt: 0 }), outputExists: async () => false,
+        rawExists: async () => false, rawUpload: async () => ({ url: "", expiresAt: 0 }),
+        outputDownload: async () => ({ url: "", expiresAt: 0 }), backup: async () => ({ key: "" }),
+      },
+    });
+
+    const health = await oldApp.fetch(new Request("https://blobforge.example/api/v1/health"));
+    expect(health.status).toBe(200);
+    await expect(health.json()).resolves.toMatchObject({ ok: true, database: "connected" });
+
+    const columns = await oldClient.execute("PRAGMA table_info(jobs)");
+    expect(columns.rows.some((row) => String(row.name) === "done_seq")).toBe(true);
+    const indexes = await oldClient.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='jobs_done_since_idx'");
+    expect(indexes.rows.length).toBe(1);
+  });
+
   it("enqueues, claims with a fenced lease, heartbeats, and completes", async () => {
     const hash = "a".repeat(64);
     expect((await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "test" })).status).toBe(200);

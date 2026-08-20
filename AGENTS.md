@@ -105,7 +105,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
   (`DOCS_VERSION` drives the docs route too). Sign-out now POSTs
   `/auth/logout` (clearing the cookie/session) instead of a GET. The viewer CSS
   no longer conflicts with the console layout. The `%PDF-` sniff scans the
-  first 1024 bytes.
+  first 1024 bytes. A pre-existing 0.3.0 database failed to upgrade to 0.4.0
+  with `no such column: done_seq` on every API request: the SCHEMA batch's
+  `CREATE INDEX jobs_done_since_idx ON jobs(status,done_seq)` ran before the
+  `ALTER TABLE jobs ADD COLUMN done_seq` migration, so `ensureSchema()` threw
+  and every route 500'd with "Internal error". The index must be created only
+  inside the migration block (after the column exists), never in the static
+  SCHEMA batch.
 
 - **2026-07-21:** The Bunny Edge Script root is a public static BlobForge
   handbook; administrator login is `/login` and the private application shell is

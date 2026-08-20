@@ -1,5 +1,22 @@
 # Work Log
 
+## 2026-08-21 (done_seq migration ordering fix)
+- **Objective:** Fix `Internal error` (500) on every coordinator API request
+  after upgrading a pre-0.4.0 database.
+- **Root cause:** `ensureSchema()` runs the static SCHEMA batch first, and that
+  batch included `CREATE INDEX IF NOT EXISTS jobs_done_since_idx ON
+  jobs(status,done_seq)`. On an existing database whose `jobs` table predates
+  the `done_seq` column, the index DDL referenced a missing column, the whole
+  batch threw `no such column: done_seq`, and every route (even
+  unauthenticated `/api/v1/health`) returned `{"error":"Internal error"}`.
+- **Fix:** Removed `jobs_done_since_idx` from the static SCHEMA batch. The index
+  is created only inside the migration block, after the `done_seq` column is
+  guaranteed to exist (fresh DBs get the column from `CREATE TABLE`, upgraded
+  DBs from `ALTER TABLE ... ADD COLUMN`). Added a coordinator spec that creates
+  a pre-`done_seq` `jobs` table, runs `ensureSchema()`, and asserts the column
+  and index exist and health passes.
+- **Validation:** `npm test` (22 passed) and `npm run check` clean.
+
 ## 2026-08-18 (Cross-stack review fixes)
 - **Objective:** Close the full-app review findings across the Python client and
   the Bunny coordinator.
