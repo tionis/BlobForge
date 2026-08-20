@@ -14,7 +14,7 @@ import hashlib
 from typing import Optional, List
 
 from .config import PRIORITIES, DEFAULT_PRIORITY
-from .coordinator_client import CoordinatorClient
+from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import compute_sha256_with_cache, get_cached_hash
 
 # Regex for Git LFS pointer file
@@ -175,8 +175,10 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             stats["skipped"] += 1
             continue
         
-        # 3. Check/Upload Raw via coordinator-issued signed URL.
-        size = 0
+        # 3. Check the raw object through a coordinator-issued signed URL.
+        # Regular PDFs always have a usable local size, including when a prior
+        # upload succeeded but its enqueue request did not.
+        size = 0 if is_pointer else os.path.getsize(full_path)
         try:
             transfer = coordinator.raw_upload_url(file_hash)
             raw_exists = transfer["already_exists"]
@@ -184,23 +186,39 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
             print(f"  [ERROR] Coordinator raw check failed: {exc}")
             continue
 
+        if dry_run:
+            if raw_exists:
+                print("  [OK] Raw PDF exists.")
+            else:
+                print("  [DRY-RUN] Would upload raw PDF.")
+            print(f"  [DRY-RUN] Would enqueue with priority {priority}")
+            stats["queued"] += 1
+            known_hashes.add(file_hash)
+            continue
+
         if not raw_exists:
             print(f"  [UPLOAD] Raw PDF not in the object store.")
             
             if is_pointer:
+                materialized = False
                 try:
                     pull_lfs_file(base_path, rel_path)
+                    materialized = True
                     size = os.path.getsize(full_path)
-                    coordinator.upload_raw(file_hash, full_path)
-                    cleanup_lfs_file(base_path, rel_path)
+                    coordinator.upload_raw(file_hash, full_path, transfer=transfer)
                     stats["uploaded"] += 1
                 except subprocess.CalledProcessError as e:
                     print(f"  [ERROR] Git LFS pull failed: {e}")
                     continue
+                except Exception as exc:
+                    print(f"  [ERROR] Raw upload failed: {exc}")
+                    continue
+                finally:
+                    if materialized:
+                        cleanup_lfs_file(base_path, rel_path)
             else:
-                size = os.path.getsize(full_path)
                 try:
-                    coordinator.upload_raw(file_hash, full_path)
+                    coordinator.upload_raw(file_hash, full_path, transfer=transfer)
                     stats["uploaded"] += 1
                 except Exception as exc:
                     print(f"  [ERROR] Raw upload failed: {exc}")
@@ -208,16 +226,18 @@ def ingest(paths: List[str], priority: str = DEFAULT_PRIORITY, dry_run: bool = F
         else:
             print(f"  [OK] Raw PDF exists.")
         
-        # 4. Queue the job in the authoritative coordination backend.
-        if dry_run:
-            print(f"  [DRY-RUN] Would enqueue with priority {priority}")
-            stats["queued"] += 1
-            known_hashes.add(file_hash)
-            continue
+        # 4. Queue the job in the authoritative coordination backend. A raw
+        # Git LFS object can outlive a failed enqueue, in which case no metadata
+        # record exists from which to recover its size. Size zero is accepted
+        # and the worker records the downloaded size when it processes the job.
         try:
             if not size:
-                job = coordinator.get_job(file_hash)
-                size = int(job.get("size_bytes") or 0)
+                try:
+                    job = coordinator.get_job(file_hash)
+                    size = int(job.get("size_bytes") or 0)
+                except CoordinatorError as exc:
+                    if exc.status != 404:
+                        raise
             job = coordinator.enqueue(
                 file_hash,
                 priority=priority,

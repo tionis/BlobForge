@@ -233,9 +233,16 @@ class CoordinatorClient:
         except (urllib.error.URLError, OSError) as exc:
             raise CoordinatorError(f"Output download failed: {exc}") from exc
 
-    def upload_raw(self, file_hash: str, local_path: str) -> None:
-        """Stream a raw PDF to its signed raw-object upload URL."""
-        transfer = self.raw_upload_url(file_hash)
+    def upload_raw(
+        self,
+        file_hash: str,
+        local_path: str,
+        *,
+        transfer: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Stream a raw PDF through an existing or newly issued signed URL."""
+        if transfer is None:
+            transfer = self.raw_upload_url(file_hash)
         self._stream_put(transfer["url"], local_path, transfer["headers"])
 
     def register_worker(self, worker_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:

@@ -269,3 +269,20 @@ def test_raw_upload_streams_to_signed_url_with_headers(tmp_path):
         str(pdf),
         {"content-type": "application/pdf"},
     )
+
+
+def test_raw_upload_can_reuse_an_existing_transfer(tmp_path):
+    pdf = tmp_path / "book.pdf"
+    pdf.write_bytes(b"%PDF upload")
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    transfer = {
+        "url": "https://s3.example/raw/abc.pdf?signed=yes",
+        "already_exists": False,
+        "headers": {"content-type": "application/pdf"},
+    }
+
+    with patch.object(client, "raw_upload_url") as requested, patch.object(client, "_stream_put") as streamed:
+        client.upload_raw("a" * 64, str(pdf), transfer=transfer)
+
+    requested.assert_not_called()
+    streamed.assert_called_once_with(transfer["url"], str(pdf), transfer["headers"])
