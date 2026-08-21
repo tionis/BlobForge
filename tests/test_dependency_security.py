@@ -54,3 +54,21 @@ def test_marker_compatibility_override_is_explicit():
     assert '"pillow>=12.2.0"' in pyproject_text
     assert pyproject_text.count('"marker-pdf>=1.10.2,<2"') == 2
     assert all(version < Version("2") for version in locked_versions()["marker-pdf"])
+
+
+def test_release_and_container_provenance_are_wired():
+    pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    lock_text = (ROOT / "uv.lock").read_text(encoding="utf-8")
+    container_text = (ROOT / "Containerfile").read_text(encoding="utf-8")
+    workflow_text = (ROOT / ".github/workflows/container.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'version = "0.4.0"' in pyproject_text
+    blobforge_lock = re.search(
+        r'\[\[package\]\]\nname = "blobforge"\nversion = "([^"]+)"', lock_text
+    )
+    assert blobforge_lock and blobforge_lock.group(1) == "0.4.0"
+    assert "ARG BLOBFORGE_BUILD_REVISION=unknown" in container_text
+    assert 'BLOBFORGE_BUILD_REVISION="${BLOBFORGE_BUILD_REVISION}"' in container_text
+    assert "BLOBFORGE_BUILD_REVISION=${{ github.sha }}" in workflow_text

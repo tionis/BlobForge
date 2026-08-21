@@ -39,15 +39,15 @@ The virtual environment is located at `.venv/` and should be activated automatic
 ## Findings
 
 - **2026-08-21:** The post-implementation provenance audit found two rollout
-  follow-ups. Production images build without `.git` and the container workflow
-  passes only `TORCH_FLAVOR`, so `blobforge_revision` will normally be
-  `unknown`; `pyproject.toml` also still declares BlobForge 0.3.0 while the
-  coordinator is 0.4.0. Inject the Git SHA as `BLOBFORGE_BUILD_REVISION` and
-  align the release version before relying on container provenance. Recipe
+  follow-ups. Production images build without `.git`, so the container workflow
+  now injects `${{ github.sha }}` as the runtime
+  `BLOBFORGE_BUILD_REVISION`; the Python release version is aligned with the
+  coordinator at 0.4.0. Custom images must pass the same build argument rather
+  than accepting the `unknown` fallback. Recipe
   schema 1 records converter generation and dated Surya checkpoint identifiers,
   but not every environment-overridable output threshold/option or a model
   payload checksum. The pinned Marker 1 default remains usable; non-default or
-  Marker 2 deployment must first promote those effective settings and immutable
+  Marker 2 deployment must promote those effective settings and immutable
   model revisions into recipe identity. Artifact operations currently have API
   and Python-client methods but no dedicated CLI/management-console controls.
 

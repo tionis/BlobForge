@@ -63,7 +63,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: TORCH_FLAVOR=${{ matrix.flavor }}
+          build-args: |
+            TORCH_FLAVOR=${{ matrix.flavor }}
+            BLOBFORGE_BUILD_REVISION=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.flavor }}
           cache-to: type=gha,mode=max,scope=${{ matrix.flavor }}
           platforms: ${{ matrix.platforms }}

@@ -42,6 +42,9 @@ also stores diagnostic provenance:
 The external inference URL itself is never stored because it may contain
 internal topology or credentials. Provenance describes what produced an
 artifact; unlike the recipe, it does not determine cache compatibility.
+Published worker images inject the source commit through
+`BLOBFORGE_BUILD_REVISION`; custom image builds should pass the same build
+argument rather than accepting the `unknown` fallback.
 
 ## Coordinator lifecycle
 

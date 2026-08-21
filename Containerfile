@@ -25,6 +25,8 @@ RUN uv sync --frozen --no-dev --extra convert --extra metrics \
 
 FROM python:3.12-slim
 
+ARG BLOBFORGE_BUILD_REVISION=unknown
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ghostscript \
@@ -38,6 +40,7 @@ WORKDIR /app
 COPY --from=builder /app /app
 
 ENV PATH="/app/.venv/bin:$PATH" \
+    BLOBFORGE_BUILD_REVISION="${BLOBFORGE_BUILD_REVISION}" \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/var/cache/blobforge/huggingface \
     TORCH_HOME=/var/cache/blobforge/torch

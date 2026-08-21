@@ -1,7 +1,6 @@
 # TODO List
 
 ## High Priority
-- [ ] Inject the Git commit into production worker images as `BLOBFORGE_BUILD_REVISION` and align the Python package version with the current release so container provenance is never `unknown`/stale.
 - [ ] Add unit tests for S3 operations and queue state transitions.
 - [ ] Test heartbeat mechanism under load.
 

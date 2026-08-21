@@ -1315,3 +1315,18 @@
   while dedicated CLI/console controls remain optional operator UX work.
 - **Status:** Follow-ups recorded in `TODO.md`; current pinned Marker 1/default
   operation is not blocked.
+
+## 2026-08-21 (Production Build Provenance)
+
+- **Objective:** Ensure production worker archives identify the exact BlobForge
+  build rather than reporting a stale package version or unknown source.
+- **Changes:** Aligned the Python package and lockfile at version 0.4.0. Added a
+  final-image `BLOBFORGE_BUILD_REVISION` argument/environment value to the
+  `Containerfile`, and made the GitHub container workflow pass the GitHub commit
+  SHA for every CPU/CUDA architecture build. Documented the requirement for
+  custom builds and added regression coverage for all wiring.
+- **Tooling:** Used `rg`, `sed`, `apply_patch`, offline `uv lock`, and focused
+  pytest. No image was published or external deployment changed.
+- **Verification:** All 9 dependency/provenance tests passed; the lock resolved
+  without network access.
+- **Status:** Complete; ready for an atomic commit.
