@@ -47,6 +47,13 @@ def _apply_coordinator_overrides(args):
     return True
 
 
+def _recipe_digest_arg(value):
+    digest = value.lower()
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise argparse.ArgumentTypeError("recipe digest must be 64 hexadecimal characters")
+    return digest
+
+
 def _require_management_ui(action):
     print(
         f"'{action}' is managed by the Bunny coordinator. "
@@ -525,6 +532,7 @@ def cmd_workers(args):
             print(f"      Platform: {w.get('platform', '?')} {w.get('platform_release', '')}")
             print(f"      Python: {w.get('python_version', '?')}")
             print(f"      CPUs: {w.get('cpu_count', '?')}, Memory: {w.get('memory_gb', '?')} GB")
+            print(f"      Recipe: {w.get('conversion_recipe_digest', 'unavailable')}")
             print(f"      Last heartbeat: {last_hb}")
         
         print()
@@ -873,23 +881,26 @@ def cmd_download(args):
         return 1
     job_hash = args.hash
     output_path = args.output
+    recipe_digest = args.recipe_digest
 
     job = coordinator.get_job(job_hash)
-    if not job or job.get("status") != "done":
+    if not job:
+        print(f"Error: Job {job_hash} does not exist.")
+        return 1
+    if not recipe_digest and job.get("status") != "done":
         print(f"Error: Job {job_hash} is not completed.")
-        if job:
-            print(f"Job is in state: {job.get('status')}")
-        else:
-            print("No such job.")
+        print(f"Job is in state: {job.get('status')}")
         return 1
 
     if output_path is None:
-        output_path = f"{job_hash}.zip"
+        suffix = f".{recipe_digest[:12]}" if recipe_digest else ""
+        output_path = f"{job_hash}{suffix}.zip"
 
-    print(f"Downloading {job_hash}.zip to {output_path}...")
+    selected = f" recipe {recipe_digest}" if recipe_digest else " selected recipe"
+    print(f"Downloading {job_hash}{selected} to {output_path}...")
 
     try:
-        coordinator.download_output(job_hash, output_path)
+        coordinator.download_output(job_hash, output_path, recipe_digest)
         print(f"Downloaded: {output_path}")
         print(f"Size: {os.path.getsize(output_path):,} bytes")
         return 0
@@ -910,9 +921,13 @@ def cmd_preview(args):
         print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
         return 1
     job_hash = args.hash
+    recipe_digest = args.recipe_digest
 
     job = coordinator.get_job(job_hash)
-    if not job or job.get("status") != "done":
+    if not job:
+        print(f"Error: Job {job_hash} does not exist.")
+        return 1
+    if not recipe_digest and job.get("status") != "done":
         print(f"Error: Job {job_hash} is not completed.")
         return 1
 
@@ -922,7 +937,7 @@ def cmd_preview(args):
 
     try:
         print(f"Fetching {job_hash}...")
-        coordinator.download_output(job_hash, tmp_path)
+        coordinator.download_output(job_hash, tmp_path, recipe_digest)
         
         with zipfile.ZipFile(tmp_path, 'r') as zf:
             # List contents
@@ -963,6 +978,77 @@ def cmd_preview(args):
             os.unlink(tmp_path)
         except:
             pass
+
+
+def cmd_artifacts(args):
+    """List retained conversion artifacts for a source document."""
+    from datetime import datetime
+
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        return 1
+    job = coordinator.get_job(args.hash)
+    if not job:
+        print(f"Error: Job {args.hash} does not exist.")
+        return 1
+    artifacts = coordinator.list_artifacts(args.hash)
+    if args.json:
+        print(json.dumps({"hash": args.hash, "selected_recipe_digest": job.get("recipe_digest"), "artifacts": artifacts}, indent=2, sort_keys=True))
+        return 0
+    if not artifacts:
+        print(f"No retained conversion artifacts for {args.hash}.")
+        return 0
+
+    selected = job.get("recipe_digest")
+    if selected is None and job.get("status") == "done":
+        selected = "0" * 64
+    print(f"Conversion artifacts for {args.hash}:")
+    for artifact in artifacts:
+        digest = str(artifact.get("recipe_digest") or "")
+        provenance = artifact.get("provenance") or {}
+        packages = provenance.get("packages") or {}
+        recipe = artifact.get("recipe") or {}
+        created_ms = artifact.get("created_at")
+        created = "unknown"
+        if isinstance(created_ms, (int, float)) and created_ms:
+            created = datetime.fromtimestamp(created_ms / 1000).astimezone().isoformat(timespec="seconds")
+        flags = []
+        if digest == selected:
+            flags.append("selected")
+        if artifact.get("legacy") or digest == "0" * 64:
+            flags.append("legacy")
+        label = f" ({', '.join(flags)})" if flags else ""
+        print(f"  {digest}{label}")
+        print(f"    Created: {created}")
+        print(f"    Engine: {recipe.get('engine', 'unknown')} {recipe.get('engine_generation', '')}".rstrip())
+        print(f"    Marker: {packages.get('marker-pdf', 'unknown')}")
+        print(f"    Worker: {artifact.get('worker_id') or 'unknown'}")
+        print(f"    Size: {int(artifact.get('output_size_bytes') or 0):,} bytes")
+    return 0
+
+
+def cmd_request_conversion(args):
+    """Select an existing recipe artifact or queue that recipe for conversion."""
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        return 1
+    artifacts = coordinator.list_artifacts(args.hash)
+    existing = any(
+        artifact.get("recipe_digest") == args.recipe_digest for artifact in artifacts
+    )
+    action = "select retained artifact" if existing else "queue conversion"
+    if args.dry_run:
+        print(f"Would {action} {args.recipe_digest} for {args.hash}.")
+        return 0
+    outcome = coordinator.request_conversion(args.hash, args.recipe_digest)
+    print(f"Coordinator will {action}: {outcome.get('status', 'unknown')}.")
+    return 0
 
 
 def cmd_retry_all(args):
@@ -1118,6 +1204,8 @@ def main():
     p_download = subparsers.add_parser("download", help="Download completed job results")
     p_download.add_argument("hash", help="SHA256 hash of the PDF")
     p_download.add_argument("--output", "-o", help="Output path (default: <hash>.zip)")
+    p_download.add_argument("--recipe-digest", type=_recipe_digest_arg,
+                            help="Download a retained recipe instead of the selected artifact")
     p_download.add_argument("--coordinator-url", help="Coordinator base URL")
     p_download.add_argument("--token", help="Admin token for the coordinator")
     p_download.set_defaults(func=cmd_download)
@@ -1126,9 +1214,32 @@ def main():
     p_preview = subparsers.add_parser("preview", help="Preview completed job content")
     p_preview.add_argument("hash", help="SHA256 hash of the PDF")
     p_preview.add_argument("--lines", "-n", type=int, default=50, help="Lines of markdown to show")
+    p_preview.add_argument("--recipe-digest", type=_recipe_digest_arg,
+                           help="Preview a retained recipe instead of the selected artifact")
     p_preview.add_argument("--coordinator-url", help="Coordinator base URL")
     p_preview.add_argument("--token", help="Admin token for the coordinator")
     p_preview.set_defaults(func=cmd_preview)
+
+    # Recipe-aware artifacts
+    p_artifacts = subparsers.add_parser("artifacts", help="List retained conversion artifacts")
+    p_artifacts.add_argument("hash", help="SHA256 hash of the PDF")
+    p_artifacts.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_artifacts.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_artifacts.add_argument("--token", help="Admin token for the coordinator")
+    p_artifacts.set_defaults(func=cmd_artifacts)
+
+    p_request_conversion = subparsers.add_parser(
+        "request-conversion",
+        help="Select or queue an exact conversion recipe",
+    )
+    p_request_conversion.add_argument("hash", help="SHA256 hash of the PDF")
+    p_request_conversion.add_argument("recipe_digest", type=_recipe_digest_arg,
+                                      help="Recipe digest advertised by a compatible worker")
+    p_request_conversion.add_argument("--dry-run", action="store_true",
+                                      help="Show whether the recipe would be selected or queued")
+    p_request_conversion.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_request_conversion.add_argument("--token", help="Admin token for the coordinator")
+    p_request_conversion.set_defaults(func=cmd_request_conversion)
     
     # Retry-all
     p_retry_all = subparsers.add_parser("retry-all", help="Retry all failed/dead jobs")

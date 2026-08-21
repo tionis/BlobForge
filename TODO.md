@@ -6,14 +6,15 @@
 
 ## Normal Priority
 - [ ] Before enabling Marker 2, require its inference backend to expose a pinned model revision or verifiable manifest checksum and include it in conversion recipe identity; never accept a mutable model alias as sufficient provenance.
-- [ ] Add CLI or management-console commands for listing, downloading, selecting, and requesting recipe-specific artifacts before conducting operator-driven Marker A/B evaluations.
 - [ ] Update README.md with full configuration reference.
 - [ ] Add a separate dynamic-registration token flow for intentionally reusable bootstrap credentials, issuing distinct incremented worker IDs and per-worker credentials at registration time.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
 
 ## Low Priority
+- [ ] Optionally add conversion-artifact history and recipe selection controls to the management console; equivalent CLI/API operations are available.
 
 ## Done
+- [x] Add CLI commands for listing, downloading, previewing, selecting, and requesting recipe-specific conversion artifacts.
 - [x] Include effective output-affecting Marker/Surya settings in recipe identity while excluding performance-only worker tuning.
 - [x] Add canonical recipe-aware conversion identity, exact runtime/model provenance, composite artifact storage, recipe-bound leases, legacy artifact preservation, and explicit artifact selection/reconversion APIs.
 - [x] Constrain native conversion installs to the tested Marker 1.x generation and validate Surya's external llama.cpp/vLLM prerequisites before coordinator contact in already-drifted environments.

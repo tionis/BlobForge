@@ -49,8 +49,9 @@ The virtual environment is located at `.venv/` and should be activated automatic
   detection thresholds, recognition padding, layout slicing, and limits), while
   excluding performance-only batch/cache/worker settings. Marker 2 deployment
   still requires a pinned, verifiable model revision or manifest checksum; a
-  mutable model alias is insufficient. Artifact operations currently have API
-  and Python-client methods but no dedicated CLI/management-console controls.
+  mutable model alias is insufficient. Artifact operations are available via
+  API, Python client, and CLI (`artifacts`, recipe-specific download/preview,
+  and `request-conversion`); management-console controls remain optional UX.
 
 - **2026-08-21:** Conversion output identity is now `(document_hash,
   recipe_digest)` rather than implicitly just the source hash. Recipe schema 1

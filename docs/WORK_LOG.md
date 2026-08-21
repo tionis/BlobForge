@@ -1353,3 +1353,22 @@
   isolation cleanup; the real Marker 1 recipe serializes successfully with
   digest `2182c532...`; changed identity files pass Ruff.
 - **Status:** Complete; ready for an atomic commit.
+
+## 2026-08-21 (Conversion Artifact CLI)
+
+- **Objective:** Make recipe-aware artifacts operable without custom API calls.
+- **Changes:** Added `blobforge artifacts` with human/JSON output and selected/
+  legacy markers; added `--recipe-digest` to `download` and `preview`, including
+  access to retained artifacts while another recipe is queued; added dry-run
+  capable `blobforge request-conversion` to select an existing artifact or queue
+  an exact digest; and display worker recipe digests in `workers --verbose`.
+  Documented the complete A/B command flow and retained management-console
+  controls as optional future UX.
+- **Tooling:** Inspected CLI/parser/client structure with `rg` and `sed`, edited
+  with `apply_patch`, ran focused pytest, exercised both new command help pages,
+  compiled the Python package, and ran Ruff on the new tests. One orchestration
+  invocation had a JavaScript interpolation typo before command execution; the
+  corrected Ruff run found and fixed only import ordering.
+- **Verification:** All 23 focused CLI/client tests passed; both command parsers
+  render successfully; Python compilation and new-test Ruff checks pass.
+- **Status:** Complete; ready for an atomic commit.

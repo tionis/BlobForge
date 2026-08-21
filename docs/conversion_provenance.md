@@ -94,6 +94,11 @@ artifact, preserving hydration and existing clients. Recipe-aware APIs are:
   that recipe. If the artifact already exists, it selects it without another
   conversion. A processing job cannot be retargeted.
 
+The CLI exposes these operations as `blobforge artifacts`, recipe-specific
+`blobforge download` / `blobforge preview`, and `blobforge
+request-conversion`. The request command supports `--dry-run`; `blobforge
+workers --verbose` displays each active worker's advertised recipe digest.
+
 The conversion request endpoint uses the same trusted ingestion/admin-token
 authorization as enqueueing. A requested digest remains queued until a worker
 advertising that exact recipe is available. Selecting or completing an artifact

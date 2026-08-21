@@ -199,6 +199,33 @@ blobforge worker --isolate-conversion
 
 *Run multiple instances on any number of machines to scale horizontally.*
 
+### 3. Inspect and Select Conversion Artifacts
+
+Each worker advertises its active recipe digest. Retained outputs can be listed,
+downloaded, and previewed without changing the currently selected conversion.
+Requesting a digest selects it immediately when that artifact already exists;
+otherwise it queues the document until a compatible worker is available.
+
+```bash
+# Find worker recipe digests
+blobforge workers --verbose
+
+# List every retained output for a source PDF hash
+blobforge artifacts <document-hash>
+
+# Download or preview one historical/specific recipe
+blobforge download <document-hash> --recipe-digest <recipe-digest>
+blobforge preview <document-hash> --recipe-digest <recipe-digest>
+
+# Preview, then select an existing artifact or queue an exact recipe
+blobforge request-conversion <document-hash> <recipe-digest> --dry-run
+blobforge request-conversion <document-hash> <recipe-digest>
+```
+
+The coordinator URL and admin token can be supplied through
+`BLOBFORGE_COORDINATOR_URL` / `BLOBFORGE_COORDINATOR_TOKEN` or the commands'
+`--coordinator-url` / `--token` options.
+
 When using the Bunny coordinator, the management console shows live macro-stage
 progress and any Marker/tqdm counters reported by the worker. Stage changes are
 published promptly rather than waiting for the full heartbeat interval. Failed
