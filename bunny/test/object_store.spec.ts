@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LEGACY_RECIPE_DIGEST } from "../src/conversion_identity";
 import { S3ObjectStore } from "../src/object_store";
 
 describe("S3ObjectStore", () => {
@@ -47,6 +48,11 @@ describe("S3ObjectStore", () => {
     const hash = "f".repeat(64);
     expect(new URL((await store.rawUpload(hash)).url).pathname).toBe(`/blobforge/pdf/store/raw/${hash}.pdf`);
     expect(new URL((await store.outputDownload(hash)).url).pathname).toBe(`/blobforge/pdf/store/out/${hash}.zip`);
+    const recipe = "e".repeat(64);
+    expect(new URL((await store.outputDownload(hash, recipe)).url).pathname)
+      .toBe(`/blobforge/pdf/store/out/${hash}/${recipe}.zip`);
+    expect(new URL((await store.outputDownload(hash, LEGACY_RECIPE_DIGEST)).url).pathname)
+      .toBe(`/blobforge/pdf/store/out/${hash}.zip`);
   });
 
   it("uploads coordinator backups outside the legacy registry prefix", async () => {

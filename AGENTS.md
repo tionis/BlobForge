@@ -38,6 +38,24 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-21:** Conversion output identity is now `(document_hash,
+  recipe_digest)` rather than implicitly just the source hash. Recipe schema 1
+  canonically hashes the Marker compatibility generation, BlobForge Markdown
+  output schema, configured Surya model/checkpoint identifiers, and explicit
+  output-affecting options. Recipe JSON permits only safe integers (fractional
+  settings must be strings) so Python and JavaScript hash identically; exact
+  package versions, BlobForge revision,
+  Python/platform, and inference details are stored separately as provenance in
+  worker registration, archive `info.json`, and Bunny's `conversion_artifacts`
+  rows. Workers must advertise a canonical recipe digest to claim work; the
+  lease binds the job to it, retries retain it, and completion is fenced against
+  mismatched recipe/provenance. New objects use
+  `store/out/<document_hash>/<recipe_digest>.zip`. Existing hash-only ZIPs use
+  the reserved all-zero legacy digest and are lazily persisted before a job is
+  retargeted, so they remain selectable without invented provenance. Artifact
+  list/download and explicit conversion-selection APIs enable Marker 1/2 A/B
+  evaluation; backup format version 2 includes the new artifact table.
+
 - **2026-08-21:** A native `.venv` can drift beyond the tested conversion lock
   when installed with `uv pip install -e ".[convert]"`: the permissive
   `marker-pdf>=0.2.0` requirement resolved Marker 2.0.0 / Surya 0.22.1 even

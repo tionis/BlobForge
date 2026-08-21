@@ -42,6 +42,11 @@ from .config import (
 )
 from .s3_client import S3Client
 from .coordinator_client import CoordinatorClient, CoordinatorError
+from .conversion_identity import (
+    conversion_recipe_digest,
+    current_conversion_provenance,
+    current_conversion_recipe,
+)
 from .conversion_runtime import (
     CONVERSION_CONFIGURATION_EXIT_CODE,
     WorkerConfigurationError,
@@ -737,6 +742,11 @@ class Worker:
         # the coordinator or becomes eligible to lease work.
         if not bool(getattr(s3_client, "mock", False)):
             ensure_conversion_runtime()
+        self.conversion_recipe = current_conversion_recipe()
+        self.conversion_recipe_digest = conversion_recipe_digest(self.conversion_recipe)
+        self.conversion_provenance = current_conversion_provenance(
+            self.conversion_recipe
+        )
         self.s3 = s3_client
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
@@ -767,7 +777,13 @@ class Worker:
         logger.info(f"Registering worker {self.id}...")
         runtime_config: Dict[str, Any] = {}
         if self.coordinator:
-            response = self.coordinator.register_worker(self.id, get_worker_metadata())
+            worker_metadata = get_worker_metadata()
+            worker_metadata.update({
+                "conversion_recipe_digest": self.conversion_recipe_digest,
+                "conversion_recipe": self.conversion_recipe,
+                "conversion_provenance": self.conversion_provenance,
+            })
+            response = self.coordinator.register_worker(self.id, worker_metadata)
             runtime_config = response.get("config") or self.coordinator.runtime_config
             logger.info("Using Bunny coordination backend with coordinator-issued blob transfer URLs.")
         else:
@@ -879,7 +895,12 @@ class Worker:
         """
         if self.coordinator:
             try:
-                job = self.coordinator.claim_job(self.id, PRIORITIES)
+                job = self.coordinator.claim_job(
+                    self.id,
+                    PRIORITIES,
+                    recipe_digest=self.conversion_recipe_digest,
+                    recipe=self.conversion_recipe,
+                )
             except CoordinatorError as e:
                 if e.status in (401, 403):
                     raise
@@ -1082,7 +1103,7 @@ class Worker:
         # instead of spending hours converting the same PDF again.
         if self.coordinator and self.current_job_data and self.current_job_data.get("output_exists"):
             logger.info("Existing output found; finalizing the coordinator job without reconversion")
-            self._complete_job(job_hash)
+            self._complete_job(job_hash, existing_output=True)
             return
         
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1231,6 +1252,10 @@ class Worker:
             # 3. Create info.json with enriched metadata
             info = {
                 "hash": job_hash,
+                "document_hash": job_hash,
+                "conversion_recipe_digest": self.conversion_recipe_digest,
+                "conversion_recipe": self.conversion_recipe,
+                "conversion_provenance": self.conversion_provenance,
                 "converted_at": utc_now_iso(),
                 "worker_id": self.id,
                 "original_filename": s3_meta.get("original-name", "unknown.pdf"),
@@ -1280,10 +1305,22 @@ class Worker:
             processing_time = time.time() - job_start_time
             
             # 5. Finalize - NOW we delete the todo marker (atomic completion)
-            self._complete_job(job_hash, file_size, processing_time)
+            self._complete_job(
+                job_hash,
+                file_size,
+                processing_time,
+                output_size_bytes=os.path.getsize(zip_path),
+            )
             logger.info(f"Job {job_hash} Complete in {self.heartbeat._format_duration(processing_time)}.")
     
-    def _complete_job(self, job_hash: str, file_size: int = 0, processing_time: float = 0):
+    def _complete_job(
+        self,
+        job_hash: str,
+        file_size: int = 0,
+        processing_time: float = 0,
+        output_size_bytes: int = 0,
+        existing_output: bool = False,
+    ):
         """
         Mark job as complete:
         - Delete todo marker (NOW it's safe to do so)
@@ -1300,6 +1337,14 @@ class Worker:
         self._update_worker_metrics()
         if self.coordinator:
             try:
+                provenance = self.conversion_provenance
+                if existing_output:
+                    provenance = {
+                        "schema_version": 1,
+                        "recipe_digest": self.conversion_recipe_digest,
+                        "recovered_existing_output": True,
+                        "completion_runtime": self.conversion_provenance,
+                    }
                 self.coordinator.complete(
                     job_hash,
                     worker_id=self.id,
@@ -1307,7 +1352,11 @@ class Worker:
                     result={
                         "output_key": f"{S3_PREFIX_DONE}/{job_hash}.zip",
                         "size_bytes": file_size,
+                        "output_size_bytes": output_size_bytes,
                         "processing_time_seconds": round(processing_time, 2),
+                        "recipe_digest": self.conversion_recipe_digest,
+                        "recipe": self.conversion_recipe,
+                        "provenance": provenance,
                     },
                     metrics=self.get_throughput_metrics(),
                 )

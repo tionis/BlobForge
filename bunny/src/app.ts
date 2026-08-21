@@ -1,4 +1,5 @@
 import { CoordinatorDatabase, PRIORITIES, type JobRecord, type JobStatus, type Priority } from "./database";
+import { computeRecipeDigest, LEGACY_RECIPE_DIGEST } from "./conversion_identity";
 import type { ObjectTransferStore } from "./object_store";
 import { APP_CSS, APP_JS_VERSION, APP_CSS_VERSION, BRAND_SVG_VERSION, LOGIN_JS, LOGIN_JS_VERSION, MARKDOWN_JS_VERSION, VIEWER_CSS, renderHome } from "./ui";
 import { APP_JS } from "./management_ui";
@@ -213,6 +214,7 @@ function jobJson(job: JobRecord, includeLease = true): Record<string, unknown> {
     started_at: job.started_at, completed_at: job.completed_at, available_at: job.available_at,
     error_message: job.error_message, progress: JSON.parse(job.progress_json || "{}"),
     original_name: job.original_name, size_bytes: job.size_bytes,
+    recipe_digest: job.recipe_digest,
   };
 }
 
@@ -349,7 +351,7 @@ export class BlobForgeApp {
       const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(Math.floor(rawLimit), 1), 20000) : 5000;
       return json(await this.db.listDoneSince(since, limit));
     }
-    const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url|download-url|raw-upload-url))?$/);
+    const jobMatch = url.pathname.match(/^\/api\/v1\/jobs\/([a-f0-9]{64})(?:\/(heartbeat|complete|fail|release|upload-url|download-url|raw-upload-url|artifacts|convert))?$/);
     if (jobMatch && !jobMatch[2]) {
       if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
       const hash = jobMatch[1]!;
@@ -366,9 +368,49 @@ export class BlobForgeApp {
       const hash = jobMatch[1]!;
       const job = await this.db.getJob(hash);
       if (!job) return error("Job not found", 404);
-      if (job.status !== "done" || !(await this.config.objectStore.outputExists(hash))) return error("Completed output not available", 409);
-      const transfer = await this.config.objectStore.outputDownload(hash);
-      return json({ method: "GET", url: transfer.url, expires_at: transfer.expiresAt });
+      const body = await this.body(request);
+      const requestedRecipe = body.recipe_digest === undefined || body.recipe_digest === null
+        ? null : String(body.recipe_digest);
+      if (requestedRecipe !== null && !validHash(requestedRecipe)) return error("Invalid recipe digest");
+      const recipeDigest = requestedRecipe ?? job.recipe_digest;
+      if (requestedRecipe && !(requestedRecipe === LEGACY_RECIPE_DIGEST && job.status === "done" && job.recipe_digest === null) && !(await this.db.getArtifact(hash, requestedRecipe))) return error("Conversion artifact not found", 404);
+      if (job.status !== "done" && !requestedRecipe) return error("Completed output not available", 409);
+      if (!(await this.config.objectStore.outputExists(hash, recipeDigest))) return error("Completed output not available", 409);
+      const transfer = await this.config.objectStore.outputDownload(hash, recipeDigest);
+      return json({ method: "GET", url: transfer.url, expires_at: transfer.expiresAt, recipe_digest: recipeDigest });
+    }
+    if (jobMatch && jobMatch[2] === "artifacts" && request.method === "GET") {
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
+      const hash = jobMatch[1]!;
+      const job = await this.db.getJob(hash);
+      if (!job) return error("Job not found", 404);
+      const artifacts = await this.db.listArtifacts(hash);
+      if (job.status === "done" && job.recipe_digest === null && !artifacts.some((artifact) => artifact.recipe_digest === LEGACY_RECIPE_DIGEST)) {
+        artifacts.push({
+          file_hash: hash, recipe_digest: LEGACY_RECIPE_DIGEST,
+          output_key: this.config.objectStore.outputKey(hash),
+          recipe: null, provenance: null, worker_id: null,
+          output_size_bytes: 0, created_at: job.completed_at,
+          legacy: true,
+        });
+      }
+      return json({ hash, artifacts });
+    }
+    if (jobMatch && jobMatch[2] === "convert" && request.method === "POST") {
+      if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
+      const hash = jobMatch[1]!;
+      const body = await this.body(request);
+      const recipeDigest = String(body.recipe_digest || "");
+      if (!validHash(recipeDigest)) return error("Invalid recipe digest");
+      const outcome = await this.db.requestConversion(
+        hash,
+        recipeDigest,
+        adminTokenId ? `admin-token:${adminTokenId}` : "client-api",
+        this.config.objectStore.outputKey(hash),
+      );
+      if (outcome === "missing") return error("Job not found", 404);
+      if (outcome === "processing") return error("Job is currently processing", 409);
+      return json({ ok: true, status: outcome, job: jobJson((await this.db.getJob(hash))!, false) });
     }
     if (jobMatch && jobMatch[2] === "raw-upload-url" && request.method === "POST") {
       if (!clientAuthorized && !adminTokenId) return error("Unauthorized", 401);
@@ -401,11 +443,22 @@ export class BlobForgeApp {
       if (body.worker_id && body.worker_id !== workerId) return error("Worker token does not match worker_id", 403);
       const priorities = Array.isArray(body.priorities) ? body.priorities.filter(validPriority) : [...PRIORITIES];
       if (!priorities.length) return error("No valid priorities");
+      const recipeDigest = String(body.recipe_digest || "");
+      if (!validHash(recipeDigest)) return error("Workers must advertise a valid recipe digest");
+      const recipe = body.recipe && typeof body.recipe === "object" && !Array.isArray(body.recipe) ? body.recipe : null;
+      if (!recipe) return error("Workers must advertise a conversion recipe");
+      let canonicalRecipeDigest: string;
+      try {
+        canonicalRecipeDigest = await computeRecipeDigest(recipe);
+      } catch {
+        return error("Conversion recipe contains unsupported values");
+      }
+      if (canonicalRecipeDigest !== recipeDigest) return error("Recipe digest does not match canonical recipe");
       const runtime = await this.db.getConfig();
-      const job = await this.db.claim(workerId, priorities, randomToken(), this.leaseSeconds(runtime));
+      const job = await this.db.claim(workerId, priorities, randomToken(), this.leaseSeconds(runtime), recipeDigest);
       if (!job) return json({ job: null, config: runtime });
       const [metadata, input, outputExists] = await Promise.all([
-        this.db.getFileMetadata(job.file_hash), this.config.objectStore.download(job.file_hash), this.config.objectStore.outputExists(job.file_hash),
+        this.db.getFileMetadata(job.file_hash), this.config.objectStore.download(job.file_hash), this.config.objectStore.outputExists(job.file_hash, job.recipe_digest),
       ]);
       const claimed = { ...jobJson(job), ...metadata, input: { url: input.url, expires_at: input.expiresAt }, output_exists: outputExists };
       return json({ job: claimed, config: runtime });
@@ -418,7 +471,8 @@ export class BlobForgeApp {
     const leaseToken = String(body.lease_token || "");
     if (action === "upload-url") {
       if (!(await this.db.validLease(hash, workerId, leaseToken))) return error("Lease is no longer valid", 409);
-      const upload = await this.config.objectStore.upload(hash);
+      const current = await this.db.getJob(hash);
+      const upload = await this.config.objectStore.upload(hash, current?.recipe_digest);
       return json({ url: upload.url, method: "PUT", expires_at: upload.expiresAt, headers: { "content-type": "application/zip" } });
     }
     if (action === "heartbeat") {
@@ -430,9 +484,32 @@ export class BlobForgeApp {
       const current = await this.db.getJob(hash);
       if (current?.status === "done") return json({ ok: true, already_completed: true });
       if (!(await this.db.validLease(hash, workerId, leaseToken))) return error("Lease is no longer valid", 409);
-      if (!(await this.config.objectStore.outputExists(hash))) return error("Output object does not exist", 409);
+      if (!(await this.config.objectStore.outputExists(hash, current?.recipe_digest))) return error("Output object does not exist", 409);
       const result = body.result && typeof body.result === "object" && !Array.isArray(body.result) ? body.result as Record<string, unknown> : {};
-      const outcome = await this.db.complete(hash, workerId, leaseToken, { ...result, output_key: this.config.objectStore.outputKey(hash) }, body.metrics);
+      const resultRecipeDigest = typeof result.recipe_digest === "string" ? result.recipe_digest : null;
+      if (current?.recipe_digest && resultRecipeDigest !== current.recipe_digest) return error("Completion recipe does not match claimed recipe", 409);
+      const outputKey = this.config.objectStore.outputKey(hash, current?.recipe_digest);
+      const recipe = result.recipe && typeof result.recipe === "object" && !Array.isArray(result.recipe) ? result.recipe as Record<string, unknown> : null;
+      const provenance = result.provenance && typeof result.provenance === "object" && !Array.isArray(result.provenance) ? result.provenance as Record<string, unknown> : null;
+      let completionRecipeDigest: string | null = null;
+      if (recipe) {
+        try {
+          completionRecipeDigest = await computeRecipeDigest(recipe);
+        } catch {
+          return error("Completion recipe contains unsupported values");
+        }
+      }
+      if (current?.recipe_digest && completionRecipeDigest !== current.recipe_digest) return error("Completion recipe body does not match claimed recipe", 409);
+      if (current?.recipe_digest && (!provenance || provenance.recipe_digest !== current.recipe_digest)) return error("Completion provenance does not match claimed recipe", 409);
+      const reportedOutputSize = Number(result.output_size_bytes || 0);
+      const artifact = current?.recipe_digest ? {
+        recipeDigest: current.recipe_digest,
+        outputKey,
+        recipe: recipe!,
+        provenance: provenance!,
+        outputSizeBytes: Number.isFinite(reportedOutputSize) ? Math.max(0, Math.floor(reportedOutputSize)) : 0,
+      } : undefined;
+      const outcome = await this.db.complete(hash, workerId, leaseToken, { ...result, output_key: outputKey }, body.metrics, artifact);
       return outcome === "conflict" ? error("Lease is no longer valid", 409) : json({ ok: true, already_completed: outcome === "done" });
     }
     if (action === "fail") {

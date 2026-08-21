@@ -258,9 +258,14 @@ def cmd_retry(args):
 
 def cmd_convert(args):
     """Convert a PDF file locally (offline)."""
-    import shutil
     import time
-    from datetime import datetime
+
+    from .conversion_identity import (
+        conversion_recipe_digest,
+        current_conversion_provenance,
+        current_conversion_recipe,
+    )
+    from .utils import compute_sha256_with_cache
     
     input_path = args.path
     output_dir = args.output
@@ -317,7 +322,12 @@ def cmd_convert(args):
         img.save(img_path)
     
     # Save metadata
+    conversion_recipe = current_conversion_recipe()
     meta = {
+        "document_hash": compute_sha256_with_cache(input_path),
+        "conversion_recipe_digest": conversion_recipe_digest(conversion_recipe),
+        "conversion_recipe": conversion_recipe,
+        "conversion_provenance": current_conversion_provenance(conversion_recipe),
         "converted_at": utc_now_iso(),
         "original_filename": os.path.basename(input_path),
         "processing_time_seconds": round(time.time() - start_time, 2),

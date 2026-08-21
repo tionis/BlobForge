@@ -172,6 +172,10 @@ claiming work; run `uv sync --extra convert` before starting a native worker.
 BlobForge currently constrains production workers to Marker 1.x because Marker
 2 uses a materially different VLM conversion pipeline and external inference
 server. See [Conversion runtime compatibility](docs/conversion_runtime.md).
+Completed archives also record exact runtime provenance and are keyed by a
+stable conversion recipe, allowing future Marker generations to coexist for
+A/B evaluation without overwriting current results. See
+[Recipe-aware conversion provenance](docs/conversion_provenance.md).
 
 ```bash
 # Start a worker (runs continuously)

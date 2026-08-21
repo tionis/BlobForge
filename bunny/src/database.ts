@@ -1,4 +1,5 @@
 import type { Client, InStatement, InValue, Row } from "@libsql/client";
+import { LEGACY_RECIPE_DIGEST } from "./conversion_identity";
 
 export const PRIORITIES = ["1_critical", "2_high", "3_normal", "4_low", "5_background"] as const;
 export type Priority = typeof PRIORITIES[number];
@@ -20,6 +21,7 @@ export interface JobRecord {
   available_at: number;
   error_message: string | null;
   progress_json: string;
+  recipe_digest: string | null;
   original_name: string | null;
   size_bytes: number;
 }
@@ -28,11 +30,13 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS files (hash TEXT PRIMARY KEY CHECK(length(hash)=64), original_name TEXT, size_bytes INTEGER NOT NULL DEFAULT 0, source TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS file_paths (file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(file_hash,path))`,
   `CREATE TABLE IF NOT EXISTS file_tags (file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(file_hash,tag))`,
-  `CREATE TABLE IF NOT EXISTS jobs (file_hash TEXT PRIMARY KEY REFERENCES files(hash) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('todo','processing','failed','dead','done')), priority TEXT NOT NULL CHECK(priority IN ('1_critical','2_high','3_normal','4_low','5_background')), retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, done_seq INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}')`,
+  `CREATE TABLE IF NOT EXISTS jobs (file_hash TEXT PRIMARY KEY REFERENCES files(hash) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('todo','processing','failed','dead','done')), priority TEXT NOT NULL CHECK(priority IN ('1_critical','2_high','3_normal','4_low','5_background')), retry_count INTEGER NOT NULL DEFAULT 0, max_retries INTEGER NOT NULL DEFAULT 3, worker_id TEXT, lease_token TEXT, lease_expires_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, started_at INTEGER, completed_at INTEGER, done_seq INTEGER, available_at INTEGER NOT NULL, error_message TEXT, progress_json TEXT NOT NULL DEFAULT '{}', recipe_digest TEXT CHECK(recipe_digest IS NULL OR length(recipe_digest)=64))`,
   `CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status,available_at,priority,created_at)`,
   `CREATE INDEX IF NOT EXISTS jobs_lease_idx ON jobs(status,lease_expires_at)`,
   `CREATE TABLE IF NOT EXISTS job_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, attempt INTEGER NOT NULL, worker_id TEXT, failed_at INTEGER NOT NULL, error_message TEXT NOT NULL, traceback TEXT, context_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE INDEX IF NOT EXISTS job_failures_job_idx ON job_failures(file_hash,failed_at DESC,id DESC)`,
+  `CREATE TABLE IF NOT EXISTS conversion_artifacts (file_hash TEXT NOT NULL REFERENCES files(hash) ON DELETE CASCADE, recipe_digest TEXT NOT NULL CHECK(length(recipe_digest)=64), output_key TEXT NOT NULL, recipe_json TEXT NOT NULL, provenance_json TEXT NOT NULL, worker_id TEXT, output_size_bytes INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, PRIMARY KEY(file_hash,recipe_digest))`,
+  `CREATE INDEX IF NOT EXISTS conversion_artifacts_created_idx ON conversion_artifacts(file_hash,created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, status TEXT NOT NULL, current_job TEXT, last_heartbeat INTEGER NOT NULL, registered_at INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', metrics_json TEXT NOT NULL DEFAULT '{}', state_json TEXT NOT NULL DEFAULT '{}')`,
   `CREATE TABLE IF NOT EXISTS worker_credentials (worker_id TEXT PRIMARY KEY, label TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, created_by TEXT NOT NULL, revoked_at INTEGER, last_used_at INTEGER)`,
   `CREATE INDEX IF NOT EXISTS worker_credentials_token_idx ON worker_credentials(token_hash)`,
@@ -86,6 +90,7 @@ function jobFromRow(row: Row): JobRecord {
     available_at: numeric(row.available_at),
     error_message: row.error_message === null ? null : String(row.error_message),
     progress_json: String(row.progress_json || "{}"),
+    recipe_digest: row.recipe_digest === null || row.recipe_digest === undefined ? null : String(row.recipe_digest),
     original_name: row.original_name === null ? null : String(row.original_name),
     size_bytes: numeric(row.size_bytes),
   };
@@ -125,6 +130,11 @@ export class CoordinatorDatabase {
         // watermark can never skip a hash (a same-millisecond completion can no
         // longer land "behind" a (completed_at, file_hash) keyset cursor).
         await addColumnIfMissing("jobs", "done_seq", "ALTER TABLE jobs ADD COLUMN done_seq INTEGER");
+        await addColumnIfMissing(
+          "jobs",
+          "recipe_digest",
+          "ALTER TABLE jobs ADD COLUMN recipe_digest TEXT CHECK(recipe_digest IS NULL OR length(recipe_digest)=64)",
+        );
         if ((await this.client.execute("PRAGMA table_info(jobs)")).rows.some((row) => String(row.name) === "done_seq")) {
           await this.client.execute(
             `UPDATE jobs SET done_seq = (
@@ -312,15 +322,15 @@ export class CoordinatorDatabase {
     }));
   }
 
-  async getJobStatuses(hashes: string[]): Promise<Record<string, { status: JobStatus; original_name: string | null; size_bytes: number }>> {
+  async getJobStatuses(hashes: string[]): Promise<Record<string, { status: JobStatus; original_name: string | null; size_bytes: number; recipe_digest: string | null }>> {
     if (!hashes.length) return {};
-    const results: Record<string, { status: JobStatus; original_name: string | null; size_bytes: number }> = {};
+    const results: Record<string, { status: JobStatus; original_name: string | null; size_bytes: number; recipe_digest: string | null }> = {};
     const statements: InStatement[] = [];
     for (let start = 0; start < hashes.length; start += 400) {
       const batch = hashes.slice(start, start + 400);
       const placeholders = batch.map(() => "?").join(",");
       statements.push(statement(
-        `SELECT j.file_hash,j.status,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE j.file_hash IN (${placeholders})`,
+        `SELECT j.file_hash,j.status,j.recipe_digest,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE j.file_hash IN (${placeholders})`,
         batch,
       ));
     }
@@ -331,6 +341,7 @@ export class CoordinatorDatabase {
           status: String(row.status) as JobStatus,
           original_name: row.original_name === null ? null : String(row.original_name),
           size_bytes: numeric(row.size_bytes),
+          recipe_digest: row.recipe_digest === null ? null : String(row.recipe_digest),
         };
       }
     }
@@ -413,26 +424,37 @@ export class CoordinatorDatabase {
     return results[1]?.rows.length || 0;
   }
 
-  async claim(workerId: string, priorities: Priority[], leaseToken: string, leaseSeconds: number): Promise<JobRecord | null> {
+  async claim(
+    workerId: string,
+    priorities: Priority[],
+    leaseToken: string,
+    leaseSeconds: number,
+    recipeDigest: string | null = null,
+  ): Promise<JobRecord | null> {
     await this.recoverExpiredLeases();
     const timestamp = Date.now();
+    const compatibleRecipe = recipeDigest
+      ? "(j.recipe_digest=? OR j.recipe_digest IS NULL)"
+      : "j.recipe_digest IS NULL";
     const active = await this.client.execute(statement(
-      "SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE j.status='processing' AND j.worker_id=? AND j.lease_expires_at>=? LIMIT 1",
-      [workerId, timestamp],
+      `SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash
+       WHERE j.status='processing' AND j.worker_id=? AND j.lease_expires_at>=? AND ${compatibleRecipe} LIMIT 1`,
+      recipeDigest ? [workerId, timestamp, recipeDigest] : [workerId, timestamp],
     ));
     if (active.rows[0]) return jobFromRow(active.rows[0]);
     const selected = priorities.length ? priorities : [...PRIORITIES];
     const placeholders = selected.map(() => "?").join(",");
     const result = await this.client.execute(statement(
-      `UPDATE jobs SET status='processing',worker_id=?,lease_token=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,progress_json='{}'
-       WHERE file_hash=(SELECT file_hash FROM jobs WHERE status IN ('todo','failed') AND available_at<=? AND priority IN (${placeholders}) ORDER BY priority,created_at LIMIT 1)
+      `UPDATE jobs SET status='processing',worker_id=?,lease_token=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,progress_json='{}',recipe_digest=COALESCE(recipe_digest,?)
+       WHERE file_hash=(SELECT file_hash FROM jobs WHERE status IN ('todo','failed') AND available_at<=? AND priority IN (${placeholders}) AND ${recipeDigest ? "(recipe_digest IS NULL OR recipe_digest=?)" : "recipe_digest IS NULL"} ORDER BY priority,created_at LIMIT 1)
        AND NOT EXISTS(SELECT 1 FROM jobs active WHERE active.status='processing' AND active.worker_id=?) RETURNING file_hash`,
-      [workerId, leaseToken, timestamp + leaseSeconds * 1000, timestamp, timestamp, timestamp, ...selected, workerId],
+      [workerId, leaseToken, timestamp + leaseSeconds * 1000, timestamp, timestamp, recipeDigest, timestamp, ...selected, ...(recipeDigest ? [recipeDigest] : []), workerId],
     ));
     if (!result.rows[0]) {
       const repeated = await this.client.execute(statement(
-        "SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash WHERE j.status='processing' AND j.worker_id=? AND j.lease_expires_at>=? LIMIT 1",
-        [workerId, timestamp],
+        `SELECT j.*,f.original_name,f.size_bytes FROM jobs j JOIN files f ON f.hash=j.file_hash
+         WHERE j.status='processing' AND j.worker_id=? AND j.lease_expires_at>=? AND ${compatibleRecipe} LIMIT 1`,
+        recipeDigest ? [workerId, timestamp, recipeDigest] : [workerId, timestamp],
       ));
       return repeated.rows[0] ? jobFromRow(repeated.rows[0]) : null;
     }
@@ -458,17 +480,109 @@ export class CoordinatorDatabase {
     return Boolean(result.rows[0]);
   }
 
-  async complete(hash: string, workerId: string, leaseToken: string, result: unknown, metrics: unknown): Promise<"completed" | "done" | "conflict"> {
+  async complete(
+    hash: string,
+    workerId: string,
+    leaseToken: string,
+    result: unknown,
+    metrics: unknown,
+    artifact?: {
+      recipeDigest: string;
+      outputKey: string;
+      recipe: unknown;
+      provenance: unknown;
+      outputSizeBytes: number;
+    },
+  ): Promise<"completed" | "done" | "conflict"> {
     const timestamp = Date.now();
-    const results = await this.client.batch([
+    const statements: InStatement[] = [];
+    if (artifact) {
+      statements.push(statement(
+        `INSERT OR IGNORE INTO conversion_artifacts(file_hash,recipe_digest,output_key,recipe_json,provenance_json,worker_id,output_size_bytes,created_at)
+         SELECT file_hash,?,?,?,?,?,?,? FROM jobs
+         WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=? AND recipe_digest=?`,
+        [artifact.recipeDigest, artifact.outputKey, JSON.stringify(artifact.recipe || {}), JSON.stringify(artifact.provenance || {}), workerId, artifact.outputSizeBytes, timestamp, hash, workerId, leaseToken, artifact.recipeDigest],
+      ));
+    }
+    const jobUpdateIndex = statements.length;
+    statements.push(
       statement(`UPDATE jobs SET status='done',done_seq=(SELECT COALESCE(MAX(done_seq),0)+1 FROM jobs),completed_at=?,updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json=? WHERE file_hash=? AND status='processing' AND worker_id=? AND lease_token=?`, [timestamp, timestamp, JSON.stringify(result || {}), hash, workerId, leaseToken]),
       statement("UPDATE workers SET status='idle',current_job=NULL,last_heartbeat=?,metrics_json=? WHERE worker_id=? AND current_job=?", [timestamp, JSON.stringify(metrics || {}), workerId, hash]),
-    ], "write");
-    if (results[0].rowsAffected) {
+    );
+    const results = await this.client.batch(statements, "write");
+    if (results[jobUpdateIndex].rowsAffected) {
       await this.audit(workerId, "complete", hash, result || {});
       return "completed";
     }
     return (await this.getJob(hash))?.status === "done" ? "done" : "conflict";
+  }
+
+  async getArtifact(hash: string, recipeDigest: string): Promise<Record<string, unknown> | null> {
+    const result = await this.client.execute(statement(
+      "SELECT * FROM conversion_artifacts WHERE file_hash=? AND recipe_digest=?",
+      [hash, recipeDigest],
+    ));
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      file_hash: String(row.file_hash), recipe_digest: String(row.recipe_digest),
+      output_key: String(row.output_key), recipe: JSON.parse(String(row.recipe_json || "{}")),
+      provenance: JSON.parse(String(row.provenance_json || "{}")),
+      worker_id: row.worker_id === null ? null : String(row.worker_id),
+      output_size_bytes: numeric(row.output_size_bytes), created_at: numeric(row.created_at),
+    };
+  }
+
+  async listArtifacts(hash: string): Promise<Record<string, unknown>[]> {
+    const result = await this.client.execute(statement(
+      "SELECT * FROM conversion_artifacts WHERE file_hash=? ORDER BY created_at DESC,recipe_digest",
+      [hash],
+    ));
+    return result.rows.map((row) => ({
+      file_hash: String(row.file_hash), recipe_digest: String(row.recipe_digest),
+      output_key: String(row.output_key), recipe: JSON.parse(String(row.recipe_json || "{}")),
+      provenance: JSON.parse(String(row.provenance_json || "{}")),
+      worker_id: row.worker_id === null ? null : String(row.worker_id),
+      output_size_bytes: numeric(row.output_size_bytes), created_at: numeric(row.created_at),
+    }));
+  }
+
+  async requestConversion(
+    hash: string,
+    recipeDigest: string,
+    actor: string,
+    legacyOutputKey: string,
+  ): Promise<"queued" | "selected" | "processing" | "missing"> {
+    const job = await this.getJob(hash);
+    if (!job) return "missing";
+    if (job.status === "processing") return "processing";
+    const timestamp = Date.now();
+    if (job.status === "done" && job.recipe_digest === null) {
+      await this.client.execute(statement(
+        `INSERT OR IGNORE INTO conversion_artifacts(file_hash,recipe_digest,output_key,recipe_json,provenance_json,worker_id,output_size_bytes,created_at)
+         VALUES(?,?,?,?,?,NULL,0,?)`,
+        [hash, LEGACY_RECIPE_DIGEST, legacyOutputKey, JSON.stringify({ legacy: true }), JSON.stringify({ legacy: true, provenance_available: false }), job.completed_at || timestamp],
+      ));
+    }
+    const artifact = await this.getArtifact(hash, recipeDigest);
+    if (artifact) {
+      const selected = await this.client.execute(statement(
+        `UPDATE jobs SET status='done',recipe_digest=?,done_seq=(SELECT COALESCE(MAX(done_seq),0)+1 FROM jobs),completed_at=?,updated_at=?,available_at=?,retry_count=0,error_message=NULL,progress_json=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL
+         WHERE file_hash=? AND status!='processing'`,
+        [recipeDigest, numeric(artifact.created_at), timestamp, timestamp, JSON.stringify({ output_key: artifact.output_key, recipe_digest: recipeDigest, selected_existing_artifact: true }), hash],
+      ));
+      if (!selected.rowsAffected) return "processing";
+      await this.audit(actor, "conversion.select", hash, { recipe_digest: recipeDigest });
+      return "selected";
+    }
+    const queued = await this.client.execute(statement(
+      `UPDATE jobs SET status='todo',recipe_digest=?,completed_at=NULL,done_seq=NULL,available_at=?,updated_at=?,retry_count=0,error_message=NULL,progress_json='{}',worker_id=NULL,lease_token=NULL,lease_expires_at=NULL
+       WHERE file_hash=? AND status!='processing'`,
+      [recipeDigest, timestamp, timestamp, hash],
+    ));
+    if (!queued.rowsAffected) return "processing";
+    await this.audit(actor, "conversion.request", hash, { recipe_digest: recipeDigest });
+    return "queued";
   }
 
   async fail(hash: string, workerId: string, leaseToken: string, message: string, detail: unknown, metrics: unknown): Promise<JobRecord | null> {
@@ -605,7 +719,7 @@ export class CoordinatorDatabase {
   }
 
   async exportBackup(): Promise<Record<string, unknown>> {
-    const tableNames = ["files", "file_paths", "file_tags", "jobs", "job_failures", "workers", "worker_credentials", "admin_credentials", "config", "audit_log"];
+    const tableNames = ["files", "file_paths", "file_tags", "jobs", "job_failures", "conversion_artifacts", "workers", "worker_credentials", "admin_credentials", "config", "audit_log"];
     const results = await this.client.batch([
       statement(
         `SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND tbl_name IN (${tableNames.map(() => "?").join(",")}) ORDER BY type,name`,
@@ -619,7 +733,7 @@ export class CoordinatorDatabase {
     ]));
     return {
       format: "blobforge-coordinator-backup",
-      version: 1,
+      version: 2,
       created_at: new Date().toISOString(),
       schema: results[0]!.rows.map(serializableRow),
       tables,

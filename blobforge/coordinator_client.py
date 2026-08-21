@@ -203,13 +203,32 @@ class CoordinatorClient:
                 progress(min(start + chunk_size, total), total)
         return results
 
-    def output_download_url(self, file_hash: str) -> str:
+    def output_download_url(
+        self, file_hash: str, recipe_digest: Optional[str] = None
+    ) -> str:
         """Return a coordinator-issued signed URL for a completed result archive."""
-        transfer = self._request("POST", f"/api/v1/jobs/{file_hash}/download-url", {}) or {}
+        body = {"recipe_digest": recipe_digest} if recipe_digest else {}
+        transfer = self._request(
+            "POST", f"/api/v1/jobs/{file_hash}/download-url", body
+        ) or {}
         url = str(transfer.get("url") or "")
         if not url:
             raise CoordinatorError("Coordinator did not return an output download URL")
         return url
+
+    def list_artifacts(self, file_hash: str) -> List[Dict[str, Any]]:
+        """List every retained conversion artifact for a source document."""
+        payload = self._request("GET", f"/api/v1/jobs/{file_hash}/artifacts") or {}
+        artifacts = payload.get("artifacts")
+        return artifacts if isinstance(artifacts, list) else []
+
+    def request_conversion(self, file_hash: str, recipe_digest: str) -> Dict[str, Any]:
+        """Queue or select an explicitly identified conversion recipe."""
+        return self._request(
+            "POST",
+            f"/api/v1/jobs/{file_hash}/convert",
+            {"recipe_digest": recipe_digest},
+        ) or {}
 
     def raw_upload_url(self, file_hash: str) -> Dict[str, Any]:
         """Return a signed raw-object upload URL plus whether the object already exists."""
@@ -223,9 +242,14 @@ class CoordinatorClient:
             "headers": transfer.get("headers") or {},
         }
 
-    def download_output(self, file_hash: str, local_path: str) -> None:
+    def download_output(
+        self,
+        file_hash: str,
+        local_path: str,
+        recipe_digest: Optional[str] = None,
+    ) -> None:
         """Download a completed result archive through its coordinator-issued signed URL."""
-        url = self.output_download_url(file_hash)
+        url = self.output_download_url(file_hash, recipe_digest)
         try:
             request = urllib.request.Request(url, headers={"Accept": "application/zip"})
             with urllib.request.urlopen(request, timeout=self.timeout) as response, open(local_path, "wb") as target:
@@ -280,11 +304,25 @@ class CoordinatorClient:
     def deregister_worker(self, worker_id: str) -> None:
         self._request("POST", "/api/v1/workers/deregister", {"worker_id": worker_id})
 
-    def claim_job(self, worker_id: str, priorities: Iterable[str]) -> Optional[Dict[str, Any]]:
+    def claim_job(
+        self,
+        worker_id: str,
+        priorities: Iterable[str],
+        *,
+        recipe_digest: Optional[str] = None,
+        recipe: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        body: Dict[str, Any] = {
+            "worker_id": worker_id,
+            "priorities": list(priorities),
+        }
+        if recipe_digest:
+            body["recipe_digest"] = recipe_digest
+            body["recipe"] = recipe or {}
         payload = self._request(
             "POST",
             "/api/v1/jobs/claim",
-            {"worker_id": worker_id, "priorities": list(priorities)},
+            body,
         )
         if not isinstance(payload, dict) or "job" not in payload:
             raise CoordinatorError("Coordinator returned an invalid claim response")

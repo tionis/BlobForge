@@ -1238,3 +1238,62 @@
 - **Status:** Complete. Production installs remain on the output-compatible
   Marker 1.x line, and accidental newer-runtime drift now fails fast with clear
   host-configuration guidance instead of consuming job retries.
+
+## 2026-08-21 (Recipe-aware Conversion Provenance)
+
+- **Objective:** Separate source-document identity from conversion-recipe
+  identity, retain exact runtime provenance, and allow future Marker generations
+  to coexist without silently reusing or overwriting incompatible artifacts.
+- **Progress:** Started repository mapping. Used status and targeted ripgrep
+  searches across Python workers/clients, Bunny routing/database/object storage,
+  tests, and architecture documentation to locate current hash-only job and
+  `done/<hash>.zip` contracts. Added the implementation task to `TODO.md`.
+- **Architecture:** Kept source-document jobs addressable by PDF hash for API and
+  hydration compatibility, while binding each claimed job to a canonical recipe
+  digest and storing completed artifacts under `(file_hash, recipe_digest)`.
+  Exact runtime data is provenance rather than cache identity. Recipe schema 1
+  includes the converter generation, output schema, configured model/checkpoint
+  identifiers, and output-affecting options. New object keys are
+  `store/out/<hash>/<recipe>.zip`; the all-zero digest is reserved for legacy
+  hash-only objects.
+- **Implementation:**
+    1. Added cross-language canonical recipe hashing, exact package/build/model/
+       platform/backend provenance, and archive/worker registration metadata.
+       External inference URLs are reduced to a boolean to avoid persisting
+       internal endpoints or credentials.
+    2. Added nullable `jobs.recipe_digest` migration and the
+       `conversion_artifacts` table. Claims require a canonical recipe, bind
+       previously unbound work atomically, and exclude incompatible workers.
+       Completion verifies the lease recipe, canonical body, and provenance
+       digest before recording the artifact.
+    3. Added recipe-scoped object PUT/HEAD/GET keys, ambiguity recovery for an
+       existing recipe artifact, explicit artifact listing/download selection,
+       and an authorized conversion-request endpoint. Selecting an existing
+       artifact avoids recomputation and advances the done watermark.
+    4. Preserved old `store/out/<hash>.zip` objects with a reserved legacy
+       recipe. The coordinator exposes them before backfill and persists their
+       artifact rows before the first retarget, so later recipe selection cannot
+       hide or overwrite them.
+    5. Bumped portable coordinator backups to format version 2 and documented
+       schema, API, deployment compatibility, and the future Marker A/B flow.
+- **Verification:** Python focused tests passed (48); the full Python suite
+  passed (155 tests and 5 subtests) with one existing Surya/Pydantic deprecation
+  warning. Bunny TypeScript checking, the production bundle build, and all 25
+  coordinator/object-store/runtime tests passed. Cross-language Unicode/nested
+  recipe hashing has a fixed parity test. Changed recipe Python files pass
+  Ruff, `git diff --check` passes, and locked `uv sync` reports no changes.
+- **Tooling:** Used `rg`, `sed`, Git status/diff inspection, `apply_patch`,
+  `uv sync`, `uv run pytest`, Ruff, npm TypeScript checking/tests/build, and
+  direct recipe/provenance probes. Network access was approved only to populate
+  missing uv test/lint caches. During implementation, tests exposed and drove
+  fixes for a TypeScript name-shadowing error, backup-version expectation, and
+  the legacy-artifact retargeting edge case. The final audit also identified
+  Python/JavaScript fractional-number serialization as a potential future
+  digest divergence; recipes now reject fractional/unsafe numbers and require
+  those settings to use strings. It also changed unsupported worker recipe
+  values from a generic server error to a specific HTTP 400 response. A broad
+  Ruff check over legacy modified modules reported pre-existing style findings;
+  focused Ruff checks for the new recipe module and tests pass.
+- **Status:** Complete. Final diff review found no remaining correctness issue;
+  the recipe-aware artifact feature and its regression coverage are ready as
+  one atomic change.

@@ -25,7 +25,9 @@ HTML, equation markup, and whitespace.
 Do not remove the `<2` bound as a routine dependency upgrade. Adoption requires
 an A/B conversion of a representative corpus, review of Markdown and extracted
 assets, a decision about mixed-version output reproducibility, and explicit
-inference-server provisioning in every worker installation path.
+inference-server provisioning in every worker installation path. The
+[recipe-aware provenance model](conversion_provenance.md) lets both generations
+coexist during that evaluation.
 
 ## Startup validation
 

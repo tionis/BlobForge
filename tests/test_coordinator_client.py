@@ -68,6 +68,29 @@ def test_claim_envelope_updates_runtime_config():
     assert client.runtime_config == payload["config"]
 
 
+def test_claim_advertises_conversion_recipe():
+    client = CoordinatorClient("https://coord.example", "worker-secret")
+    recipe_digest = "b" * 64
+    recipe = {"engine": "marker", "engine_generation": "1"}
+    with patch(
+        "urllib.request.urlopen",
+        return_value=FakeResponse({"job": None, "config": {}}),
+    ) as opened:
+        client.claim_job(
+            "worker-1",
+            ["3_normal"],
+            recipe_digest=recipe_digest,
+            recipe=recipe,
+        )
+
+    assert json.loads(opened.call_args.args[0].data) == {
+        "worker_id": "worker-1",
+        "priorities": ["3_normal"],
+        "recipe_digest": recipe_digest,
+        "recipe": recipe,
+    }
+
+
 def test_empty_claim_envelope_still_updates_runtime_config():
     client = CoordinatorClient("https://coord.example", "worker-secret")
     payload = {"job": None, "config": {"heartbeat_enabled": True, "heartbeat_interval": 300}}
@@ -177,6 +200,24 @@ def test_output_download_streams_signed_url_to_disk(tmp_path):
 
     assert target.read_bytes() == b"zip payload"
     assert opened.call_args.args[0].full_url == "https://s3.example/done.zip?signed=yes"
+
+
+def test_output_download_can_select_recipe(tmp_path):
+    target = tmp_path / "result.zip"
+    recipe_digest = "c" * 64
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+    response = FakeResponse({"url": "https://s3.example/recipe.zip?signed=yes"})
+
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[response, FakeBinaryResponse(b"recipe payload")],
+    ) as opened:
+        client.download_output("a" * 64, str(target), recipe_digest)
+
+    assert target.read_bytes() == b"recipe payload"
+    assert json.loads(opened.call_args_list[0].args[0].data) == {
+        "recipe_digest": recipe_digest
+    }
 
 
 def test_sync_done_hashes_paginates_until_complete_and_reports_progress():

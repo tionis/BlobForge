@@ -313,8 +313,22 @@ class TestCoordinatorObjectTransfers(unittest.TestCase):
             worker.process(job_hash)
 
         coordinator.download_job_input.assert_called_once()
+        coordinator.claim_job.assert_called_once_with(
+            "enrolled-worker",
+            unittest.mock.ANY,
+            recipe_digest=worker.conversion_recipe_digest,
+            recipe=worker.conversion_recipe,
+        )
         coordinator.upload_job_output.assert_called_once()
         coordinator.complete.assert_called_once()
+        completion = coordinator.complete.call_args.kwargs["result"]
+        self.assertEqual(completion["recipe_digest"], worker.conversion_recipe_digest)
+        self.assertEqual(completion["recipe"], worker.conversion_recipe)
+        self.assertEqual(
+            completion["provenance"]["recipe_digest"],
+            worker.conversion_recipe_digest,
+        )
+        self.assertGreater(completion["output_size_bytes"], 0)
         self.assertTrue(any(
             call.kwargs.get("progress") == {"stage": "claimed", "percent": 0}
             for call in heartbeat.set_job.call_args_list

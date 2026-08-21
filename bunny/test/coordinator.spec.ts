@@ -1,6 +1,7 @@
 import { createClient, type Client } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BlobForgeApp, normalizeProfileUrl, workerIdFromLabel } from "../src/app";
+import { canonicalJson, computeRecipeDigest, LEGACY_RECIPE_DIGEST } from "../src/conversion_identity";
 import { CoordinatorDatabase } from "../src/database";
 
 let client: Client;
@@ -12,6 +13,8 @@ let backupBody = "";
 const workerToken = "bfw_test-worker-token";
 const workerHeaders = { authorization: `Bearer ${workerToken}`, "content-type": "application/json" };
 const clientHeaders = { authorization: "Bearer client-secret", "content-type": "application/json" };
+const defaultRecipe = { engine: "test" };
+const defaultRecipeDigest = "79f8cd714bedf0b8f79922540e310489c8fbe9647e984666fe6a8c91cd5722f6";
 
 async function tokenHash(token: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
@@ -27,13 +30,13 @@ beforeEach(async () => {
     adminMes: ["https://eric.wendland.dev/", "https://alice.example/"],
     objectStore: {
       rawKey: (hash) => `pdf/store/raw/${hash}.pdf`,
-      outputKey: (hash) => `pdf/store/out/${hash}.zip`,
+      outputKey: (hash, recipe) => recipe && recipe !== LEGACY_RECIPE_DIGEST ? `pdf/store/out/${hash}/${recipe}.zip` : `pdf/store/out/${hash}.zip`,
       download: async (hash) => ({ url: `https://s3.example/raw/${hash}`, expiresAt: Date.now() + 3600_000 }),
-      upload: async (hash) => ({ url: `https://s3.example/out/${hash}`, expiresAt: Date.now() + 900_000 }),
+      upload: async (hash, recipe) => ({ url: `https://s3.example/out/${hash}${recipe && recipe !== LEGACY_RECIPE_DIGEST ? `/${recipe}` : ""}`, expiresAt: Date.now() + 900_000 }),
       outputExists: async () => outputExists,
       rawExists: async () => rawExists,
       rawUpload: async (hash) => ({ url: `https://s3.example/raw-upload/${hash}`, expiresAt: Date.now() + 900_000 }),
-      outputDownload: async (hash) => ({ url: `https://s3.example/out-download/${hash}`, expiresAt: Date.now() + 3600_000 }),
+      outputDownload: async (hash, recipe) => ({ url: `https://s3.example/out-download/${hash}${recipe && recipe !== LEGACY_RECIPE_DIGEST ? `/${recipe}` : ""}`, expiresAt: Date.now() + 3600_000 }),
       backup: async (name, body) => { backupBody = body; return { key: `pdf/backups/coordinator/${name}.json` }; },
     },
   });
@@ -48,12 +51,37 @@ afterEach(() => { vi.restoreAllMocks(); client.close(); });
 
 function call(path: string, method = "GET", body?: unknown, headers?: Record<string, string>): Promise<Response> {
   const workerRoute = path.includes("/workers/") || path.endsWith("/jobs/claim") || /\/(heartbeat|complete|fail|release|upload-url)$/.test(path);
+  const requestBody = path.endsWith("/jobs/claim")
+    ? { recipe_digest: defaultRecipeDigest, recipe: defaultRecipe, ...(body && typeof body === "object" ? body : {}) }
+    : body;
   return app.fetch(new Request(`https://blobforge.example${path}`, {
-    method, headers: headers || (workerRoute ? workerHeaders : clientHeaders), body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: headers || (workerRoute ? workerHeaders : clientHeaders), body: requestBody === undefined ? undefined : JSON.stringify(requestBody),
   }));
 }
 
 describe("Bunny BlobForge coordinator", () => {
+  it("rejects fractional recipe numbers to preserve cross-runtime hashes", () => {
+    expect(() => canonicalJson({ threshold: 1.5 })).toThrow("fractional or unsafe numbers as strings");
+  });
+
+  it("returns a client error for unsupported worker recipe values", async () => {
+    const response = await call("/api/v1/jobs/claim", "POST", {
+      recipe_digest: defaultRecipeDigest,
+      recipe: { threshold: 1.5 },
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "Conversion recipe contains unsupported values" });
+  });
+
+  it("matches Python's canonical conversion recipe digest", async () => {
+    await expect(computeRecipeDigest({
+      schema_version: 1,
+      engine: "märkér",
+      options: { flag: true, list: ["x", 2] },
+    })).resolves.toBe("db37ff66f1db920c7799ba9bbd7091f8192cd601896156c81b142a8310374511");
+  });
+
   it("checks Bunny Database connectivity and rejects unauthenticated workers", async () => {
     const health = await app.fetch(new Request("https://blobforge.example/api/v1/health"));
     expect(health.status).toBe(200);
@@ -91,26 +119,38 @@ describe("Bunny BlobForge coordinator", () => {
 
     const columns = await oldClient.execute("PRAGMA table_info(jobs)");
     expect(columns.rows.some((row) => String(row.name) === "done_seq")).toBe(true);
+    expect(columns.rows.some((row) => String(row.name) === "recipe_digest")).toBe(true);
     const indexes = await oldClient.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='jobs_done_since_idx'");
     expect(indexes.rows.length).toBe(1);
+    const artifacts = await oldClient.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='conversion_artifacts'");
+    expect(artifacts.rows.length).toBe(1);
   });
 
   it("enqueues, claims with a fenced lease, heartbeats, and completes", async () => {
     const hash = "a".repeat(64);
+    const recipe = "b10a3097d6c547e2164ee512304af36c43e42fcfcadced191fe97c004a1a4de8";
+    const recipeDefinition = { engine: "marker", engine_generation: "1" };
     expect((await call("/api/v1/workers/register", "POST", { worker_id: "worker-1", hostname: "test" })).status).toBe(200);
     const queued = await call(`/api/v1/jobs/${hash}`, "PUT", {
       original_name: "book.pdf", size_bytes: 123, paths: ["books/book.pdf"], tags: ["books"], priority: "2_high",
     });
     await expect(queued.json()).resolves.toMatchObject({ hash, status: "todo", priority: "2_high" });
 
-    const claimed = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
+    const mismatchedRecipe = await call("/api/v1/jobs/claim", "POST", {
+      worker_id: "worker-1", recipe_digest: recipe, recipe: { engine: "wrong" },
+    });
+    expect(mismatchedRecipe.status).toBe(400);
+
+    const claimed = await call("/api/v1/jobs/claim", "POST", {
+      worker_id: "worker-1", recipe_digest: recipe, recipe: recipeDefinition,
+    });
     const claimBody = await claimed.json() as { job: Record<string, unknown> };
     const job = claimBody.job;
-    expect(job).toMatchObject({ hash, status: "processing", worker_id: "worker-1" });
+    expect(job).toMatchObject({ hash, status: "processing", worker_id: "worker-1", recipe_digest: recipe });
     expect(job.lease_token).toEqual(expect.any(String));
     expect(job).toMatchObject({ input: { url: `https://s3.example/raw/${hash}` }, output_exists: false, tags: ["books"] });
 
-    const repeated = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1" });
+    const repeated = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1", recipe_digest: recipe, recipe: recipeDefinition });
     await expect(repeated.json()).resolves.toMatchObject({ job: { hash, lease_token: job.lease_token } });
 
     expect((await call(`/api/v1/jobs/${hash}/heartbeat`, "POST", {
@@ -122,12 +162,48 @@ describe("Bunny BlobForge coordinator", () => {
     const upload = await call(`/api/v1/jobs/${hash}/upload-url`, "POST", {
       worker_id: "worker-1", lease_token: job.lease_token,
     });
-    await expect(upload.json()).resolves.toMatchObject({ method: "PUT", url: `https://s3.example/out/${hash}` });
+    await expect(upload.json()).resolves.toMatchObject({ method: "PUT", url: `https://s3.example/out/${hash}/${recipe}` });
     outputExists = true;
     expect((await call(`/api/v1/jobs/${hash}/complete`, "POST", {
-      worker_id: "worker-1", lease_token: job.lease_token, result: { output_key: `store/out/${hash}.zip` },
+      worker_id: "worker-1", lease_token: job.lease_token,
+      result: { recipe_digest: "d".repeat(64) },
+    })).status).toBe(409);
+    expect((await call(`/api/v1/jobs/${hash}/complete`, "POST", {
+      worker_id: "worker-1", lease_token: job.lease_token,
+      result: {
+        recipe_digest: recipe,
+        recipe: recipeDefinition,
+        provenance: { recipe_digest: recipe, packages: { "marker-pdf": "1.10.2" } },
+        output_size_bytes: 456,
+      },
     })).status).toBe(200);
-    await expect((await call(`/api/v1/jobs/${hash}`)).json()).resolves.toMatchObject({ status: "done", lease_token: null });
+    await expect((await call(`/api/v1/jobs/${hash}`)).json()).resolves.toMatchObject({ status: "done", lease_token: null, recipe_digest: recipe });
+
+    const artifactList = await call(`/api/v1/jobs/${hash}/artifacts`);
+    await expect(artifactList.json()).resolves.toMatchObject({
+      hash,
+      artifacts: [{
+        recipe_digest: recipe,
+        output_key: `pdf/store/out/${hash}/${recipe}.zip`,
+        output_size_bytes: 456,
+        recipe: { engine_generation: "1" },
+        provenance: { packages: { "marker-pdf": "1.10.2" } },
+      }],
+    });
+    const artifactDownload = await call(`/api/v1/jobs/${hash}/download-url`, "POST", { recipe_digest: recipe });
+    await expect(artifactDownload.json()).resolves.toMatchObject({
+      url: `https://s3.example/out-download/${hash}/${recipe}`,
+      recipe_digest: recipe,
+    });
+
+    const nextRecipe = "eda2e76384cdfd935305dec704efaed4f8156a60fff57f79173a5df360aa7ae2";
+    const nextRecipeDefinition = { engine: "marker", engine_generation: "2" };
+    const requested = await call(`/api/v1/jobs/${hash}/convert`, "POST", { recipe_digest: nextRecipe });
+    await expect(requested.json()).resolves.toMatchObject({ status: "queued", job: { status: "todo", recipe_digest: nextRecipe } });
+    const incompatible = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1", recipe_digest: recipe, recipe: recipeDefinition });
+    await expect(incompatible.json()).resolves.toMatchObject({ job: null });
+    const nextClaim = await call("/api/v1/jobs/claim", "POST", { worker_id: "worker-1", recipe_digest: nextRecipe, recipe: nextRecipeDefinition });
+    await expect(nextClaim.json()).resolves.toMatchObject({ job: { hash, recipe_digest: nextRecipe } });
 
   });
 
@@ -392,7 +468,7 @@ describe("Bunny BlobForge coordinator", () => {
     }));
     expect(backup.status).toBe(201);
     await expect(backup.json()).resolves.toMatchObject({ ok: true, key: expect.stringContaining("backups/coordinator/") });
-    expect(JSON.parse(backupBody)).toMatchObject({ format: "blobforge-coordinator-backup", version: 1 });
+    expect(JSON.parse(backupBody)).toMatchObject({ format: "blobforge-coordinator-backup", version: 2 });
 
     const status = await app.fetch(new Request("https://blobforge.example/auth/status", { headers: authorizationHeader }));
     await expect(status.json()).resolves.toMatchObject({
@@ -513,6 +589,31 @@ describe("Bunny BlobForge coordinator", () => {
     }));
     expect(downloadUrl.status).toBe(200);
     await expect(downloadUrl.json()).resolves.toMatchObject({ method: "GET", url: expect.stringContaining("s3.example") });
+
+    const legacyArtifacts = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}/artifacts`, {
+      headers: adminHeaders,
+    }));
+    await expect(legacyArtifacts.json()).resolves.toMatchObject({
+      artifacts: [{ recipe_digest: LEGACY_RECIPE_DIGEST, legacy: true }],
+    });
+    const retarget = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}/convert`, {
+      method: "POST", headers: adminHeaders, body: JSON.stringify({ recipe_digest: defaultRecipeDigest }),
+    }));
+    await expect(retarget.json()).resolves.toMatchObject({ status: "queued", job: { recipe_digest: defaultRecipeDigest } });
+    const retained = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}/artifacts`, {
+      headers: adminHeaders,
+    }));
+    await expect(retained.json()).resolves.toMatchObject({
+      artifacts: [{ recipe_digest: LEGACY_RECIPE_DIGEST, output_key: `pdf/store/out/${jobHash}.zip` }],
+    });
+    const selectLegacy = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}/convert`, {
+      method: "POST", headers: adminHeaders, body: JSON.stringify({ recipe_digest: LEGACY_RECIPE_DIGEST }),
+    }));
+    await expect(selectLegacy.json()).resolves.toMatchObject({ status: "selected", job: { status: "done", recipe_digest: LEGACY_RECIPE_DIGEST } });
+    const legacyDownload = await app.fetch(new Request(`https://blobforge.example/api/v1/jobs/${jobHash}/download-url`, {
+      method: "POST", headers: adminHeaders, body: "{}",
+    }));
+    await expect(legacyDownload.json()).resolves.toMatchObject({ url: `https://s3.example/out-download/${jobHash}` });
 
     const unauthedBulk = await app.fetch(new Request("https://blobforge.example/api/v1/jobs/status", {
       method: "POST", headers: { authorization: "Bearer invalid", "content-type": "application/json" }, body: JSON.stringify({ hashes: [jobHash] }),

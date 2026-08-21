@@ -1,3 +1,5 @@
+import { LEGACY_RECIPE_DIGEST } from "./conversion_identity";
+
 export interface ObjectStoreConfig {
   endpointUrl: string;
   bucket: string;
@@ -17,13 +19,13 @@ export interface PresignedTransfer {
 
 export interface ObjectTransferStore {
   rawKey(hash: string): string;
-  outputKey(hash: string): string;
+  outputKey(hash: string, recipeDigest?: string | null): string;
   download(hash: string): Promise<PresignedTransfer>;
-  upload(hash: string): Promise<PresignedTransfer>;
-  outputExists(hash: string): Promise<boolean>;
+  upload(hash: string, recipeDigest?: string | null): Promise<PresignedTransfer>;
+  outputExists(hash: string, recipeDigest?: string | null): Promise<boolean>;
   rawExists(hash: string): Promise<boolean>;
   rawUpload(hash: string): Promise<PresignedTransfer>;
-  outputDownload(hash: string): Promise<PresignedTransfer>;
+  outputDownload(hash: string, recipeDigest?: string | null): Promise<PresignedTransfer>;
   backup(name: string, body: string): Promise<{ key: string }>;
 }
 
@@ -64,20 +66,24 @@ export class S3ObjectStore implements ObjectTransferStore {
   }
 
   rawKey(hash: string): string { return `${this.prefix}store/raw/${hash}.pdf`; }
-  outputKey(hash: string): string { return `${this.prefix}store/out/${hash}.zip`; }
+  outputKey(hash: string, recipeDigest?: string | null): string {
+    return recipeDigest && recipeDigest !== LEGACY_RECIPE_DIGEST
+      ? `${this.prefix}store/out/${hash}/${recipeDigest}.zip`
+      : `${this.prefix}store/out/${hash}.zip`;
+  }
 
   async download(hash: string): Promise<PresignedTransfer> {
     const ttl = Math.min(604_800, Math.max(60, this.config.downloadTtlSeconds || 3600));
     return { url: await this.presign("GET", this.rawKey(hash), ttl), expiresAt: Date.now() + ttl * 1000 };
   }
 
-  async upload(hash: string): Promise<PresignedTransfer> {
+  async upload(hash: string, recipeDigest?: string | null): Promise<PresignedTransfer> {
     const ttl = Math.min(604_800, Math.max(60, this.config.uploadTtlSeconds || 900));
-    return { url: await this.presign("PUT", this.outputKey(hash), ttl), expiresAt: Date.now() + ttl * 1000 };
+    return { url: await this.presign("PUT", this.outputKey(hash, recipeDigest), ttl), expiresAt: Date.now() + ttl * 1000 };
   }
 
-  async outputExists(hash: string): Promise<boolean> {
-    const response = await fetch(await this.presign("HEAD", this.outputKey(hash), 60), { method: "HEAD" });
+  async outputExists(hash: string, recipeDigest?: string | null): Promise<boolean> {
+    const response = await fetch(await this.presign("HEAD", this.outputKey(hash, recipeDigest), 60), { method: "HEAD" });
     if (response.ok) return true;
     if (response.status === 404) return false;
     throw new Error(`Object-store HEAD failed (${response.status})`);
@@ -95,9 +101,9 @@ export class S3ObjectStore implements ObjectTransferStore {
     return { url: await this.presign("PUT", this.rawKey(hash), ttl), expiresAt: Date.now() + ttl * 1000 };
   }
 
-  async outputDownload(hash: string): Promise<PresignedTransfer> {
+  async outputDownload(hash: string, recipeDigest?: string | null): Promise<PresignedTransfer> {
     const ttl = Math.min(604_800, Math.max(60, this.config.downloadTtlSeconds || 3600));
-    return { url: await this.presign("GET", this.outputKey(hash), ttl), expiresAt: Date.now() + ttl * 1000 };
+    return { url: await this.presign("GET", this.outputKey(hash, recipeDigest), ttl), expiresAt: Date.now() + ttl * 1000 };
   }
 
 

@@ -319,7 +319,8 @@ versioned JSON document containing the schema and rows, and uploads it to
 
 The response includes the object key, byte size, per-table row counts, and a
 SHA-256 checksum. Backups include worker credential hashes and administrator
-audit identities, so the backup prefix must remain private. The coordinator S3
+audit identities. Backup format version 2 also includes recipe-aware conversion
+artifacts and their exact runtime provenance, so the backup prefix must remain private. The coordinator S3
 credential needs read access to raw PDFs, write access to output ZIPs and the
 backup prefix, and metadata-read access to outputs. It does not need bucket
 listing or deletion rights.
@@ -354,7 +355,12 @@ transfer goes through coordinator-issued signed URLs.
   done-hash index scan) and making hydration efficient at any scale.
 - `POST /api/v1/jobs/{hash}/download-url` returns a short-lived signed GET URL
   for a completed result archive; `blobforge download`, `blobforge preview`,
-  and hydration stream from it.
+  and hydration stream from it. An optional `recipe_digest` selects a retained
+  historical/experimental artifact instead of the current one.
+- `GET /api/v1/jobs/{hash}/artifacts` lists all retained recipe-specific
+  results and exact conversion provenance. `POST /api/v1/jobs/{hash}/convert`
+  explicitly queues or selects a recipe digest; only a worker advertising that
+  recipe can claim the conversion.
 - `POST /api/v1/jobs/{hash}/raw-upload-url` returns a signed PUT URL and
   `already_exists`; `blobforge ingest` uploads raw PDFs through it instead of
   holding S3 credentials. Dry runs stop before that PUT or any enqueue. If a
@@ -365,6 +371,10 @@ transfer goes through coordinator-issued signed URLs.
 - `GET/POST /api/v1/jobs/{hash}` accept admin tokens in addition to
   `CLIENT_API_TOKEN`, so operators can enqueue and query jobs with a revocable
   per-person credential.
+
+See [Recipe-aware conversion provenance](conversion_provenance.md) for object
+keys, lease binding, legacy-output compatibility, and the Marker upgrade
+evaluation workflow.
 
 ## Web library, uploads, and result preview
 
