@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import sys
@@ -25,6 +26,31 @@ TRACKED_DISTRIBUTIONS = (
     "torch",
     "transformers",
     "pillow",
+)
+SURYA_OUTPUT_SETTINGS = (
+    "IMAGE_DPI",
+    "IMAGE_DPI_HIGHRES",
+    "FLATTEN_PDF",
+    "DETECTOR_IMAGE_CHUNK_HEIGHT",
+    "DETECTOR_TEXT_THRESHOLD",
+    "DETECTOR_BLANK_THRESHOLD",
+    "DETECTOR_BOX_Y_EXPAND_MARGIN",
+    "FOUNDATION_MODEL_QUANTIZE",
+    "FOUNDATION_MAX_TOKENS",
+    "FOUNDATION_CHUNK_SIZE",
+    "FOUNDATION_PAD_TO_NEAREST",
+    "FOUNDATION_MULTI_TOKEN_MIN_CONFIDENCE",
+    "RECOGNITION_PAD_VALUE",
+    "LAYOUT_IMAGE_SIZE",
+    "LAYOUT_SLICE_MIN",
+    "LAYOUT_SLICE_SIZE",
+    "LAYOUT_MAX_BOXES",
+    "TABLE_REC_IMAGE_SIZE",
+    "TABLE_REC_MAX_BOXES",
+)
+MARKER_OUTPUT_SETTINGS = (
+    "OUTPUT_ENCODING",
+    "OUTPUT_IMAGE_FORMAT",
 )
 
 
@@ -59,6 +85,46 @@ def _configured_models() -> dict[str, str]:
         name.lower(): str(getattr(settings, name))
         for name in sorted(names)
         if getattr(settings, name, None)
+    }
+
+
+def _setting_recipe_value(value: Any) -> Any:
+    """Convert effective settings to portable recipe-safe JSON values."""
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("Conversion setting contains a non-finite number")
+        # Fractional recipe values are strings so Python and JavaScript cannot
+        # disagree about their canonical binary-to-decimal representation.
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_setting_recipe_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _setting_recipe_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    raise TypeError(f"Unsupported conversion setting value: {type(value).__name__}")
+
+
+def _selected_settings(module_name: str, names: Iterable[str]) -> dict[str, Any]:
+    try:
+        settings = import_module(module_name).settings
+    except (ImportError, AttributeError):
+        return {}
+    return {
+        name.lower(): _setting_recipe_value(getattr(settings, name))
+        for name in names
+        if hasattr(settings, name)
+    }
+
+
+def _configured_output_settings() -> dict[str, dict[str, Any]]:
+    """Capture semantic settings while excluding performance-only tuning."""
+    return {
+        "marker": _selected_settings("marker.settings", MARKER_OUTPUT_SETTINGS),
+        "surya": _selected_settings("surya.settings", SURYA_OUTPUT_SETTINGS),
     }
 
 
@@ -110,9 +176,7 @@ def current_conversion_recipe() -> dict[str, Any]:
         "engine_generation": _major_generation(marker_version),
         "output_schema": OUTPUT_SCHEMA,
         "models": _configured_models(),
-        # BlobForge currently invokes Marker with its release defaults. Add any
-        # future output-affecting overrides here before exposing them to users.
-        "options": {},
+        "options": _configured_output_settings(),
     }
 
 

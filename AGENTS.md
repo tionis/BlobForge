@@ -43,12 +43,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
   now injects `${{ github.sha }}` as the runtime
   `BLOBFORGE_BUILD_REVISION`; the Python release version is aligned with the
   coordinator at 0.4.0. Custom images must pass the same build argument rather
-  than accepting the `unknown` fallback. Recipe
-  schema 1 records converter generation and dated Surya checkpoint identifiers,
-  but not every environment-overridable output threshold/option or a model
-  payload checksum. The pinned Marker 1 default remains usable; non-default or
-  Marker 2 deployment must promote those effective settings and immutable
-  model revisions into recipe identity. Artifact operations currently have API
+  than accepting the `unknown` fallback. Recipe schema 1 now records the
+  converter generation, dated Surya checkpoint identifiers, and effective
+  output-affecting Marker/Surya settings (render format, flattening, DPI,
+  detection thresholds, recognition padding, layout slicing, and limits), while
+  excluding performance-only batch/cache/worker settings. Marker 2 deployment
+  still requires a pinned, verifiable model revision or manifest checksum; a
+  mutable model alias is insufficient. Artifact operations currently have API
   and Python-client methods but no dedicated CLI/management-console controls.
 
 - **2026-08-21:** Conversion output identity is now `(document_hash,

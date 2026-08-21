@@ -1330,3 +1330,26 @@
 - **Verification:** All 9 dependency/provenance tests passed; the lock resolved
   without network access.
 - **Status:** Complete; ready for an atomic commit.
+
+## 2026-08-21 (Effective Conversion Recipe Settings)
+
+- **Objective:** Prevent environment-overridden conversion settings from
+  silently sharing an artifact identity with the Marker defaults.
+- **Changes:** Added a deliberate allowlist of output-affecting Marker and Surya
+  settings to recipe schema 1: render format/encoding, PDF flattening, render
+  DPI, detection geometry/thresholds, foundation quantization/token/padding
+  controls, recognition padding, layout image/slice/limit settings, and table
+  image/limit settings. Fractional values are normalized to decimal strings for
+  cross-language canonical hashing. Batch sizes, worker counts, compilation,
+  cache paths, device choice, and logging/progress controls remain excluded as
+  performance-only implementation details. Documented that Marker 2 must expose
+  a pinned/verifiable model revision before adoption because its payload cannot
+  be safely checksummed before the upstream runtime downloads it.
+- **Tooling:** Inspected installed Marker/Surya settings and loaders with `rg`
+  and `sed`, edited with `apply_patch`, probed the real current recipe, and ran
+  focused pytest and Ruff. Ruff initially lacked network access and passed after
+  the approved dependency fetch.
+- **Verification:** 31 focused identity/worker tests passed before final test
+  isolation cleanup; the real Marker 1 recipe serializes successfully with
+  digest `2182c532...`; changed identity files pass Ruff.
+- **Status:** Complete; ready for an atomic commit.

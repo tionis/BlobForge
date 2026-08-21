@@ -5,7 +5,7 @@
 - [ ] Test heartbeat mechanism under load.
 
 ## Normal Priority
-- [ ] Before enabling Marker 2 or environment-tuned conversions, add all output-affecting effective settings and immutable model payload revisions/checksums to conversion recipe identity.
+- [ ] Before enabling Marker 2, require its inference backend to expose a pinned model revision or verifiable manifest checksum and include it in conversion recipe identity; never accept a mutable model alias as sufficient provenance.
 - [ ] Add CLI or management-console commands for listing, downloading, selecting, and requesting recipe-specific artifacts before conducting operator-driven Marker A/B evaluations.
 - [ ] Update README.md with full configuration reference.
 - [ ] Add a separate dynamic-registration token flow for intentionally reusable bootstrap credentials, issuing distinct incremented worker IDs and per-worker credentials at registration time.
@@ -14,6 +14,7 @@
 ## Low Priority
 
 ## Done
+- [x] Include effective output-affecting Marker/Surya settings in recipe identity while excluding performance-only worker tuning.
 - [x] Add canonical recipe-aware conversion identity, exact runtime/model provenance, composite artifact storage, recipe-bound leases, legacy artifact preservation, and explicit artifact selection/reconversion APIs.
 - [x] Constrain native conversion installs to the tested Marker 1.x generation and validate Surya's external llama.cpp/vLLM prerequisites before coordinator contact in already-drifted environments.
 - [x] Diagnose the `llama-server binary not found` worker failure as an unlocked Marker 2.0 / Surya 0.22 environment using Surya's CPU llama.cpp OCR backend instead of the repository's locked Marker 1.10 / Surya 0.17 stack.

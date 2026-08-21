@@ -15,13 +15,20 @@ hashes it with SHA-256. Recipe version 1 includes:
 - the conversion engine and its compatibility generation;
 - BlobForge's output schema identifier;
 - configured Surya model/checkpoint identifiers; and
-- explicit output-affecting options.
+- effective output-affecting Marker/Surya settings, including render format,
+  PDF flattening, image resolution, detection thresholds, recognition padding,
+  layout slicing, and table/layout limits.
 
 Exact package patch versions are deliberately not part of the recipe unless
 they change one of those compatibility inputs. This avoids fragmenting the
 artifact cache for a packaging-only update. Any new converter option that can
 change Markdown or assets must be added to the recipe before that option is
 used in production.
+
+Performance-only settings such as batch sizes, worker counts, cache paths, and
+progress/logging controls are excluded so equivalent CPU/GPU workers remain
+recipe-compatible. Fractional effective settings are encoded as decimal strings
+to preserve canonical Python/JavaScript hashing.
 
 Recipe numbers are limited to safe integers so Python and JavaScript emit the
 same canonical JSON. Fractional output settings must be encoded as strings.
@@ -97,6 +104,13 @@ experimental worker, obtain its advertised recipe digest, request that recipe
 for a representative corpus, and compare both retained artifact sets. Promoting
 the new recipe changes only the selected artifact; it does not destroy the
 Marker 1 result.
+
+Marker 1's configured model keys contain dated upstream snapshot identifiers,
+which are treated as immutable by the current recipe. BlobForge cannot verify
+those remote payload bytes before Surya downloads the models during conversion.
+Before Marker 2 is enabled, its backend must expose a pinned model revision or
+manifest checksum that BlobForge can verify and include in the recipe; a mutable
+model alias is not sufficient provenance.
 
 Coordinator backup format version 2 includes `conversion_artifacts` and the
 new nullable `jobs.recipe_digest` column.
