@@ -5,7 +5,6 @@ from pathlib import Path
 
 from packaging.version import Version
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 # Each floor is at or above every patched version in the corresponding open
@@ -50,6 +49,8 @@ def test_all_locked_resolutions_meet_security_floors():
 
 
 def test_marker_compatibility_override_is_explicit():
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'requires-python = ">=3.10"' in pyproject
-    assert '"pillow>=12.2.0"' in pyproject
+    pyproject_text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'requires-python = ">=3.10"' in pyproject_text
+    assert '"pillow>=12.2.0"' in pyproject_text
+    assert pyproject_text.count('"marker-pdf>=1.10.2,<2"') == 2
+    assert all(version < Version("2") for version in locked_versions()["marker-pdf"])

@@ -28,7 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 convert = [
-    "marker-pdf>=0.2.0",
+    "marker-pdf>=1.10.2,<2",
 ]
 metrics = [
     "psutil>=5.9.0",
@@ -42,7 +42,7 @@ dev = [
     "xattr>=1.0.0",
 ]
 all = [
-    "marker-pdf>=0.2.0",
+    "marker-pdf>=1.10.2,<2",
     "psutil>=5.9.0",
     "xattr>=1.0.0",
 ]

@@ -38,6 +38,25 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-21:** A native `.venv` can drift beyond the tested conversion lock
+  when installed with `uv pip install -e ".[convert]"`: the permissive
+  `marker-pdf>=0.2.0` requirement resolved Marker 2.0.0 / Surya 0.22.1 even
+  though `uv.lock` pins Marker 1.10.2 / Surya 0.17.1. Surya 0.22's OCR is a
+  vision-language model served through an OpenAI-compatible inference backend;
+  backend auto-detection selects `llamacpp` when no NVIDIA GPU is visible, and
+  that backend requires the external `llama-server` executable plus Surya's
+  GGUF model. `uv run blobforge ...` without the `convert` extra can refresh
+  BlobForge while leaving those unmanaged optional packages in place. Restore
+  the vetted stack with `uv sync --extra convert` and run workers with the
+  extra enabled. Public conversion extras now constrain Marker to
+  `>=1.10.2,<2`. Startup preflight also recognizes the newer Surya inference
+  contract in already-drifted environments: an external URL bypasses local
+  tooling, `llamacpp` requires `llama-server`/`LLAMA_CPP_BINARY`, and `vllm`
+  requires Docker. These checks happen before coordinator contact. Marker 2's
+  VLM pipeline can materially change scanned/complex-document text, block
+  boundaries, reading order, tables, equations, and whitespace, so adopting it
+  requires representative corpus A/B review and explicit backend provisioning.
+
 - **2026-08-21:** Real workers validate the optional Marker runtime before any
   coordinator identity request, registration, heartbeat startup, or lease
   acquisition; native repository checkouts should run `uv sync --extra

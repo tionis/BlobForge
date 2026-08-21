@@ -169,6 +169,9 @@ Worker IDs are persistent (based on machine fingerprint) so cleanup works across
 Worker startup validates the optional Marker conversion runtime before it
 contacts the coordinator. A base-only checkout therefore exits without
 claiming work; run `uv sync --extra convert` before starting a native worker.
+BlobForge currently constrains production workers to Marker 1.x because Marker
+2 uses a materially different VLM conversion pipeline and external inference
+server. See [Conversion runtime compatibility](docs/conversion_runtime.md).
 
 ```bash
 # Start a worker (runs continuously)

@@ -1165,3 +1165,76 @@
   remaining reportable correctness issue was found.
 - **Status:** All five requested findings are fixed, documented, tested, and
   committed atomically; final repository records are ready to commit.
+
+## 2026-08-21 (Surya llama-server Failure Diagnosis)
+
+- **Objective:** Explain why an isolated conversion reached Surya OCR and
+  failed after several minutes with `llama-server binary not found`.
+- **Findings:**
+    1. Traced the exception through Marker's OCR builder into Surya's full-page
+       recognition path and `SuryaInferenceManager`.
+    2. The installed Surya uses a vision-language OCR model
+       (`datalab-to/surya-ocr-2`) behind an OpenAI-compatible inference server.
+       Its automatic backend policy is NVIDIA -> vLLM, otherwise -> llama.cpp.
+    3. This host exposes neither CUDA, `/dev/nvidia0`, nor `nvidia-smi`, so the
+       policy selected `llamacpp`; no `llama-server` executable or external
+       `SURYA_INFERENCE_URL` is configured.
+    4. The `.venv` contains Marker 2.0.0 / Surya 0.22.1, but `uv.lock` pins the
+       previously conversion-tested Marker 1.10.2 / Surya 0.17.1. A dry-run of
+       `uv sync --extra convert` would restore those locked versions.
+    5. The permissive optional dependency plus `uv pip install -e
+       ".[convert]"` can resolve the newest major release without consulting
+       the project lock; a later `uv run blobforge` without `--extra convert`
+       does not necessarily reconcile those optional packages.
+    6. The recently added worker preflight behaved as implemented: all Python
+       imports and expected symbols existed. The missing dependency is an
+       external executable required only when the OCR backend starts.
+- **Tooling:** Used `git status/log/blame`, `rg`, `find`, `sed`, installed
+  package metadata, Surya/Marker source inspection, `uv run --no-sync`, and
+  `uv sync --dry-run` (with the cache redirected to `/tmp`) to inspect versions,
+  settings, backend detection, device visibility, and lock reconciliation. An
+  initial uv metadata probe could not create a cache temporary file under the
+  filesystem sandbox; it was repeated successfully with `UV_CACHE_DIR`.
+- **Changes:** Updated only the required TODO, findings, and activity records;
+  no packages, runtime code, worker process, lease, or coordinator state were
+  changed.
+- **Status:** Root cause confirmed. The immediate repository-aligned recovery
+  is to sync and run with the locked `convert` extra; supporting Marker 2.x
+  would instead require explicitly provisioning llama.cpp/vLLM or an external
+  inference server and extending startup validation.
+
+## 2026-08-21 (Conversion Runtime Compatibility Guard)
+
+- **Objective:** Prevent another silent Marker major-version drift, explain the
+  output-compatibility impact, and fail before coordinator contact when a
+  newer Surya runtime lacks its external inference dependency.
+- **Changes:**
+    1. Constrained the public `convert` and `all` extras to
+       `marker-pdf>=1.10.2,<2` and refreshed only BlobForge's corresponding
+       requirement metadata in `uv.lock`.
+    2. Extended conversion-host startup validation to recognize Surya's newer
+       inference manager. External URLs require no local executable; the
+       llama.cpp backend requires `llama-server` or `LLAMA_CPP_BINARY`; and the
+       vLLM backend requires Docker. Errors include actionable setup/recovery
+       guidance and occur through the existing pre-coordinator worker guard.
+    3. Added unit coverage for legacy Surya, local llama.cpp, external-server,
+       vLLM, and broken-import paths, plus dependency-bound regression checks.
+    4. Documented the Marker 1/2 architecture and output compatibility boundary,
+       deployment responsibility, and criteria for a future Marker 2 adoption.
+    5. Restored the checkout environment with `uv sync --extra convert`; the
+       active runtime is now Marker 1.10.2 / Surya 0.17.1, and its real startup
+       preflight passes.
+- **Tooling:** Used `apply_patch`, `uv lock`, `uv sync`, focused and full pytest
+  runs, Ruff on changed Python files, direct conversion-preflight probes against
+  both the drifted and restored environments, `git diff --check`, and targeted
+  diff/status inspection. The first offline lock refresh lacked cached Marker
+  metadata and the sandboxed online attempt lacked DNS, so the lock query and
+  environment sync were repeated with approved network access. A full-tree Ruff
+  run reported 424 pre-existing findings; all changed Python files pass Ruff.
+- **Verification:** 147 tests and 5 subtests passed; changed-file Ruff passed;
+  `uv sync --locked --extra convert --dry-run` reports no changes; the drifted
+  Marker 2 environment produced the new missing-`llama-server` error before
+  coordinator contact, and the restored Marker 1 runtime passes preflight.
+- **Status:** Complete. Production installs remain on the output-compatible
+  Marker 1.x line, and accidental newer-runtime drift now fails fast with clear
+  host-configuration guidance instead of consuming job retries.

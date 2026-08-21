@@ -12,6 +12,8 @@
 ## Low Priority
 
 ## Done
+- [x] Constrain native conversion installs to the tested Marker 1.x generation and validate Surya's external llama.cpp/vLLM prerequisites before coordinator contact in already-drifted environments.
+- [x] Diagnose the `llama-server binary not found` worker failure as an unlocked Marker 2.0 / Surya 0.22 environment using Surya's CPU llama.cpp OCR backend instead of the repository's locked Marker 1.10 / Surya 0.17 stack.
 - [x] Fix the four correctness regressions found in the inclusive `7ff1c5f3...` review: dry-run uploads, orphaned raw enqueue recovery, hydration hash persistence, and coordinator-scoped done mirrors.
 - [x] Make workers validate Marker before coordinator contact, classify late conversion-runtime failures as host configuration errors, release rather than fail affected leases, and suppress stale post-release heartbeats.
 - [x] Diagnose the native `uv run blobforge worker` failure loop when the optional Marker conversion dependency is absent.

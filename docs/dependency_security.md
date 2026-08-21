@@ -15,6 +15,13 @@ packages. Keeping that resolution would make a clean universal lock impossible.
 
 ## Marker compatibility overrides
 
+The public `convert` and `all` extras constrain Marker to
+`marker-pdf>=1.10.2,<2`. Marker 2 changes the conversion architecture and adds
+an external Surya inference-server contract, so it must not enter native tool
+installs merely because those installs resolve independently of `uv.lock`.
+See [Conversion runtime compatibility](conversion_runtime.md) for the adoption
+criteria and worker preflight behavior.
+
 `marker-pdf 1.10.2` and `surya-ocr 0.17.1` declare Pillow `<11`, while the first
 release covering all current Pillow advisories is 12.2. BlobForge overrides
 that stale cap to Pillow 12.2 or newer. This is an intentional compatibility

@@ -120,8 +120,8 @@ xattr = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.28.0" },
-    { name = "marker-pdf", marker = "extra == 'all'", specifier = ">=0.2.0" },
-    { name = "marker-pdf", marker = "extra == 'convert'", specifier = ">=0.2.0" },
+    { name = "marker-pdf", marker = "extra == 'all'", specifier = ">=1.10.2,<2" },
+    { name = "marker-pdf", marker = "extra == 'convert'", specifier = ">=1.10.2,<2" },
     { name = "psutil", marker = "extra == 'all'", specifier = ">=5.9.0" },
     { name = "psutil", marker = "extra == 'dev'", specifier = ">=5.9.0" },
     { name = "psutil", marker = "extra == 'metrics'", specifier = ">=5.9.0" },
