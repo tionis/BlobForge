@@ -1,10 +1,13 @@
 # TODO List
 
 ## High Priority
+- [ ] Inject the Git commit into production worker images as `BLOBFORGE_BUILD_REVISION` and align the Python package version with the current release so container provenance is never `unknown`/stale.
 - [ ] Add unit tests for S3 operations and queue state transitions.
 - [ ] Test heartbeat mechanism under load.
 
 ## Normal Priority
+- [ ] Before enabling Marker 2 or environment-tuned conversions, add all output-affecting effective settings and immutable model payload revisions/checksums to conversion recipe identity.
+- [ ] Add CLI or management-console commands for listing, downloading, selecting, and requesting recipe-specific artifacts before conducting operator-driven Marker A/B evaluations.
 - [ ] Update README.md with full configuration reference.
 - [ ] Add a separate dynamic-registration token flow for intentionally reusable bootstrap credentials, issuing distinct incremented worker IDs and per-worker credentials at registration time.
 - [ ] Consider adding optional SQS/SNS integration for larger scale.

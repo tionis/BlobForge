@@ -1298,3 +1298,20 @@
   the recipe-aware artifact feature and its regression coverage are ready as
   one atomic change. Committed as `f34c3c2` (`feat: track recipe-aware
   conversion artifacts`).
+
+## 2026-08-21 (Recipe Provenance Rollout Audit)
+
+- **Objective:** Determine whether recipe-aware conversion artifacts require
+  further changes before production use or a future Marker 2 evaluation.
+- **Actions:** Used `rg` and `sed` to inspect container build/release workflows,
+  package versions, operator API usage, recipe construction, and Surya's active
+  settings/model-loading paths. No runtime code or external state was changed.
+- **Findings:** The container build does not inject a source revision and the
+  Python package remains version 0.3.0, so exact production build provenance
+  needs a release-metadata follow-up. Recipe schema 1 covers the current dated
+  Marker 1 model identifiers but not every environment-overridable output
+  setting or immutable model payload checksum; those must be incorporated
+  before custom settings or Marker 2 are enabled. Recipe artifact APIs exist,
+  while dedicated CLI/console controls remain optional operator UX work.
+- **Status:** Follow-ups recorded in `TODO.md`; current pinned Marker 1/default
+  operation is not blocked.
