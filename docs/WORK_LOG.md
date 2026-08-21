@@ -1296,4 +1296,5 @@
   focused Ruff checks for the new recipe module and tests pass.
 - **Status:** Complete. Final diff review found no remaining correctness issue;
   the recipe-aware artifact feature and its regression coverage are ready as
-  one atomic change.
+  one atomic change. Committed as `f34c3c2` (`feat: track recipe-aware
+  conversion artifacts`).
