@@ -1372,3 +1372,29 @@
 - **Verification:** All 23 focused CLI/client tests passed; both command parsers
   render successfully; Python compilation and new-test Ruff checks pass.
 - **Status:** Complete; ready for an atomic commit.
+
+## 2026-08-21 (Provenance Follow-up Final Audit)
+
+- **Objective:** Verify the build provenance, effective recipe settings, and
+  artifact CLI changes together and identify anything else actionable now.
+- **Actions:** Synced the locked 0.4.0 development environment, ran the complete
+  Python and Bunny suites, TypeScript checking and production bundle build,
+  probed real recipe/provenance output with an injected deployment revision,
+  checked the complete commit-range diff, and confirmed a clean worktree. The
+  first sync could not fetch the missing Hatchling build backend under sandboxed
+  DNS; the approved retry succeeded.
+- **Verification:** 162 Python tests and 5 subtests passed with two upstream
+  Marker/Surya Pydantic deprecation warnings. All 25 Bunny tests, TypeScript
+  checking, and the production build passed. The runtime probe reported
+  BlobForge 0.4.0, the supplied build revision, and recipe digest
+  `2182c532...`. Commit-range whitespace validation passed.
+- **Review:** No remaining locally actionable correctness issue was found. The
+  only conversion-identity prerequisite intentionally left open is requiring a
+  pinned/verifiable model revision from the future Marker 2 inference backend;
+  BlobForge cannot truthfully derive that checksum before the upstream runtime
+  downloads the model. Management-console artifact controls remain optional
+  because equivalent authenticated CLI/API workflows are complete.
+- **Commits:** `afb7148` embeds worker release provenance; `96a9f50`
+  fingerprints effective conversion settings; `39b00c1` exposes artifacts in
+  the CLI.
+- **Status:** Complete.
