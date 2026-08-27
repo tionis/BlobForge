@@ -2012,3 +2012,10 @@
   explicitly unset passed 207 tests and 5 subtests. Read-only diagnosis used
   `rg`, `sed`, Ansible, Authentik's task database and installed source, and
   filtered systemd journal queries.
+- **Deployment:** GitHub Actions run `33096702245` passed its test and
+  multi-architecture server-image jobs. Gandalf commit `76d21898` pins and
+  deployed BlobForge revision `41adf6d` at manifest
+  `sha256:86fb528eec6bdddae0119c866496f9f3222f77c0e29f9749caf7aa297b90fe71`.
+  Citadel reported a healthy container at that exact revision. Public probes
+  confirmed a no-store/CSP HTML 404 and a recoverable HTML 400 for an invalid
+  OIDC callback; the health endpoint remains green.
