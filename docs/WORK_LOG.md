@@ -38,7 +38,28 @@
   recipe, token, and audit schema. Coverage includes the complete job/source
   lifecycle, tagged legacy recipe identifiers, credential restart/rotation/
   revocation, revoked-worker recipe availability, recipe retirement, and OIDC
-  same-origin enforcement. Deployment verification follows in this work item.
+  same-origin enforcement.
+- **Publication and deployment:** Committed and pushed BlobForge revision
+  `81f0584`; GitHub Actions run `33099437656` passed its test/distribution and
+  multi-architecture server-image jobs and published immutable manifest
+  `sha256:22ce040caa1c3f4c5ab82a4275145fe5eb6e0f45681118f339c158c9b1aeb289`.
+  Updated Gandalf's canonical service contract, compiled inventory and external
+  dependency views, updated/rendered the private runbook through Vulcan, passed
+  740 tests plus 4 subtests and 13 Bunny tests, and committed the isolated
+  deployment as `9dc8837d` while preserving concurrent calendar changes. The
+  private Outline dry-run was approval-denied because it would transmit runbook
+  content externally, so no remote documentation mutation occurred. The first
+  Citadel apply reached no remote task because the SSH agent refused the key;
+  the second used the wrong host-key form and also changed nothing. The third
+  used Gandalf's canonical SSH mapping plus its dedicated key and completed
+  with 53 tasks, 2 expected changes, and no failures. Production runs the exact
+  manifest, has the new token/audit tables, returns healthy SQLite/filesystem
+  API status, redirects unauthenticated root requests to OIDC, and serves the
+  immutable `management-v1.js` bundle containing job, worker, token, and recipe
+  controls. HEAD is not implemented for root/static FastAPI routes (405); GET
+  canaries pass and are the supported browser path. The CPU/CUDA worker-image
+  matrix remained in progress after the independently successful server image
+  was deployed; those images are not part of the coordinator rollout.
 
 ## 2026-08-21 (done_seq migration ordering fix)
 - **Objective:** Fix `Internal error` (500) on every coordinator API request
