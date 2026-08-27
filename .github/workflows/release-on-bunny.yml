@@ -1,10 +1,8 @@
 
-name: Deploy Bunny Scripting Script
+name: Legacy - Deploy Bunny Scripting Script
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   id-token: write

@@ -1,0 +1,26 @@
+[Unit]
+Description=BlobForge self-hosted coordinator
+After=network-online.target
+
+[Container]
+Image=ghcr.io/tionis/blobforge:latest
+ContainerName=blobforge
+AutoUpdate=registry
+EnvironmentFile=/etc/blobforge/blobforge.env
+PublishPort=127.0.0.1:8080:8080
+Volume=blobforge-data.volume:/var/lib/blobforge:U
+ReadOnly=true
+ReadOnlyTmpfs=true
+NoNewPrivileges=true
+DropCapability=all
+HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v1/health',timeout=3)"
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

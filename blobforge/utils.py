@@ -10,6 +10,7 @@ import os
 import hashlib
 import re
 import urllib.parse
+from blake3 import blake3
 from datetime import datetime, timezone
 from typing import Dict, Iterable, Optional
 
@@ -22,6 +23,7 @@ except ImportError:
 
 # Extended attribute keys following the specification in docs/file_hashing_via_xattrs.md
 XATTR_HASH_KEY = "user.checksum.sha256"
+XATTR_BLAKE3_KEY = "user.checksum.blake3"
 XATTR_MTIME_KEY = "user.checksum.mtime"
 
 
@@ -200,7 +202,8 @@ def get_cached_hash(filepath: str, algorithm: str = "sha256") -> Optional[str]:
     if not XATTR_AVAILABLE:
         return None
     
-    if algorithm != "sha256":
+    hash_key = {"sha256": XATTR_HASH_KEY, "blake3": XATTR_BLAKE3_KEY}.get(algorithm)
+    if hash_key is None:
         return None
     
     try:
@@ -210,11 +213,11 @@ def get_cached_hash(filepath: str, algorithm: str = "sha256") -> Optional[str]:
         
         # 2. Fetch cached attributes
         cached_mtime = xattr.getxattr(filepath, XATTR_MTIME_KEY).decode('utf-8')
-        cached_hash = xattr.getxattr(filepath, XATTR_HASH_KEY).decode('utf-8')
+        cached_hash = xattr.getxattr(filepath, hash_key).decode('utf-8')
         
         # 3. Validate cache
         if cached_mtime == current_mtime:
-            # Cache hit - validate hash format (lowercase hex, 64 chars for sha256)
+            # SHA-256 and default-length BLAKE3 are both 64 lowercase hex chars.
             if len(cached_hash) == 64 and all(c in '0123456789abcdef' for c in cached_hash):
                 return cached_hash
         
@@ -247,7 +250,8 @@ def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256", mt
     if not XATTR_AVAILABLE:
         return False
     
-    if algorithm != "sha256":
+    hash_key = {"sha256": XATTR_HASH_KEY, "blake3": XATTR_BLAKE3_KEY}.get(algorithm)
+    if hash_key is None:
         return False
     
     try:
@@ -261,7 +265,7 @@ def set_cached_hash(filepath: str, file_hash: str, algorithm: str = "sha256", mt
         current_mtime_str = str(int(current_mtime_val))
         
         # Write both attributes
-        xattr.setxattr(filepath, XATTR_HASH_KEY, file_hash.encode('utf-8'))
+        xattr.setxattr(filepath, hash_key, file_hash.encode('utf-8'))
         xattr.setxattr(filepath, XATTR_MTIME_KEY, current_mtime_str.encode('utf-8'))
         
         return True
@@ -321,3 +325,44 @@ def compute_sha256_with_cache(filepath: str) -> str:
         pass  # Can't verify atomicity, skip caching
     
     return computed_hash
+
+
+def compute_hashes_with_cache(
+    filepath: str, algorithms: tuple[str, ...] = ("blake3", "sha256")
+) -> Dict[str, str]:
+    """Compute transition digests in one streaming pass, with xattr caching.
+
+    The returned values are untagged lowercase hex for compatibility with the
+    existing SHA-256 APIs. MDAF callers add the algorithm tag at their boundary.
+    """
+    requested = tuple(dict.fromkeys(algorithms))
+    unsupported = set(requested) - {"sha256", "blake3"}
+    if unsupported:
+        raise ValueError(f"unsupported hash algorithms: {sorted(unsupported)}")
+    result = {
+        algorithm: cached
+        for algorithm in requested
+        if (cached := get_cached_hash(filepath, algorithm)) is not None
+    }
+    missing = [algorithm for algorithm in requested if algorithm not in result]
+    if not missing:
+        return result
+
+    pre_stat = os.stat(filepath)
+    hashers = {
+        algorithm: hashlib.sha256() if algorithm == "sha256" else blake3()
+        for algorithm in missing
+    }
+    with open(filepath, "rb") as handle:
+        while block := handle.read(1024 * 1024):
+            for hasher in hashers.values():
+                hasher.update(block)
+    result.update({algorithm: hasher.hexdigest() for algorithm, hasher in hashers.items()})
+    post_stat = os.stat(filepath)
+    if (
+        pre_stat.st_size == post_stat.st_size
+        and pre_stat.st_mtime_ns == post_stat.st_mtime_ns
+    ):
+        for algorithm in missing:
+            set_cached_hash(filepath, result[algorithm], algorithm, post_stat.st_mtime)
+    return result

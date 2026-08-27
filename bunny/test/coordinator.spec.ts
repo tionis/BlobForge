@@ -299,7 +299,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(body).toContain("Self-hosted document infrastructure");
     expect(body).toContain("Bring a Linux machine online");
     expect(body).toContain('href="/console"');
-    expect(body).toContain('href="/static/docs-v1.css"');
+    expect(body).toContain('href="/static/docs-v2.css"');
     expect(body).toContain("scripts/install-linux-worker.sh");
     expect(page.headers.get("cache-control")).toContain("public, max-age=300");
     expect(page.headers.get("cdn-cache-control")).toContain("max-age=86400");
@@ -314,7 +314,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(await revalidated.text()).toBe("");
 
     for (const asset of [
-      ["/static/docs-v1.css", "text/css"],
+      ["/static/docs-v2.css", "text/css"],
       ["/static/blobforge-v1.svg", "image/svg+xml"],
       ["/static/app-v8.css", "text/css"],
       ["/static/app-v9.js", "text/javascript"],
@@ -333,7 +333,7 @@ describe("Bunny BlobForge coordinator", () => {
     expect(await robots.text()).toContain("Disallow: /api/");
     expect(robots.headers.get("cdn-cache-control")).toContain("max-age=86400");
 
-    const head = await app.fetch(new Request("https://blobforge.example/static/docs-v1.css", { method: "HEAD" }));
+    const head = await app.fetch(new Request("https://blobforge.example/static/docs-v2.css", { method: "HEAD" }));
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
     expect(head.headers.get("cache-control")).toContain("immutable");

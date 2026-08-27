@@ -1,5 +1,114 @@
 # TODO List
 
+## Self-hosted Backend
+
+- [x] Implement a conventional FastAPI coordinator using SQLite WAL, local
+  immutable object storage, fenced leases, and short-lived HMAC transfer URLs.
+- [x] Make source persistence and job claims digest/media-aware while limiting
+  the current Marker worker to `application/pdf`.
+- [x] Add a fail-closed, idempotent importer from the verified local v2 stage
+  into BLAKE3-backed local source storage and `mdaf/v1` artifact records.
+- [x] Add a companion verified raw-source importer so the 431 sources without
+  legacy artifacts are queued rather than stranded during backend cutover.
+- [x] Add a lightweight server container, Podman Quadlet/volume examples, GHCR
+  server/worker image builds, and a full-test GitHub Actions workflow.
+- [x] Add exact-recipe/backend conversion selection, a recipe registry, and
+  multi-capability claim routing while retaining the current worker protocol.
+- [x] Add Authlib OIDC login plus SCIM 2.0 user/group provisioning with
+  SCIM-backed role and account-lifecycle enforcement.
+- [ ] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,
+  private Authentik SCIM backchannel, Caddy route, and quiesced Citadel backup;
+  compile generated inventory and run a check-mode deployment before cutover.
+- [ ] Add public digest-alias resolution and switch new ingestion keys from the
+  SHA-256 compatibility key to canonical BLAKE3.
+- [ ] Replace environment-only worker bootstrap with revocable token CRUD and a
+  narrowly scoped management UI/API.
+- [ ] Add private collections, SCIM-group collection roles, normalized
+  discovery tags, scoped service-account tokens, worker-only token enforcement,
+  and deny-by-default authorization tests as specified in `docs/access_control.md`.
+- [ ] Add SQLite online-backup plus referenced-object manifests, restore
+  verification, retention, and orphan/pending-object cleanup.
+- [ ] Replace the production PDF worker's legacy ZIP publisher with staged MDAF
+  generation/validation and add the isolated multipurpose adapter dispatcher.
+- [ ] Generalize filesystem ingestion beyond `.pdf`, including safe media-type
+  detection, adapter selection, and source-type-specific limits.
+- [x] Run the complete 1,377-artifact plus 431 raw-source local import and audit.
+- [ ] Transfer the verified recovery unit to Citadel and pass an isolated
+  restored-volume canary before changing DNS or making Bunny/S3 read-only.
+
+## MDAF / BLAKE3 Redesign
+
+- [ ] Approve the target architecture and staged migration plan in
+  `docs/mdaf_redesign.md` before changing production persistence contracts.
+- [ ] Build a representative, rights-cleared evaluation corpus and frozen
+  scoring harness for Markdown quality, source-map fidelity, assets, tables,
+  equations, reading order, and reproducibility.
+- [x] Add a read-only corpus inventory that records source/document counts,
+  pages, bytes, legacy object coverage, and SHA-256/BLAKE3 alias status so API
+  conversion costs can be calculated from real page totals.
+- [ ] Benchmark the shortlisted local and API converters and record quality,
+  latency, failure rate, peak resources, artifact size, and normalized cost.
+- [x] Approve and implement the versioned converter subprocess ABI and
+  ConversionBundle v1 described in `docs/converter_adapter_architecture.md`;
+  heavy engines must remain in separately locked environments.
+- [ ] Freeze the 43-PDF corpus manifest and select 5-10 adjudication pages
+  per source/canonical edition plus a hidden holdout; record rights before sending any source to an
+  external API.
+- [x] Implement the shared MDAF builder/validator and prove it with a fixture
+  adapter, `assets/lorem.pdf`, and one rulebook before integrating paid APIs.
+- [x] Build or install the current Vulcan checkout so the documented `artifact
+  validate` and dry-run import gates are available; the installed 0.1.0 binary
+  predates those commands.
+- [x] Add deterministic and Marker 1 compatibility adapters as the first cheap
+  end-to-end MDAF baselines, then add Docling standard and Mistral OCR.
+- [ ] Create isolated, pinned evaluation environments/adapters for Docling
+  standard, Marker 2 fast/no-OCR, MinerU pipeline, and PP-StructureV3 on the
+  current CPU workstation.
+- [ ] Configure the Windows GTX 1070 host with WSL2 and a pinned CUDA 12.x
+  evaluation stack; probe Docling standard CUDA, GraniteDocling/SmolDocling,
+  and Surya llama.cpp on selected hard pages, recording Pascal compatibility,
+  VRAM, latency, and quality.
+- [ ] Only if first-round results justify it, rent a 48-80 GiB NVIDIA evaluation
+  host for Marker 2 vLLM, MinerU hybrid, PaddleOCR-VL, olmOCR, and gated
+  Chandra/DeepSeek/dots.ocr comparisons.
+- [ ] Add hosted evaluation adapters with hard spend caps for Mistral OCR 4.1 and
+  Datalab, followed by Google Layout/AWS Textract structured controls if their
+  hard-page results justify full-corpus runs.
+- [ ] Resolve whether to restore the two absent Trinity Continuum PDFs before
+  paid runs; the bookmarked Rigger 5.0 PDF is the current canonical candidate.
+- [x] Re-inventory the expanded priority corpus, detect exact duplicates, and
+  refresh current Mistral/Google/AWS API budgets.
+- [x] Implement and test an MDAF v1 writer/validator against Vulcan's schemas,
+  fixtures, and logical-identity test vector.
+- [ ] Add streaming BLAKE3 source hashing while retaining SHA-256 as a migration
+  alias; version the local hash cache and coordinator lookup contracts.
+- [x] Add one-pass BLAKE3+SHA-256 streaming, algorithm-specific xattrs, and an
+  additive algorithm-keyed local SQLite digest cache; coordinator alias lookup
+  remains part of the v2 persistence task.
+- [ ] Replace monolithic conversion with staged extraction, normalization,
+  source-map/outline generation, packaging, validation, and publication.
+- [ ] Extend coordinator persistence and leases for source, recipe, activity,
+  attempt, and immutable MDAF artifact identities.
+- [x] Implement loss-aware legacy ZIP-to-MDAF migration with explicit
+  unavailable provenance/mapping diagnostics and resumable verification.
+- [ ] Run a dual-read/dual-identity canary before retiring SHA-256 and legacy
+  ZIP endpoints or deleting any legacy object.
+- [x] Mirror the complete `blobforge:pdf` prefix locally with read-only rclone
+  copy semantics and inventory all 1,808 sources / 1,377 paired legacy ZIPs.
+- [x] Add a fail-closed local v2 staging command that requires complete verified
+  migration state and materializes source/artifact keys plus a checksummed run
+  manifest without exposing any remote upload or deletion operation.
+- [x] Add CPU-only locked Poppler, Marker 1, Marker 2, and Docling evaluator
+  environments plus a pinned Mistral OCR 4.1 adapter with hard spend ceilings.
+- [x] Freeze the 43-document rulebook corpus manifest with BLAKE3/SHA-256,
+  9,465 pages, byte sizes, and a canonical manifest identity.
+- [x] Add structural MDAF comparison metrics and validate Poppler, Docling, and
+  Marker 1 fixture outputs with both BlobForge and Vulcan.
+- [ ] Freeze downloaded local model inventories/checksums and replace mutable
+  Marker/Docling model aliases before any production publication.
+- [ ] Add selected hard-page labels, blinded review bundles, and semantic
+  quality scoring; structural output counts are diagnostics, not a winner.
+
 ## High Priority
 - [ ] Add unit tests for S3 operations and queue state transitions.
 - [ ] Test heartbeat mechanism under load.
@@ -18,6 +127,8 @@
   conversion with validation, dry runs, and overwrite protection.
 - [x] Add dry-run-first `blobforge hydrated clean` and `textpack` maintenance
   operations for PDF-anchored Markdown/assets outputs.
+- [x] Inventory the 17 priority rulebooks and calculate full-corpus Mistral,
+  Google Layout, retry, repeated-run, and local-runtime budget scenarios.
 - [x] Add CLI commands for listing, downloading, previewing, selecting, and requesting recipe-specific conversion artifacts.
 - [x] Include effective output-affecting Marker/Surya settings in recipe identity while excluding performance-only worker tuning.
 - [x] Add canonical recipe-aware conversion identity, exact runtime/model provenance, composite artifact storage, recipe-bound leases, legacy artifact preservation, and explicit artifact selection/reconversion APIs.

@@ -4,7 +4,7 @@ BlobForge Status - Display queue statistics and job status.
 import argparse
 from datetime import datetime, timedelta
 
-from .config import S3_BUCKET, PRIORITIES
+from .config import PRIORITIES
 from .coordinator_client import CoordinatorClient
 
 
@@ -46,7 +46,7 @@ def show_status(verbose: bool = False):
     )
 
 def _show_coordinator_status(coordinator: CoordinatorClient, verbose: bool = False):
-    """Display the Bunny coordinator snapshot without consulting S3 state."""
+    """Display the configured coordinator snapshot."""
     snapshot = coordinator.snapshot()
     counts = snapshot.get("counts", {})
     priority = snapshot.get("priority", {})
@@ -56,8 +56,7 @@ def _show_coordinator_status(coordinator: CoordinatorClient, verbose: bool = Fal
     print(f"{'=' * 60}")
     print("  BlobForge Status Dashboard")
     print(f"{'=' * 60}")
-    print("  Coordination: Bunny Edge Script + Bunny Database")
-    print(f"  Blob store:   s3://{S3_BUCKET}")
+    print(f"  Backend:      {snapshot.get('backend', 'coordinator-managed')}")
 
     print(f"\n{'─' * 60}\n[QUEUE]\n{'─' * 60}")
     for name in PRIORITIES:

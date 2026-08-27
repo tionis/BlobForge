@@ -28,7 +28,7 @@ The installer:
 
 1. Selects Podman first, then Docker.
 2. Pulls the multi-architecture CPU image at
-   `ghcr.io/tionis/blobforge:latest`.
+   `ghcr.io/tionis/blobforge:worker`.
 3. Stores the coordinator URL and token in
    `~/.config/blobforge/worker.env` with mode `0600`.
 4. Persists downloaded Marker/Hugging Face/Torch data under
@@ -55,7 +55,7 @@ Pass worker runtime options through the installer:
 wanted without a run window.
 
 For an NVIDIA host whose container runtime is already configured, add `--gpu`.
-The installer selects the amd64-only `ghcr.io/tionis/blobforge:latest-cuda`
+The installer selects the amd64-only `ghcr.io/tionis/blobforge:worker-cuda`
 image. Docker receives `--gpus=all`; Podman receives
 `--device=nvidia.com/gpu=all`. GPU runtime installation remains a host concern.
 Use `--image` only to override the automatically selected CPU or CUDA image.
@@ -80,12 +80,12 @@ sudo loginctl enable-linger "$USER"
 To upgrade, rerun the installer or pull the image and restart the service:
 
 ```bash
-podman pull ghcr.io/tionis/blobforge:latest
+podman pull ghcr.io/tionis/blobforge:worker
 systemctl --user restart blobforge-worker
 ```
 
 Use `docker pull` instead on Docker hosts. CUDA workers should pull
-`ghcr.io/tionis/blobforge:latest-cuda`. Pin `--image` to a SHA tag when a worker
+`ghcr.io/tionis/blobforge:worker-cuda`. Pin `--image` to a SHA tag when a worker
 should not follow a moving tag automatically.
 
 ## Manual container run
@@ -104,7 +104,7 @@ chmod 600 ~/.config/blobforge/worker.env
 podman run --rm --name blobforge-worker \
   --env-file ~/.config/blobforge/worker.env \
   -v ~/.cache/blobforge:/var/cache/blobforge \
-  ghcr.io/tionis/blobforge:latest worker
+  ghcr.io/tionis/blobforge:worker worker
 ```
 
 ## Native uv installation

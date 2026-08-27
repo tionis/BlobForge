@@ -38,6 +38,140 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** The local coordinator migration is complete at the ignored
+  `.blobforge-migration/local-server-data` recovery unit. Two fail-closed full
+  stage passes validated all 1,377 MDAF/source pairs; the first imported all
+  1,377 and the idempotency pass skipped all 1,377. The raw recovery imported
+  the remaining 431 of 1,808 sources, and its repeat skipped all 1,808. SQLite
+  quick-check passes with 1,808 sources/jobs, 3,616 aliases, 1,377 done legacy
+  MDAFs, 431 queued raw-only jobs, and no pending/orphan objects. Every artifact
+  is explicitly legacy/Marker/unavailable-version and carries the canonical
+  migration recipe and partial mapping strategy. A coordinator restart canary
+  opened the state and persisted its capability key. The 3,188-file, ~33 GB
+  recovery unit has a verified relative BLAKE3 manifest whose digest is
+  `b654923b59e24bd5709aab3e8a9803b351f5c03cba48596baf3df876c36ddf23`.
+  Interactive management can be limited to one exact SCIM group by mapping
+  only that group to `admin`; Gandalf should independently bind the Authentik
+  application to the same group. Existing tags are descriptive only and must
+  not become ACLs; use explicit private collections and SCIM-group role
+  bindings for resource-level authorization.
+
+- **2026-08-27:** The local coordinator now catalogs migrated MDAFs with an
+  explicit legacy flag, Marker backend, unavailable historical converter
+  version, canonical migration recipe, and recovered mapping/version summary;
+  the MDAFs themselves already retained the original Markdown/info rendition
+  and complete known provenance. Page-span coverage is evidence-limited: page
+  anchors are exact spans, while books without anchors receive only exact
+  TOC-heading page/polygon matches. Converter selection accepts an exact recipe
+  digest or an unambiguous active backend. Workers advertise multiple
+  `(backend, recipe, media types, artifact type)` capabilities and the lease
+  returns the selected capability, enabling future interleaved media work on
+  one host; the current implementation still dispatches Marker/PDF only. The
+  self-hosted API supports OIDC browser sessions and SCIM 2.0 lifecycle/group
+  provisioning. Authorization rechecks active SCIM state on every request, and
+  OIDC `sub` must match SCIM `externalId`. Citadel deployment should follow
+  Gandalf's Todo Quadlet/OIDC/SCIM/backup pattern, with SCIM private-only and
+  `/srv/blobforge` backed up as one quiesced recovery unit.
+
+- **2026-08-27:** The self-hosted backend now has a compatibility-preserving
+  vertical slice: FastAPI exposes the existing worker/client control protocol,
+  SQLite WAL owns sources, digest aliases, media types, jobs, fenced leases,
+  worker credentials, failures, and immutable artifact records, while a local
+  directory provides streamed atomic source/artifact storage through scoped
+  HMAC transfer URLs. The service is intentionally single-instance per data
+  directory; multiple conversion workers are supported, but active-active API
+  replicas require a future PostgreSQL move. Current Marker workers advertise
+  only `application/pdf`. The verified v2 importer records BLAKE3 canonically,
+  retains historical SHA-256 aliases/compatibility keys, imports `mdaf/v1`
+  artifacts idempotently, and never mutates Bunny/S3. GHCR `latest` is the
+  lightweight server; heavy images use `worker` and `worker-cuda`. Automatic
+  Bunny deployment is disabled during cutover. The MDAF stage covers 1,377 of
+  the 1,808 mirrored raw sources; a separate importer verifies and queues the
+  remaining 431 with `metadata-unavailable`, because omitting them would make a
+  seemingly successful backend cutover incomplete. Container context exclusions
+  must retain `.blobforge-migration`, `references`, `evaluators`, `dist`, and
+  dot-prefixed environment files: this checkout currently contains about 46 GB
+  of local corpus/model data plus provider credential files that must never be
+  sent to an image builder.
+
+- **2026-08-27:** The complete legacy migration now has 1,377/1,377 converted
+  artifacts and zero failures. The fail-closed local v2 stage contains 1,377
+  source objects, 1,377 MDAFs, one canonical migration recipe, and one
+  checksummed run manifest under the exact proposed relative S3 keys. Its recipe
+  digest is `blake3:8822289b4860301f73b64a2139a3559f2026793a48135fc13b83bc84a67b0c39`.
+  A staged 111-member artifact passed Vulcan with 415 interval/polygon mappings
+  and 415 outline nodes. No production object or coordinator row was changed.
+  Full-corpus validation must cache immutable schemas and test UTF-8 span
+  boundaries via continuation bytes; decoding every prefix is quadratic on
+  heading-heavy books.
+
+- **2026-08-27:** Comparable converter output needs a backend-neutral semantic
+  outline even when an engine returns only Markdown headings. The shared MDAF
+  packager now derives UTF-8-byte-aligned outline nodes from non-empty ATX
+  headings unless the adapter supplies richer hierarchy evidence; it never
+  fabricates source locators. Vulcan dry-run import of the corrected eight-page
+  Docling canary successfully planned one root, 18 section notes, and two assets.
+  On that book Docling took 269.3s versus Marker 1's 519.2s, with nearly equal
+  word/heading/asset counts; those structural counts still require blinded
+  reading-order and wiki-quality review.
+
+- **2026-08-27:** Full migration acceptance requires a read-only second pass,
+  not merely successful writes. `blobforge migrate verify` independently reads
+  each converted MDAF and cross-checks archive/schema semantics, logical MDAF
+  identity, source BLAKE3, and the legacy SHA-256 alias against the WAL catalog.
+  Two corpus artifacts also revealed image-only/HTML-only Markdown headings;
+  they remain intact in primary Markdown but must be omitted from the semantic
+  outline because MDAF v1 requires non-empty outline titles.
+
+- **2026-08-27:** The local MDAF transition vertical slice is operational. A
+  read-only `rclone copy` mirrored all 3,634 `blobforge:pdf` objects (31.98 GiB):
+  1,808 raw SHA-256 PDFs and 1,377 legacy ZIPs, with every ZIP paired. The
+  resumable SQLite migrator verifies the legacy SHA-256, calculates BLAKE3,
+  retains original Markdown/metadata/assets as native evidence, records the
+  unknown historical Marker/model versions as `unavailable`, derives complete
+  Markdown outlines, and publishes only exact page anchors or exact
+  TOC-heading page/polygon matches. It never writes S3. A 20-artifact canary had
+  no failures; a representative real artifact passed both BlobForge's bundled
+  Vulcan-schema validator and Vulcan's Rust validator with 19 source mappings
+  and 19 outline nodes. The final local bulk run is resumable through
+  `.blobforge-migration/catalog.sqlite3`.
+
+- **2026-08-27:** Converter tests now cross a versioned filesystem ABI and one
+  shared MDAF builder; adapters cannot package artifacts themselves. Poppler,
+  Marker 1.10.2, Marker 2.0.0, Docling 2.122.0, and Mistral SDK 2.9.4 have
+  separate uv locks. Local ML environments must explicitly select PyTorch's CPU
+  index: unconstrained PyPI resolution selected CUDA 13 and several GiB of
+  unusable NVIDIA libraries. On `assets/lorem.pdf` (2 pages), Poppler took 0.9s,
+  Docling 40.2s, and Marker 1 175.6s; all produced valid two-page MDAFs accepted
+  by Vulcan. The 8-page rulebook Docling run took 262.9s and preserved two
+  images. Docling's referenced-image export writes absolute temporary paths,
+  so the adapter must rewrite them before final byte-span calculation and the
+  validator now rejects absolute/file Markdown targets. Exact downloaded model
+  checksums remain required before production; package pins alone are not
+  sufficient provenance.
+
+- **2026-08-27:** The frozen priority corpus is 43 PDFs / 9,465 pages /
+  1,294,553,125 bytes with manifest identity
+  `blake3:44b252c25c8a61dc2771c337cfca9d6b43734cefbac44f2d50b8e5130a3e2b35`.
+  BlobForge now has one-pass BLAKE3+SHA-256 hashing, algorithm-specific xattrs,
+  and an additive algorithm-keyed SQLite digest cache. The v2 relative object
+  namespace is `store/v2/{sources,recipes,artifacts,checkpoints,migrations}`
+  with explicit algorithms and two-hex sharding; the coordinator database, not
+  key parsing, remains authoritative.
+
+- **2026-08-27:** The 32-GiB machine has enough hardware and system tooling for
+  the CPU evaluation tier, but scored conversion tests are not ready. BlobForge
+  has no MDAF writer/validator, converter subprocess ABI, frozen BLAKE3 corpus
+  manifest, isolated Docling environment, or executable comparison harness;
+  running now would only create legacy Marker ZIPs. The installed Vulcan 0.1.0
+  binary lacks `artifact`, although the current Vulcan checkout contains the
+  validator/import implementation and tests. The corpus changed once more when
+  redundant Rigger variants were removed: it is now 43 exact-byte-distinct PDFs,
+  9,465 pages, and 1,234.58 MiB, with the bookmarked Rigger source remaining.
+  The minimum launch sequence and gates are documented in
+  `docs/conversion_test_readiness.md`; current costs are $37.86 Mistral standard,
+  $47.33 annotated ceiling, $94.65 Google Layout, and $141.98 AWS Layout+Tables.
+
 - **2026-08-27:** Local hydrated-output maintenance is grouped under
   `blobforge hydrated`. `clean` recursively removes only PDF-anchored sibling
   `<stem>.md` and `<stem>.assets/` outputs; `textpack` replaces each pair with a
@@ -51,6 +185,89 @@ The virtual environment is located at `.venv/` and should be activated automatic
   `unpack` validates a Markdown TextBundle v2 archive, rejects unsafe ZIP
   members, restores `<stem>.md`/`<stem>.assets/`, and removes the archive only
   after success; it skips existing outputs unless `--force` is explicit.
+
+- **2026-08-27:** The expanded priority corpus currently contains 45 readable
+  PDF paths, 9,853 raw pages, and 1,272.64 MiB. SHA-256 found one exact 194-page
+  duplicate pair (`Rigger_5.0_in_Tits-o-Vision` and `Rigger_5.0_with_bookmarks`),
+  leaving 44 exact-byte-distinct sources and 9,659 billable pages. A third
+  194-page Rigger PDF is byte-distinct but should be reviewed as a possible
+  duplicate edition. Compared with the 2026-08-26 inventory, 30 paths were
+  added and the two Trinity Continuum PDFs (547 pages) are absent. At current
+  published rates the deduplicated corpus costs $38.64 for Mistral OCR 4.1
+  standard, $48.30 at the conservative annotated rate, $96.59 for Google Layout,
+  or about $144.89 for AWS Layout+Tables in the published US West example.
+  Mistral's general pricing table lists OCR Batch at $0.40/1,000 pages while its
+  Batch guide says 50% off; treat the lower projected $3.86 total as unverified
+  until a metered pilot. The readiness finding above supersedes these transient
+  45-path counts after the redundant Rigger variants were removed. Full details
+  are in `docs/rulebook_corpus_cost.md`.
+
+- **2026-08-27:** The 17 priority rulebooks will serve as both valuable
+  production inputs and the stable full-book converter acceptance corpus, but
+  are not themselves ground truth. Existing Markdown is a regression baseline;
+  approximately 5-10 pages per book form a labeled adjudication set with a
+  smaller hidden holdout. Every engine must run through a versioned subprocess
+  adapter and emit a private ConversionBundle; one shared builder alone creates
+  and validates MDAF, canonical BLAKE3 identities, final Markdown byte mappings,
+  and provenance. Heavy engine dependencies remain in separate uv environments
+  or images. The design and first vertical slice are in
+  `docs/converter_adapter_architecture.md`. The expanded-corpus finding above
+  supersedes the counts and adjudication-set size in this initial decision.
+
+- **2026-08-27:** The available fleet also includes a Windows machine with 24
+  GiB RAM and a GeForce GTX 1070 (8 GiB, Pascal/compute capability 6.1), plus a
+  GPU-less 32-GiB desktop. The desktop is the preferred full-corpus CPU worker.
+  The 1070 can be used under WSL2 for Docling's standard pipeline, its small
+  GraniteDocling-258M/SmolDocling-256M VLMs, and an experimental Surya 2
+  llama.cpp/GGUF path. It cannot use vLLM, which requires compute capability
+  7.0+, and should use pinned CUDA 12.x because CUDA 13 removed Pascal library
+  and offline-compilation support. A rented 48-80 GiB GPU is now an optional
+  heavyweight-model tie-breaker, not a prerequisite; hosted APIs cover those
+  model classes in the first evaluation round.
+
+- **2026-08-26:** The current BlobForge workstation is an Intel i7-8650U
+  (4C/8T) with 31 GiB RAM and 392 GiB free disk; Docker/Podman and Poppler are
+  present, but no NVIDIA device is currently usable. It is suitable for Docling
+  standard, Marker 2 fast/no-OCR, MinerU pipeline, PP-StructureV3 CPU
+  correctness, and deterministic baselines, but not a representative throughput
+  host. Marker 2 fast with OCR additionally needs a pinned llama.cpp
+  `llama-server`; balanced needs a Surya vLLM server and is intended for NVIDIA.
+  The repository `.venv` must remain on Marker 1, so every evaluation engine
+  uses an isolated uv project or pinned container. This initial finding's
+  48-80-GiB recommendation applies only to a single host intended to cover every
+  heavyweight candidate; the 2026-08-27 fleet-specific plan supersedes it for
+  the first evaluation round. The full candidate matrix, setup requirements,
+  and staged evaluation are in `docs/local_converter_evaluation.md`.
+
+- **2026-08-26:** The priority corpus at
+  `/home/eric/rulebooks/rulebooks` contains 17 readable PDFs, 3,060 pages, and
+  488.5 MiB. Every PDF yields substantial text-layer output and every source has
+  an existing sibling Markdown file and asset directory, providing a useful
+  historical quality baseline. `Cthulhu_7_Grundregelwerk.pdf` is AES-encrypted
+  but has no user password and permits copy/print, so local extraction works;
+  remote API acceptance still needs a preflight. At current published rates a
+  complete Mistral OCR 4.0 pass is $12.24 standard or $15.30 using the
+  conservative annotated-page rate; two annotated passes plus 10% retry margin
+  are $33.66. The low full-corpus price favors evaluating every page rather than
+  sampling. Exact inventory and budget scenarios are recorded in
+  `docs/rulebook_corpus_cost.md`.
+
+- **2026-08-26:** The MDAF redesign requires four distinct identities: canonical
+  BLAKE3 source bytes, a BLAKE3 pipeline recipe, a coordinator job for the
+  `(source, recipe)` desire, and the logical BLAKE3 identity of the validated
+  MDAF. The existing untagged SHA-256 `file_hash` spans database primary keys,
+  jobs, API routes, local caches, raw/output object keys, and hydration, so it
+  must be migrated additively through permanent SHA-256 aliases rather than
+  renamed in place. Git LFS pointers expose only SHA-256; an unseen pointer must
+  be materialized once to calculate BLAKE3, while a verified alias can avoid
+  that download. New workers should be recipe-specific adapter pools that emit
+  final UTF-8-byte-aligned source maps, retain sanitized native evidence, build
+  and locally validate MDAF, and request a publication URL only after the MDAF
+  identity is known. Legacy ZIPs can be repackaged honestly only when raw source
+  bytes are available for the canonical source digest; they omit mapping and
+  outline capabilities and record missing provenance explicitly. Current
+  converter pricing/research and the phased target design are in
+  `docs/converter_evaluation.md` and `docs/mdaf_redesign.md`.
 
 - **2026-08-21:** The post-implementation provenance audit found two rollout
   follow-ups. Production images build without `.git`, so the container workflow

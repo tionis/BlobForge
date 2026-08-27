@@ -2,14 +2,14 @@
 
 **BlobForge** is a distributed, infrastructure-agnostic ingestion pipeline designed to process massive datasets (starting with RPG Rulebooks) into usable formats (Markdown/Assets).
 
-It uses **Bunny Database** for persistent coordination, a **Bunny Edge Script**
-for the API and management UI, and an **S3-compatible object store** for raw PDFs and completed artifacts. The queue
-can remain idle for months without losing leases, retries, metadata, or worker
-history.
+The new self-hosted backend uses **SQLite** for coordination and a **local
+directory** for source and artifact storage. It runs as a conventional Python
+service and ships with a rootless-friendly Podman Quadlet deployment. The
+former Bunny/S3 backend remains only as a migration source during cutover.
 
 ## 🚀 Key Features
 
-*   **Managed Coordination:** Bunny Database and Edge Scripting replace PostgreSQL, Redis, and message-broker infrastructure.
+*   **Self-hosted Coordination:** One SQLite/filesystem service replaces Bunny and S3 without requiring PostgreSQL, Redis, or a message broker.
 *   **Management UI:** IndieAuth-protected queue, worker enrollment/revocation, retry, priority, cancellation, and runtime configuration controls.
 *   **Public Handbook:** CDN-cacheable landing page with worker installation, scheduling, operations, and runtime-policy guidance.
 *   **Portable Backups:** Admin-triggered, transaction-consistent Bunny Database exports are stored privately in S3 with checksums.
@@ -24,31 +24,33 @@ history.
 *   **Resilient:** Expired leases are recovered automatically without a continuously running janitor.
 *   **Graceful Shutdown:** Catchable worker signals requeue active jobs immediately before exit.
 *   **Conversion Timeout:** Long conversions honor `conversion_timeout` with hard timeout support on compatible platforms.
-*   **Hash-Addressed:** Deduplication built-in. Processing is idempotent based on file content (SHA256).
+*   **Hash-Addressed:** New source identity is BLAKE3 with retained SHA-256 aliases for migration.
+*   **Media-ready:** Sources and worker claims carry media types; PDF workers cannot accidentally claim future audio, image, or video work.
 
 ## 🛠 Architecture
 
-The current architecture and deployment/cutover guide are documented in
-[docs/bunny_coordination_backend.md](docs/bunny_coordination_backend.md).
+The target architecture and deployment/cutover guide are documented in
+[docs/local_backend.md](docs/local_backend.md). The prior Bunny design is
+retained in [docs/bunny_coordination_backend.md](docs/bunny_coordination_backend.md)
+as migration history.
 
-Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` to use it.
-Admin tokens created in the management UI authorize `ingest` and `hydrate` from
-operator hosts; conversion workers use a per-worker token created in the
-management UI. No S3 credentials are required on any client: raw uploads,
-result downloads, and hydration all use coordinator-issued signed URLs.
+Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` on clients and
+workers. They use coordinator-issued signed transfers and require neither host
+filesystem access nor S3 credentials.
 
 Worker labels become stable IDs by slugging them (`GPU Workstation` becomes
 `gpu-workstation`). Duplicate or slug-colliding labels are rejected. A worker
 token belongs to that single enrollment and should not be reused to represent
 multiple machines.
-The object store contains only immutable inputs, outputs, and portable
-coordinator backups:
+The durable server volume contains SQLite state and immutable objects:
 
 ```text
-s3://my-bucket/
-├── store/raw/                    # Source PDFs
-├── store/out/                    # Processed ZIP artifacts
-└── backups/coordinator/          # Versioned JSON database exports
+/var/lib/blobforge/
+├── blobforge.sqlite3
+├── capability.key
+├── objects/sources/              # Canonical source bytes
+├── objects/artifacts/            # Recipe-specific ZIP/MDAF artifacts
+└── pending/                      # Lease-scoped uploads
 ```
 
 ### State Transitions
@@ -385,19 +387,27 @@ Configuration is split into two categories:
 
 ### Local Configuration (Environment Variables)
 
-Ingestors use S3 variables to upload raw PDFs. Conversion workers need only the
-coordinator URL and their enrolled token.
+Self-hosted servers use the `BLOBFORGE_SERVER_*` variables. Clients and workers
+use only the coordinator URL and the token assigned to their role. The S3
+variables below are legacy migration/fallback configuration.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `BLOBFORGE_SERVER_DATA_DIR` | `/var/lib/blobforge` | SQLite and local object root for `blobforge serve` |
+| `BLOBFORGE_SERVER_CLIENT_TOKEN` | - | Required operator/client control-plane token |
+| `BLOBFORGE_SERVER_WORKER_TOKENS` | `{}` | JSON object mapping fixed worker IDs to tokens |
+| `BLOBFORGE_SERVER_PUBLIC_URL` | request origin | External URL used in signed transfer links behind a proxy |
+| `BLOBFORGE_SERVER_LEASE_SECONDS` | `900` | Fenced processing lease duration |
+| `BLOBFORGE_SERVER_CAPABILITY_TTL` | `900` | Signed transfer URL lifetime |
+| `BLOBFORGE_SERVER_MAX_RETRIES` | `3` | Failures allowed before dead-letter state |
 | `BLOBFORGE_S3_BUCKET` | `blobforge` | The target S3 bucket name |
 | `BLOBFORGE_S3_PREFIX` | `pdf/` | Optional prefix for namespacing (e.g., `prod/`) |
 | `BLOBFORGE_S3_REGION` | `us-east-1` | S3 region |
 | `BLOBFORGE_S3_ACCESS_KEY_ID` | - | S3 access key (overrides AWS_ACCESS_KEY_ID) |
 | `BLOBFORGE_S3_SECRET_ACCESS_KEY` | - | S3 secret key (overrides AWS_SECRET_ACCESS_KEY) |
 | `BLOBFORGE_S3_ENDPOINT_URL` | - | For S3-compatible services (R2, MinIO, Ceph) |
-| `BLOBFORGE_COORDINATOR_URL` | - | Bunny coordinator base URL |
-| `BLOBFORGE_COORDINATOR_TOKEN` | - | Admin token (`bfa_...`) for ingest/hydrate/CLI, `CLIENT_API_TOKEN` for service accounts, or a UI-issued `bfw_...` worker token |
+| `BLOBFORGE_COORDINATOR_URL` | - | Coordinator base URL |
+| `BLOBFORGE_COORDINATOR_TOKEN` | - | Client token for tools or token bound to one worker |
 | `BLOBFORGE_LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Remote Configuration
@@ -439,6 +449,37 @@ BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Teste
 | Ceph Object Gateway | ✅ Full support |
 | MinIO | ✅ Full support |
 
+## MDAF migration and converter evaluation
+
+BlobForge's v2 path uses canonical BLAKE3 source identities and validated MDAF
+v1 Markdown artifacts while retaining SHA-256 as a legacy alias. Local Marker 1
+and Docling environments are isolated and CPU-pinned so they can be compared on
+the same machine without dependency conflicts:
+
+```bash
+uv sync --project evaluators/marker1
+uv sync --project evaluators/docling
+uv run blobforge evaluate marker1 ./book.pdf -o ./book.marker1.mdaf
+uv run blobforge evaluate docling ./book.pdf -o ./book.docling.mdaf
+```
+
+The local legacy migration is resumable and does not write to S3:
+
+```bash
+uv run blobforge migrate inventory
+uv run blobforge migrate legacy --limit 20
+uv run blobforge migrate legacy --jobs 2
+uv run blobforge migrate verify
+uv run blobforge migrate report
+uv run blobforge migrate stage   # local v2 object-key tree; no upload
+```
+
+See [the migration runbook](docs/local_mdaf_migration.md),
+[the MDAF redesign](docs/mdaf_redesign.md), and
+[the benchmark canary](docs/converter_benchmark_results.md), and
+[the adapter architecture](docs/converter_adapter_architecture.md) for safety,
+provenance, object-layout, and evaluation details.
+
 ## 🏗 Project Structure
 
 ```
@@ -446,14 +487,17 @@ BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Teste
 ├── blobforge/       # Main package
 │   ├── cli.py       # Unified command-line interface
 │   ├── ingestor.py  # Scans filesystem, uploads RAW blobs, queues jobs
-│   ├── worker.py    # Polls S3, locks jobs, runs marker-pdf, sends heartbeats
-│   ├── janitor.py   # Recovers stale jobs, manages retries
+│   ├── worker.py    # Claims fenced jobs, runs marker-pdf, publishes artifacts
+│   ├── server/      # FastAPI, SQLite coordination, signed local transfers
+│   ├── local_import.py # Offline v2 MDAF/raw-source backend migration
 │   ├── status.py    # Reporting dashboard
-│   ├── s3_client.py # Consolidated S3 operations (single source of truth)
-│   └── config.py    # Shared configuration and constants
+│   ├── s3_client.py # Legacy S3 migration/fallback implementation
+│   └── config.py    # Shared legacy configuration and constants
+├── deploy/quadlet/  # Rootless/system Podman deployment examples
 ├── tests/           # Unit tests
 ├── DESIGN.md        # Detailed architectural decisions
-└── Dockerfile       # Container build for workers
+├── Containerfile.server # Lightweight backend image
+└── Containerfile    # CPU/CUDA worker image
 ```
 
 ## 🧪 Testing

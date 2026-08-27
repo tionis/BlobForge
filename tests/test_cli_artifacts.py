@@ -68,6 +68,21 @@ def test_artifacts_json_includes_selected_recipe(coordinator, capsys):
     assert payload["artifacts"][0]["recipe_digest"] == RECIPE
 
 
+def test_human_artifact_listing_uses_explicit_legacy_catalog_fields(coordinator, capsys):
+    coordinator.list_artifacts = lambda _hash: [{
+        "recipe_digest": "0" * 64,
+        "legacy": True,
+        "converter_backend": "marker",
+        "converter_version": "unavailable",
+        "created_at": 1_700_000_000_000,
+    }]
+    assert cli.cmd_artifacts(args(hash=HASH, json=False)) == 0
+    output = capsys.readouterr().out
+    assert "legacy" in output
+    assert "Engine: marker" in output
+    assert "Converter version: unavailable" in output
+
+
 def test_recipe_specific_download_works_while_another_recipe_is_queued(
     coordinator, tmp_path
 ):

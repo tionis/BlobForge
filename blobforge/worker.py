@@ -747,6 +747,13 @@ class Worker:
         self.conversion_provenance = current_conversion_provenance(
             self.conversion_recipe
         )
+        self.capabilities = [{
+            "backend": str(self.conversion_recipe.get("engine") or "marker").lower(),
+            "recipe_digest": self.conversion_recipe_digest,
+            "recipe": self.conversion_recipe,
+            "media_types": ["application/pdf"],
+            "artifact_type": "legacy-archive",
+        }]
         self.s3 = s3_client
         self.id = WORKER_ID
         self.current_job: Optional[str] = None
@@ -782,6 +789,7 @@ class Worker:
                 "conversion_recipe_digest": self.conversion_recipe_digest,
                 "conversion_recipe": self.conversion_recipe,
                 "conversion_provenance": self.conversion_provenance,
+                "capabilities": self.capabilities,
             })
             response = self.coordinator.register_worker(self.id, worker_metadata)
             runtime_config = response.get("config") or self.coordinator.runtime_config
@@ -900,6 +908,8 @@ class Worker:
                     PRIORITIES,
                     recipe_digest=self.conversion_recipe_digest,
                     recipe=self.conversion_recipe,
+                    accepted_media_types=["application/pdf"],
+                    capabilities=self.capabilities,
                 )
             except CoordinatorError as e:
                 if e.status in (401, 403):

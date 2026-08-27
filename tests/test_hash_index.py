@@ -34,6 +34,17 @@ def test_file_hashes_bulk_upsert(tmp_path):
         db.close()
 
 
+def test_algorithm_specific_file_digests(tmp_path):
+    db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
+    try:
+        db.set_file_hash("/a.pdf", 100, 12345, "sha", "sha256")
+        db.set_file_hash("/a.pdf", 100, 12345, "b3", "blake3")
+        assert db.get_file_hash("/a.pdf", 100, 12345, "sha256") == "sha"
+        assert db.get_file_hash("/a.pdf", 100, 12345, "blake3") == "b3"
+    finally:
+        db.close()
+
+
 def test_done_set_defaults_empty(tmp_path):
     db = HashIndex(db_path=str(tmp_path / "index.sqlite3"))
     try:

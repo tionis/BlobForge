@@ -1,0 +1,8 @@
+[Unit]
+Description=BlobForge durable SQLite and object storage
+
+[Volume]
+VolumeName=blobforge-data
+
+[Install]
+WantedBy=default.target

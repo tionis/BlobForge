@@ -14,6 +14,8 @@ import os
 import sys
 import json
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from .config import (
     S3_BUCKET, S3_PREFIX, S3_PREFIX_RAW, S3_PREFIX_TODO, S3_PREFIX_PROCESSING,
@@ -27,6 +29,11 @@ from . import ingestor
 from . import status as status_module
 from . import hydrator as hydrator_module
 from . import hydrated_outputs
+from . import legacy_migration
+from .converters import run_converter
+from .corpus import build_manifest
+from .evaluation import compare as compare_artifacts
+from .local_import import import_legacy_sources, import_stage
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
 
@@ -410,6 +417,174 @@ def cmd_hydrated_unpack(args):
     )
 
 
+def cmd_migrate_inventory(args):
+    """Index the read-only local mirror in the resumable migration catalog."""
+    summary = legacy_migration.inventory(args.workspace)
+    print(f"Sources:          {summary.sources:,}")
+    print(f"Legacy artifacts: {summary.legacy_artifacts:,}")
+    print(f"Paired:           {summary.paired:,}")
+    print(f"Converted:        {summary.converted:,}")
+    print(f"Failed:           {summary.failed:,}")
+    return 0
+
+
+def cmd_migrate_legacy(args):
+    """Convert paired legacy ZIPs into locally validated MDAF artifacts."""
+    legacy_migration.inventory(args.workspace)
+    hashes = [args.hash] if args.hash else legacy_migration.pending_hashes(
+        args.workspace, args.limit
+    )
+    if not hashes:
+        print("No pending paired legacy artifacts.")
+        return 0
+    failures = 0
+    if args.jobs == 1:
+        for index, digest in enumerate(hashes, 1):
+            try:
+                output = legacy_migration.convert_one(digest, args.workspace)
+                print(f"[{index}/{len(hashes)}] {digest} -> {output}")
+            except Exception as exc:
+                failures += 1
+                print(f"[{index}/{len(hashes)}] {digest}: ERROR: {exc}", file=sys.stderr)
+                if args.fail_fast:
+                    break
+    else:
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            futures = {
+                executor.submit(legacy_migration.convert_one, digest, args.workspace): digest
+                for digest in hashes
+            }
+            for index, future in enumerate(as_completed(futures), 1):
+                digest = futures[future]
+                try:
+                    output = future.result()
+                    print(f"[{index}/{len(hashes)}] {digest} -> {output}")
+                except Exception as exc:
+                    failures += 1
+                    print(f"[{index}/{len(hashes)}] {digest}: ERROR: {exc}", file=sys.stderr)
+                    if args.fail_fast:
+                        for pending in futures:
+                            pending.cancel()
+                        break
+    print(f"Converted {len(hashes) - failures:,}; failed {failures:,}")
+    return 1 if failures else 0
+
+
+def cmd_migrate_report(args):
+    path = legacy_migration.export_manifest(args.workspace, args.output)
+    summary = legacy_migration.inventory(args.workspace)
+    print(f"Manifest:  {path}")
+    print(f"Converted: {summary.converted:,}/{summary.paired:,}")
+    print(f"Failed:    {summary.failed:,}")
+    return 1 if summary.failed else 0
+
+
+def cmd_migrate_verify(args):
+    result = legacy_migration.verify_outputs(args.workspace, args.limit)
+    print(f"Checked: {result.checked:,}")
+    print(f"Valid:   {result.valid:,}")
+    print(f"Invalid: {len(result.errors):,}")
+    for error in result.errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    return 1 if result.errors else 0
+
+
+def cmd_migrate_stage(args):
+    result = legacy_migration.stage_v2(args.workspace, args.output, args.run_id)
+    print(f"Stage:     {result.root}")
+    print(f"Sources:   {result.sources:,}")
+    print(f"Artifacts: {result.artifacts:,}")
+    print(f"Recipe:    {result.recipe_digest}")
+    return 0
+
+
+def cmd_migrate_import_local(args):
+    summary = import_stage(
+        args.stage,
+        args.data_dir,
+        run_id=args.run_id,
+        dry_run=not args.execute,
+    )
+    mode = "validated" if not args.execute else "imported"
+    print(
+        f"Local backend stage {mode}: checked={summary.checked}, "
+        f"imported={summary.imported}, skipped={summary.skipped}"
+    )
+    if not args.execute:
+        print("Dry run only; pass --execute to write local server state.")
+    return 0
+
+
+def cmd_migrate_import_sources(args):
+    summary = import_legacy_sources(
+        args.workspace,
+        args.data_dir,
+        dry_run=not args.execute,
+    )
+    mode = "validated" if not args.execute else "imported"
+    print(
+        f"Legacy sources {mode}: checked={summary.checked}, "
+        f"imported={summary.imported}, skipped={summary.skipped}"
+    )
+    if not args.execute:
+        print("Dry run only; pass --execute to write missing sources and jobs.")
+    return 0
+
+
+def cmd_evaluate_converter(args):
+    """Run one isolated converter adapter and emit a validated MDAF."""
+    repository = Path(__file__).resolve().parent.parent
+    project = repository / "evaluators" / args.engine
+    adapter = project / "adapter.py"
+    output = Path(args.output) if args.output else Path(args.path).with_suffix(
+        f".{args.engine}.mdaf"
+    )
+    parameters = {
+        "do_ocr": not args.no_ocr,
+        "do_table_structure": not args.no_tables,
+        "generate_picture_images": not args.no_images,
+        "extract_images": not args.no_images,
+        "max_pages": args.max_pages,
+        "max_cost_usd": args.max_cost_usd,
+        "model": args.model,
+    }
+    result = run_converter(
+        ["uv", "run", "--project", str(project), "python", str(adapter)],
+        args.path,
+        output,
+        parameters=parameters,
+        timeout_seconds=args.timeout,
+    )
+    print(f"Artifact: {result.artifact_path}")
+    print(f"Identity: {result.identity}")
+    print(f"Elapsed:  {result.elapsed_seconds:.1f}s")
+    for diagnostic in result.diagnostics:
+        print(f"{diagnostic.get('severity', 'info')}: {diagnostic.get('message', diagnostic)}")
+    return 0
+
+
+def cmd_corpus_inventory(args):
+    """Freeze an evaluation corpus with BLAKE3/SHA-256/page metadata."""
+    result = build_manifest(args.path, args.output)
+    print(f"Manifest:  {result.path}")
+    print(f"Identity:  {result.digest}")
+    print(f"Documents: {result.documents:,}")
+    print(f"Pages:     {result.pages:,}")
+    print(f"Bytes:     {result.bytes:,}")
+    return 0
+
+
+def cmd_compare_mdaf(args):
+    metrics = compare_artifacts(args.artifacts, args.output)
+    columns = ("text_bytes", "words", "headings", "table_rows", "assets", "mappings", "mapped_pages")
+    print("artifact\t" + "\t".join(columns))
+    for item in metrics:
+        print(Path(item.path).name + "\t" + "\t".join(str(getattr(item, column)) for column in columns))
+    if args.output:
+        print(f"JSON: {args.output}")
+    return 0
+
+
 def cmd_janitor(args):
     """Run the janitor to recover stale jobs (managed by the coordinator UI)."""
     _require_management_ui("janitor")
@@ -449,6 +624,18 @@ def cmd_worker(args):
         idle_sleep=10,
         run_schedule=run_schedule
     )
+
+
+def cmd_serve(args):
+    """Run the self-hosted SQLite/filesystem coordinator."""
+    try:
+        import uvicorn
+        from .server.app import create_app
+    except ImportError:
+        print('Error: install the server dependencies with `uv sync --extra server`')
+        return 1
+    uvicorn.run(create_app(), host=args.host, port=args.port, log_level=args.log_level)
+    return 0
 
 
 def cmd_dashboard(args):
@@ -1053,8 +1240,11 @@ def cmd_artifacts(args):
         label = f" ({', '.join(flags)})" if flags else ""
         print(f"  {digest}{label}")
         print(f"    Created: {created}")
-        print(f"    Engine: {recipe.get('engine', 'unknown')} {recipe.get('engine_generation', '')}".rstrip())
-        print(f"    Marker: {packages.get('marker-pdf', 'unknown')}")
+        engine = recipe.get("engine") or artifact.get("converter_backend") or "unknown"
+        engine_generation = recipe.get("engine_generation") or ""
+        converter_version = packages.get("marker-pdf") or artifact.get("converter_version") or "unknown"
+        print(f"    Engine: {engine} {engine_generation}".rstrip())
+        print(f"    Converter version: {converter_version}")
         print(f"    Worker: {artifact.get('worker_id') or 'unknown'}")
         print(f"    Size: {int(artifact.get('output_size_bytes') or 0):,} bytes")
     return 0
@@ -1068,15 +1258,24 @@ def cmd_request_conversion(args):
     if not coordinator:
         print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
         return 1
+    recipe_digest = getattr(args, "recipe_digest", None)
+    backend = getattr(args, "backend", None)
+    if bool(recipe_digest) == bool(backend):
+        print("Error: specify exactly one recipe digest or --backend")
+        return 1
     artifacts = coordinator.list_artifacts(args.hash)
     existing = any(
-        artifact.get("recipe_digest") == args.recipe_digest for artifact in artifacts
-    )
+        artifact.get("recipe_digest") == recipe_digest for artifact in artifacts
+    ) if recipe_digest else False
+    selector = recipe_digest or f"backend {backend}"
     action = "select retained artifact" if existing else "queue conversion"
     if args.dry_run:
-        print(f"Would {action} {args.recipe_digest} for {args.hash}.")
+        print(f"Would {action} {selector} for {args.hash}.")
         return 0
-    outcome = coordinator.request_conversion(args.hash, args.recipe_digest)
+    if backend:
+        outcome = coordinator.request_conversion(args.hash, backend=backend)
+    else:
+        outcome = coordinator.request_conversion(args.hash, recipe_digest)
     print(f"Coordinator will {action}: {outcome.get('status', 'unknown')}.")
     return 0
 
@@ -1102,7 +1301,7 @@ def cmd_cancel(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="blobforge",
-        description="BlobForge - Distributed PDF Conversion System"
+        description="BlobForge - content conversion and artifact orchestration"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     
@@ -1202,6 +1401,117 @@ def main():
         "--force", action="store_true", help="Overwrite existing Markdown/assets"
     )
     p_hydrated_unpack.set_defaults(func=cmd_hydrated_unpack)
+
+    p_migrate = subparsers.add_parser(
+        "migrate", help="Build and inspect the local legacy-to-MDAF migration"
+    )
+    migrate_subparsers = p_migrate.add_subparsers(
+        dest="migration_command", required=True
+    )
+    p_migrate_inventory = migrate_subparsers.add_parser(
+        "inventory", help="Index the read-only rclone mirror"
+    )
+    p_migrate_inventory.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_inventory.set_defaults(func=cmd_migrate_inventory)
+
+    p_migrate_legacy = migrate_subparsers.add_parser(
+        "legacy", help="Convert paired legacy ZIP/PDF inputs to local MDAF"
+    )
+    p_migrate_legacy.add_argument("hash", nargs="?", help="One legacy SHA-256")
+    p_migrate_legacy.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_legacy.add_argument("--limit", type=int, help="Maximum pending artifacts")
+    p_migrate_legacy.add_argument(
+        "--jobs", type=int, choices=range(1, 5), default=1,
+        help="Concurrent local conversions (default: 1; use 2 for bounded bulk migration)",
+    )
+    p_migrate_legacy.add_argument("--fail-fast", action="store_true")
+    p_migrate_legacy.set_defaults(func=cmd_migrate_legacy)
+    p_migrate_report = migrate_subparsers.add_parser(
+        "report", help="Export a checksummed migration manifest"
+    )
+    p_migrate_report.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_report.add_argument("--output")
+    p_migrate_report.set_defaults(func=cmd_migrate_report)
+    p_migrate_verify = migrate_subparsers.add_parser(
+        "verify", help="Validate generated MDAFs and cross-check the catalog"
+    )
+    p_migrate_verify.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_verify.add_argument("--limit", type=int)
+    p_migrate_verify.set_defaults(func=cmd_migrate_verify)
+    p_migrate_stage = migrate_subparsers.add_parser(
+        "stage", help="Build a verified local tree using the proposed S3 v2 keys"
+    )
+    p_migrate_stage.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_stage.add_argument("--output")
+    p_migrate_stage.add_argument("--run-id", default="legacy-mdaf-v1")
+    p_migrate_stage.set_defaults(func=cmd_migrate_stage)
+    p_migrate_import = migrate_subparsers.add_parser(
+        "import-local", help="Import a verified v2 stage into local server storage"
+    )
+    p_migrate_import.add_argument("--stage", required=True)
+    p_migrate_import.add_argument("--data-dir", required=True)
+    p_migrate_import.add_argument("--run-id", default="legacy-mdaf-v1")
+    p_migrate_import.add_argument(
+        "--execute", action="store_true", help="Write objects and SQLite rows"
+    )
+    p_migrate_import.set_defaults(func=cmd_migrate_import_local)
+    p_migrate_sources = migrate_subparsers.add_parser(
+        "import-legacy-sources",
+        help="Import and queue raw sources absent from the MDAF stage",
+    )
+    p_migrate_sources.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_sources.add_argument("--data-dir", required=True)
+    p_migrate_sources.add_argument(
+        "--execute", action="store_true", help="Write missing objects and SQLite rows"
+    )
+    p_migrate_sources.set_defaults(func=cmd_migrate_import_sources)
+
+    p_evaluate = subparsers.add_parser(
+        "evaluate", help="Run an isolated converter and package a comparable MDAF"
+    )
+    p_evaluate.add_argument(
+        "engine", choices=("poppler", "marker1", "marker2", "docling", "mistral")
+    )
+    p_evaluate.add_argument("path", help="Source PDF")
+    p_evaluate.add_argument("--output", "-o", help="Destination .mdaf")
+    p_evaluate.add_argument("--timeout", type=int, default=86_400)
+    p_evaluate.add_argument("--no-ocr", action="store_true")
+    p_evaluate.add_argument("--no-tables", action="store_true")
+    p_evaluate.add_argument("--no-images", action="store_true")
+    p_evaluate.add_argument("--max-pages", type=int, help="Hard API page ceiling")
+    p_evaluate.add_argument("--max-cost-usd", type=float, help="Hard API list-price ceiling")
+    p_evaluate.add_argument("--model", help="Explicit provider model identifier")
+    p_evaluate.set_defaults(func=cmd_evaluate_converter)
+
+    p_corpus = subparsers.add_parser(
+        "corpus", help="Create reproducible converter-evaluation corpora"
+    )
+    corpus_subparsers = p_corpus.add_subparsers(dest="corpus_command", required=True)
+    p_corpus_inventory = corpus_subparsers.add_parser(
+        "inventory", help="Hash PDFs and record page counts"
+    )
+    p_corpus_inventory.add_argument("path", help="Corpus directory")
+    p_corpus_inventory.add_argument("--output", "-o", required=True)
+    p_corpus_inventory.set_defaults(func=cmd_corpus_inventory)
+
+    p_compare = subparsers.add_parser(
+        "compare-mdaf", help="Measure comparable structural signals in MDAFs"
+    )
+    p_compare.add_argument("artifacts", nargs="+")
+    p_compare.add_argument("--output", "-o")
+    p_compare.set_defaults(func=cmd_compare_mdaf)
     
     # Status (single job)
     p_status = subparsers.add_parser("status", help="Check status of a specific job")
@@ -1262,6 +1572,17 @@ def main():
         help="Worker enrollment token created in the management UI. Can also be set with BLOBFORGE_COORDINATOR_TOKEN."
     )
     p_worker.set_defaults(func=cmd_worker)
+
+    p_serve = subparsers.add_parser(
+        "serve", help="Run the self-hosted SQLite/filesystem backend"
+    )
+    p_serve.add_argument("--host", default="0.0.0.0")
+    p_serve.add_argument("--port", type=int, default=8080)
+    p_serve.add_argument(
+        "--log-level", default="info",
+        choices=("critical", "error", "warning", "info", "debug", "trace"),
+    )
+    p_serve.set_defaults(func=cmd_serve)
     
     # Dashboard
     p_dash = subparsers.add_parser("dashboard", help="Show system status dashboard")
@@ -1325,8 +1646,9 @@ def main():
         help="Select or queue an exact conversion recipe",
     )
     p_request_conversion.add_argument("hash", help="SHA256 hash of the PDF")
-    p_request_conversion.add_argument("recipe_digest", type=_recipe_digest_arg,
-                                      help="Recipe digest advertised by a compatible worker")
+    p_request_conversion.add_argument("recipe_digest", nargs="?", type=_recipe_digest_arg,
+                                      help="Exact recipe digest advertised by a compatible worker")
+    p_request_conversion.add_argument("--backend", help="Backend name, if exactly one active recipe matches")
     p_request_conversion.add_argument("--dry-run", action="store_true",
                                       help="Show whether the recipe would be selected or queued")
     p_request_conversion.add_argument("--coordinator-url", help="Coordinator base URL")

@@ -1,8 +1,7 @@
-"""HTTP client for the Bunny BlobForge coordination backend.
+"""HTTP client for a BlobForge coordination backend.
 
 The coordinator owns file metadata, persistent job state, leases, retries, worker
-registration, progress, and operational configuration. S3 remains responsible
-only for raw PDFs and converted output archives when this client is enabled.
+registration, progress, operational configuration, and signed byte transfers.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ import shutil
 import socket
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -56,7 +55,7 @@ class CoordinatorClient:
         request_token = token if token is not None else self.token
         if not self.base_url or not request_token:
             raise CoordinatorError(
-                "Bunny coordinator is not configured; set "
+                "BlobForge coordinator is not configured; set "
                 "BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN"
             )
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -114,6 +113,10 @@ class CoordinatorClient:
         paths: Iterable[str],
         tags: Iterable[str],
         source: Optional[str] = None,
+        digest_algorithm: str = "sha256",
+        digest: Optional[str] = None,
+        media_type: str = "application/pdf",
+        aliases: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         return self._request(
             "PUT",
@@ -125,6 +128,10 @@ class CoordinatorClient:
                 "paths": list(paths),
                 "tags": list(tags),
                 "source": source,
+                "digest_algorithm": digest_algorithm,
+                "digest": digest or file_hash,
+                "media_type": media_type,
+                "aliases": aliases or {},
             },
         ) or {}
 
@@ -222,17 +229,42 @@ class CoordinatorClient:
         artifacts = payload.get("artifacts")
         return artifacts if isinstance(artifacts, list) else []
 
-    def request_conversion(self, file_hash: str, recipe_digest: str) -> Dict[str, Any]:
-        """Queue or select an explicitly identified conversion recipe."""
+    def list_recipes(self, media_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List conversion recipes currently advertised by workers."""
+        suffix = f"?{urlencode({'media_type': media_type})}" if media_type else ""
+        payload = self._request("GET", f"/api/v1/recipes{suffix}") or {}
+        recipes = payload.get("recipes")
+        return recipes if isinstance(recipes, list) else []
+
+    def request_conversion(
+        self, file_hash: str, recipe_digest: Optional[str] = None, *, backend: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Queue or select an exact recipe, or an unambiguous active backend."""
+        body = {"recipe_digest": recipe_digest} if recipe_digest else {"backend": backend}
         return self._request(
             "POST",
             f"/api/v1/jobs/{file_hash}/convert",
-            {"recipe_digest": recipe_digest},
+            body,
         ) or {}
 
-    def raw_upload_url(self, file_hash: str) -> Dict[str, Any]:
+    def raw_upload_url(
+        self,
+        file_hash: str,
+        *,
+        digest_algorithm: str = "sha256",
+        digest: Optional[str] = None,
+        media_type: str = "application/pdf",
+    ) -> Dict[str, Any]:
         """Return a signed raw-object upload URL plus whether the object already exists."""
-        transfer = self._request("POST", f"/api/v1/jobs/{file_hash}/raw-upload-url", {}) or {}
+        transfer = self._request(
+            "POST",
+            f"/api/v1/jobs/{file_hash}/raw-upload-url",
+            {
+                "digest_algorithm": digest_algorithm,
+                "digest": digest or file_hash,
+                "media_type": media_type,
+            },
+        ) or {}
         url = str(transfer.get("url") or "")
         if not url:
             raise CoordinatorError("Coordinator did not return a raw upload URL")
@@ -311,14 +343,20 @@ class CoordinatorClient:
         *,
         recipe_digest: Optional[str] = None,
         recipe: Optional[Dict[str, Any]] = None,
+        accepted_media_types: Optional[Iterable[str]] = None,
+        capabilities: Optional[Iterable[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
         body: Dict[str, Any] = {
             "worker_id": worker_id,
             "priorities": list(priorities),
         }
+        if capabilities is not None:
+            body["capabilities"] = list(capabilities)
         if recipe_digest:
             body["recipe_digest"] = recipe_digest
             body["recipe"] = recipe or {}
+        if accepted_media_types is not None:
+            body["accepted_media_types"] = list(accepted_media_types)
         payload = self._request(
             "POST",
             "/api/v1/jobs/claim",

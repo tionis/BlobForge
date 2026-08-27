@@ -2,7 +2,11 @@
 
 ## 1. Overview
 
-A distributed, infrastructure-agnostic system to convert RPG rulebooks (PDF) into Markdown/Assets. The system prioritizes decoupling ingestion from processing and uses an S3-compatible object store as the single source of truth for both data and coordination (state), allowing for distributed workers without a dedicated database server.
+A distributed conversion system that begins with PDF rulebooks and MDAF but is
+designed for additional source media. The active redesign uses a conventional
+Python service, SQLite, and local immutable object storage; see
+`docs/local_backend.md`. The S3 bucket-database design below is retained as
+legacy implementation history until cutover is complete.
 
 ### 1.1. S3 Provider Compatibility
 

@@ -1,6 +1,6 @@
 import { INSTALLER_URL } from "./ui";
 
-export const DOCS_VERSION = "1";
+export const DOCS_VERSION = "2";
 
 export function renderDocs(): string {
   return `<!doctype html>
@@ -77,7 +77,7 @@ journalctl --user -u blobforge-worker -f</code></pre><p>The installer stores cre
   --abort-outside-window</code></pre><p>The active conversion is terminated at the boundary and safely requeued. Conversion isolation is enabled automatically.</p></article>
         <article><h3>Service lifecycle</h3><pre><code>systemctl --user restart blobforge-worker
 systemctl --user stop blobforge-worker
-podman pull ghcr.io/tionis/blobforge:latest</code></pre><p>Enable user lingering with <code>loginctl enable-linger</code> when the worker must run without an interactive login.</p></article>
+podman pull ghcr.io/tionis/blobforge:worker</code></pre><p>Enable user lingering with <code>loginctl enable-linger</code> when the worker must run without an interactive login.</p></article>
         <article><h3>Failure recovery</h3><p>Workers hold fenced leases and renew them while processing. Catchable shutdowns requeue active work immediately; expired leases are recovered before the next claim. Native converter crashes stay contained when isolation is enabled.</p></article>
       </div>
     </section>

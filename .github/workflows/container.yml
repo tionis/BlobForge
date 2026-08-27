@@ -11,16 +11,42 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install test and server environments
+        run: uv sync --frozen --extra dev --extra server
+      - name: Run tests
+        env:
+          BLOBFORGE_COORDINATOR_URL: ""
+          BLOBFORGE_COORDINATOR_TOKEN: ""
+        run: uv run pytest -q
+      - name: Build Python distributions
+        run: uv build
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - flavor: cpu
+          - flavor: server
             suffix: ""
+            file: ./Containerfile.server
+            platforms: linux/amd64,linux/arm64
+          - flavor: cpu
+            suffix: -worker
+            file: ./Containerfile
             platforms: linux/amd64,linux/arm64
           - flavor: cuda
-            suffix: -cuda
+            suffix: -worker-cuda
+            file: ./Containerfile
             platforms: linux/amd64
     permissions:
       contents: read
@@ -59,7 +85,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Containerfile
+          file: ${{ matrix.file }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

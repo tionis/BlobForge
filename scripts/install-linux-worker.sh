@@ -56,9 +56,9 @@ fi
 
 if [[ -z $image ]]; then
   if [[ $gpu == 1 ]]; then
-    image="ghcr.io/tionis/blobforge:latest-cuda"
+    image="ghcr.io/tionis/blobforge:worker-cuda"
   else
-    image="ghcr.io/tionis/blobforge:latest"
+    image="ghcr.io/tionis/blobforge:worker"
   fi
 fi
 

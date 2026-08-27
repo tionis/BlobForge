@@ -1399,6 +1399,328 @@
   the CLI.
 - **Status:** Complete.
 
+## 2026-08-27 (MDAF Migration Completion and v2 Local Stage)
+
+- **Objective:** Finish every historical ZIP-to-MDAF conversion, independently
+  verify the complete corpus, materialize the proposed S3 v2 hierarchy locally,
+  and close the CPU converter canaries without touching production.
+- **Actions:** Completed the resumable migration of all 1,377 paired legacy
+  ZIP/PDF records. Four image/HTML-only headings initially violated the MDAF
+  non-empty outline-title schema; changed outline derivation to retain their
+  Markdown while omitting only unusable semantic nodes, then retried all four
+  successfully. Added bounded `--jobs` migration concurrency and used the
+  measured two-worker setting on the 32-GiB host. Added read-only catalog/MDAF
+  cross-verification and fail-closed local v2 staging, including hard-linked
+  source/artifact objects, canonical recipe JSON, and a checksummed run manifest.
+- **Validation performance:** Cached the four immutable JSON Schema validators
+  and replaced quadratic UTF-8 prefix decoding with constant-time continuation-
+  byte boundary checks after whole-document UTF-8 validation. Added regression
+  coverage for a span that splits a multibyte character.
+- **Final migration result:** Inventory is 1,808 sources, 1,377 legacy artifacts,
+  1,377 paired, 1,377 converted, and zero failed. The local stage has exactly
+  1,377 source objects, 1,377 MDAFs, one recipe, and one run manifest (2,756
+  files). Recipe digest is
+  `blake3:8822289b4860301f73b64a2139a3559f2026793a48135fc13b83bc84a67b0c39`;
+  stage-manifest digest is
+  `blake3:8cb0de0459044c53c2038192af2f8a8e438d9a33c4c4c9502d81f930140fd213`.
+- **Evaluation result:** Marker 2 no-OCR completed the two-page fixture in 67.5s
+  and passed Vulcan. The corrected eight-page Docling canary completed in 269.3s
+  versus Marker 1 in 519.2s; both emitted 18 Markdown headings/two assets and
+  similar word counts. Vulcan dry-run import planned one root, 18 section notes,
+  and both Docling assets. Added shared fallback outline generation for future
+  adapters and documented results in `docs/converter_benchmark_results.md`.
+- **Verification:** A staged 111-member legacy MDAF independently passed Vulcan
+  with 415 page intervals, 415 polygons, and 415 outline nodes. The final suite
+  passed with 197 tests, 5 subtests, and two existing dependency deprecation
+  warnings. Python compilation, CLI help, wheel construction/schema inclusion,
+  and `git diff --check` passed.
+- **Safety:** The full bucket mirror was read with `rclone copy --immutable`.
+  No S3/coordinator write, paid OCR API request, remote deletion, worker start,
+  or production cutover occurred. The disposable Vulcan vault was removed.
+- **Status:** The local migration, v2 staging input, MDAF/converter vertical
+  slice, and CPU canaries are complete. Coordinator v2 persistence/dual-read,
+  model checksum freezing, human quality scoring, and publication remain gated.
+
+## 2026-08-27 (Local MDAF Migration and Converter Evaluation Build)
+
+- **Objective:** Implement the approved BLAKE3/MDAF vertical slice, locally
+  migrate every historical conversion, isolate converter backends for the
+  32-GiB CPU machine and APIs, freeze the rulebook corpus, and select a safer v2
+  object layout without mutating production.
+- **Discovery:** Audited BlobForge's SHA-256 raw/output key paths, worker ZIP
+  packaging, coordinator-facing identities, and CLI; read Vulcan's complete MDAF
+  v1 specification, schemas, fixtures, Rust validator, and artifact CLI; audited
+  `pdf-to-wiki` page-anchor, TOC, heading, and page-label strategies. Read-only
+  inventoried `blobforge:` with rclone. The remote has 3,634 objects / 31.98 GiB,
+  including 1,808 raw PDFs and 1,377 flat legacy ZIPs, all paired. A real ZIP
+  confirmed that production Markdown omitted page-anchor pagination but retained
+  Marker TOC page IDs/polygons and page statistics.
+- **Local data actions:** Added `.blobforge-migration/` to `.gitignore` and used
+  `rclone copy blobforge:pdf ... --immutable`, never `sync`, to create the full
+  local mirror in 9m38s. No remote write/delete command was run. Built a WAL-mode
+  SQLite migration catalog and began a resumable local bulk conversion after a
+  20-artifact no-failure canary. Generated sources, artifacts, databases,
+  reports, model caches, and evaluation results remain git-ignored.
+- **Implementation:** Added explicit `blake3` and `jsonschema` dependencies;
+  canonical parameter JSON, logical MDAF identity, deterministic atomic ZIP
+  creation, reviewed Vulcan schemas, schema/semantic/archive/member/provenance/
+  UTF-8-span/Markdown-link validation, versioned converter bundle validation,
+  subprocess execution, shared packaging, structural comparison metrics,
+  corpus manifests, safe v2 object-key constructors, one-pass BLAKE3+SHA-256,
+  algorithm-specific xattrs, and an additive algorithm-keyed SQLite digest
+  cache. Added `blobforge migrate`, `corpus`, `evaluate`, and `compare-mdaf`
+  commands plus Poppler, Marker 1, Marker 2, Docling, and spend-capped Mistral
+  adapters in separately locked uv projects.
+- **Migration semantics:** Legacy SHA-256 is verified and retained as an alias;
+  historical Marker/model versions are explicitly `unavailable`; original
+  Markdown, metadata, and assets are native evidence. Exact page anchors become
+  final UTF-8 page spans. Where absent, only exact normalized Marker-TOC to
+  Markdown-heading matches get page/polygon mappings; no whole-page mapping is
+  invented. Every Markdown heading contributes to a complete aligned outline.
+  Secret-like legacy metadata fails closed.
+- **Environment findings:** Initial isolated resolutions selected CUDA 13
+  PyTorch and several GiB of irrelevant NVIDIA packages. Interrupted both
+  installs, added explicit PyTorch CPU indexes, regenerated locks, and installed
+  `torch 2.10.0+cpu`. Pinned Marker 1.10.2/Surya 0.17.1, Marker 2.0.0/Surya
+  0.22.1, Docling 2.122.0, and Mistral SDK 2.9.4. Marker 2 still needed a
+  first-run Datalab font download even with OCR disabled.
+- **Evaluation:** Frozen `/home/eric/rulebooks` as 43 documents / 9,465 pages /
+  1,294,553,125 bytes with manifest identity
+  `blake3:44b252c25c8a61dc2771c337cfca9d6b43734cefbac44f2d50b8e5130a3e2b35`.
+  Two-page CPU smoke times were Poppler 0.9s, Docling 40.2s, and Marker 1 175.6s;
+  all artifacts passed BlobForge and Vulcan with two page mappings. An 8-page
+  rulebook Docling run took 262.9s, produced eight page mappings and two assets.
+  It exposed absolute temporary image links, so the adapter now rewrites links
+  before span calculation and BlobForge rejects absolute/file targets.
+- **Verification so far:** The official Vulcan logical-identity vector matches;
+  26 focused tests passed after schema/link hardening. A representative real
+  migrated artifact passed Vulcan with 14 declared members, 19 page/polygon
+  mappings, and 19 outline nodes. Poppler, Docling, and Marker 1 fixture MDAFs
+  passed Vulcan independently. Full-suite, regenerated Docling rulebook,
+  Marker 2 no-OCR, Marker 1 rulebook, and final bulk migration verification are
+  still in progress at this log point.
+- **Tooling:** Used `update_plan`, `rclone`, `find`, `sqlite3`, `unzip`, `jq`,
+  `rg`, `sed`, `pdfinfo`, `pdftotext`, `uv add/lock/sync/run`, `pytest`, Cargo,
+  the current Vulcan CLI, `apply_patch`, local process polling, and official
+  Docling, Marker, Mistral, PyPI, and GitHub documentation searches. One Mistral
+  environment command combined `uv lock` and `uv sync`; subsequent operations
+  remain separate and uv-only.
+- **Status:** In progress locally. Production S3/coordinator publication,
+  dual-read rollout, paid API calls, and deletion remain intentionally disabled.
+
+## 2026-08-27 (32-GiB Conversion Test Readiness Audit)
+
+- **Objective:** Determine whether the 32-GiB machine and current BlobForge
+  checkout are ready to run reusable, comparable conversion tests.
+- **Actions:** Inspected repository status, converter/MDAF/evaluation modules,
+  pending tasks, installed Python packages, system tools, corpus count and exact
+  duplicates, installed Vulcan commands/version, current Vulcan source, schemas,
+  examples, validator implementation, and CLI tests. Added
+  `docs/conversion_test_readiness.md` with ready components, blockers, minimum
+  launch sequence, and full-run gates. Updated the live corpus counts, cost
+  model, evaluation documents, tasks, and findings after the redundant Rigger
+  variants disappeared from the corpus.
+- **Findings:** Hardware is adequate, and Marker 1 plus BLAKE3/Poppler/container
+  tools are present. Software is not ready for scored runs: BlobForge lacks the
+  shared MDAF producer, converter ABI/adapters, frozen BLAKE3 corpus manifest,
+  Docling environment, and comparison harness. Installed Vulcan 0.1.0 lacks the
+  `artifact` subcommand even though the checkout implements it. The current
+  corpus is 43 unique PDFs / 9,465 pages / 1,234.58 MiB with no exact duplicate.
+- **Tooling:** Used `git`, `rg`, `command`, `uv`, `find`, `wc`, `pdfinfo`,
+  `pdftotext` discovery, `sha256sum`, `sort`, `xargs`, `awk`, `stat`, `sed`, and
+  `apply_patch`. The first `uv pip list` probe hit the sandboxed home-cache lock;
+  it was repeated read-only with `UV_CACHE_DIR` under `/tmp`.
+- **Status:** Not ready for scored/full-corpus conversion. Ad-hoc Marker 1 is
+  technically possible but intentionally deferred to avoid legacy-only output.
+
+## 2026-08-27 (TextPack Cleanup and Reverse Conversion)
+
+- **Objective:** Let large PDF trees either remove generated TextPacks or
+  restore them to the hydrated Markdown/assets layout.
+- **Actions:** Re-inspected the hydrated maintenance module, CLI parser,
+  tests, documentation, repository status, and tracking files. Chose sibling
+  `clean-textpacks` and `unpack` operations under the existing `blobforge
+  hydrated` group, with PDF-anchored discovery, preview-by-default behavior,
+  explicit `--execute`, and overwrite protection through `--force`. Implemented
+  TextPack discovery and cleanup plus reverse conversion with CRC, metadata,
+  Markdown type/body, duplicate-member, path-traversal, member-type, and
+  unexpected-entry checks. Reverse conversion stages assets, rewrites links,
+  preserves archives on error, skips existing outputs by default, and deletes
+  the archive only after restoration succeeds. Added round-trip, dry-run,
+  cleanup, force/skip, alternate `text.markdown`, and malicious traversal tests;
+  updated CLI help, README, hydrate design, tasks, and durable findings.
+- **Tooling:** Used `update_plan`, `sed`, `rg`, `git status`, `apply_patch`, and
+  uv-driven focused pytest and CLI help checks.
+- **Verification:** The combined hydrated-maintenance and hydrator suite passed
+  all 32 focused tests. The final isolated repository suite passed with 181
+  tests and 5 subtests; only two pre-existing dependency deprecation warnings
+  remain. Python byte compilation, both new CLI help paths, and
+  `git diff --check` passed.
+- **Status:** Complete. No user PDF, hydrated output, or TextPack was modified.
+
+## 2026-08-26 (MDAF / BLAKE3 Redesign Discovery)
+
+- **Objective:** Redesign BlobForge around BLAKE3 source identity and MDAF v1
+  artifacts, including richer PDF-to-Markdown evidence, converter evaluation,
+  API cost analysis, and loss-aware migration of existing ZIP artifacts.
+- **Actions:** Read the authoritative Vulcan MDAF v1 specification; inventoried
+  the BlobForge repository, current task list, and prior conversion/provenance
+  work; located Vulcan's implemented MDAF validator/importer, bundled schemas,
+  fixtures, and consumer documentation. Confirmed the working tree was clean at
+  discovery start. Mapped current SHA-256/recipe behavior across ingestion,
+  xattrs, the local SQLite hash index, hydration, worker packaging, Bunny
+  Database, APIs, and S3 key layout. Researched current primary documentation
+  for Mistral OCR 4.0, Marker 2.0, Docling, Chandra 2/Datalab, and Google
+  Document AI. Documented the proposed four-identity model, staged worker
+  pipeline, additive coordinator schema, object layout, publication protocol,
+  LFS-aware hash migration, honest legacy packaging, rollout gates, evaluation
+  corpus, quality metrics, and API/local-compute cost formulas in
+  `docs/mdaf_redesign.md` and `docs/converter_evaluation.md`. Added the program
+  backlog to `TODO.md` and the durable findings to `AGENTS.md`.
+- **Cost findings:** Mistral lists OCR 4.0 at $4/1,000 pages and annotated pages
+  at $5/1,000; the conservative MDAF mapping budget is therefore $500 per
+  100,000 pages before retry margin. Google lists Layout Parser at $10/1,000
+  pages. Datalab's public price could not be read reliably, so it remains a
+  quote/pilot input. Exact corpus cost remains pending a real page inventory.
+- **Tooling:** Used `wc`, `sed`, `find`, `rg`, Git status/diff inspection,
+  `apply_patch`, the task-plan tracker, and primary-source web search/open/find
+  operations. No worker, coordinator, object-store, API account, or deployment
+  state was changed.
+- **Verification:** `git diff --check` passed after documentation creation.
+  Cost-table arithmetic and local break-even formulas were checked directly.
+- **Status:** Architecture discovery is complete and ready for review; runtime
+  implementation has intentionally not started.
+
+## 2026-08-26 (Priority Rulebook Cost Inventory)
+
+- **Objective:** Calculate a realistic API-conversion budget for the rulebooks
+  most important to the future Vulcan wiki workflow.
+- **Actions:** Read-only inventoried `/home/eric/rulebooks` with recursive file
+  discovery, `pdfinfo`, `pdftotext`, and file metadata. Counted pages and bytes
+  for all PDFs, verified that all documents expose text, inspected the one
+  encrypted PDF's permissions, and counted existing Markdown/asset outputs.
+  Calculated per-book and total Mistral standard/annotated costs, retry and
+  repeat-run scenarios, a Google Layout control, and illustrative local runtime
+  floors. Recorded the durable inventory and recommended spend plan in
+  `docs/rulebook_corpus_cost.md` and the key finding in `AGENTS.md`. A follow-up
+  primary-source search of Datalab documentation confirmed per-page billing,
+  $5 trial credit, 200 MiB/7,000-page request limits, and one-hour result
+  retention, but its exact current rate remains delegated to the dynamic pricing
+  page; the plan therefore uses the trial for a measured subset before approval.
+- **Findings:** The 17 PDFs total 3,060 pages and 488.5 MiB. A full Mistral OCR
+  4.0 annotated pass is approximately $15.30; two passes with 10% margin are
+  $33.66. All 17 sources have existing Markdown and asset outputs. One 436-page
+  PDF uses AES permissions encryption but permits local copy/print extraction.
+- **Tooling:** Used `rg`, `pdfinfo`, `pdftotext`, `stat`, `find`, `awk`, `sort`,
+  `wc`, `sed`, shell timeouts, parallel read-only command execution, and
+  `apply_patch`, plus official Datalab web search. No corpus file, provider
+  account, coordinator, object-store, or deployment state was modified.
+- **Status:** Complete; the corpus is small enough to evaluate in full rather
+  than sampling.
+
+## 2026-08-26 (Local Converter Requirements and Candidate Survey)
+
+- **Objective:** Determine what is required to run Marker 2 and Docling locally
+  and define a broad but decision-useful evaluation set.
+- **Actions:** Read-only inspected CPU, RAM, disk, GPU/driver visibility,
+  container runtimes, Poppler, uv, and the Python environment. Researched
+  primary documentation for Marker 2/Surya backends, Docling standard/VLM
+  installation and CLI outputs, MinerU pipeline/hybrid requirements, olmOCR,
+  PP-StructureV3/PaddleOCR-VL, Chandra, Unstructured, Datalab, Mistral, Google
+  Document AI, and AWS Textract. Documented isolated environment rules, CPU and
+  GPU requirements, example uv workflows, native-evidence requirements, local
+  and hosted candidate matrices, and a three-stage evaluation order in
+  `docs/local_converter_evaluation.md`. Added concrete environment/adapter tasks
+  to `TODO.md` and durable hardware findings to `AGENTS.md`.
+- **Findings:** The current 4-core/31-GiB workstation can run CPU correctness
+  candidates but has no functioning NVIDIA path. Marker 2 fast/no-OCR needs no
+  inference server; its selective CPU VLM mode needs external `llama-server`,
+  while balanced is a GPU/remote-Surya recipe. Docling standard is the strongest
+  immediate CPU candidate and can retain both Markdown and lossless provenance
+  JSON. A separate 48-80 GiB NVIDIA host is the efficient route to broad VLM
+  coverage. AWS's published US West example prices Layout+Tables at $0.015/page,
+  or about $45.90 for this corpus.
+- **Tooling:** Used `lscpu`, `free`, `nvidia-smi`, `df`, command discovery, uv,
+  `sed`, `apply_patch`, and primary-source web search/open results. The uv Python
+  probe could not create a cache temporary file under the sandboxed home cache;
+  this did not affect environment inspection or alter the repository.
+- **Status:** Complete; no packages, models, containers, GPU hosts, or provider
+  services were installed or started.
+
+## 2026-08-27 (Evaluation Plan Corrected for Available Hardware)
+
+- **Objective:** Rework the converter evaluation around the user's actual fleet:
+  a Windows/24-GiB host with GTX 1070, a GPU-less 32-GiB desktop, and older
+  laptops.
+- **Actions:** Researched primary NVIDIA, vLLM, llama.cpp, Surya, and Docling
+  documentation for WSL2 Pascal support, CUDA architecture compatibility,
+  inference backend requirements, and small Docling VLM support. Updated
+  `docs/local_converter_evaluation.md`, `TODO.md`, and `AGENTS.md` so owned
+  hardware and hosted controls precede any optional GPU rental.
+- **Findings:** WSL2 supports CUDA on Pascal, but the GTX 1070's compute
+  capability 6.1 is below vLLM's 7.0 floor. CUDA 13 removed Pascal library and
+  offline-compilation support, so experiments require a pinned CUDA 12.x stack.
+  Current llama.cpp still targets 6.1, making Surya's 650M GGUF backend worth a
+  feasibility probe. Docling's 256-258M GraniteDocling and SmolDocling models
+  are plausible 8-GiB candidates. The 32-GiB desktop remains the full-corpus CPU
+  worker.
+- **Tooling:** Used primary-source web search, `sed`, `rg`, and `apply_patch`.
+  No machine, package, model, container, provider, or deployment was changed.
+- **Status:** Complete; hardware installation and benchmark tasks remain pending.
+
+## 2026-08-27 (Rulebook-Driven Converter Adapter Architecture)
+
+- **Objective:** Turn the priority rulebooks into both the high-value conversion
+  workload and the common acceptance corpus for local and API engines producing
+  comparable MDAFs.
+- **Actions:** Read the complete authoritative MDAF v1 specification, inspected
+  the repository package layout, dependency policy, current recipe identity,
+  Marker-only conversion child, worker packaging path, and existing redesign
+  and evaluation documents. Added `docs/converter_adapter_architecture.md` with
+  a versioned subprocess adapter boundary, private ConversionBundle, shared MDAF
+  builder, isolated engine environments, nested corpus sets, comparison outputs,
+  gates, and an implementation-ordered vertical slice. Cross-linked and updated
+  the redesign, evaluation protocol, task list, and durable findings.
+- **Findings:** Converter modules must not directly package MDAF or load all ML
+  dependencies into one worker. Adapters should finish byte-changing Markdown
+  normalization and return mappings/native evidence through a filesystem ABI;
+  the shared builder owns canonical BLAKE3, byte-span validation, provenance,
+  archive safety, and Vulcan validation. Whole books measure production utility
+  and failures, while 5-10 labeled pages per book and a hidden holdout provide
+  defensible quality comparisons.
+- **Tooling:** Used `wc`, `sed`, `rg`, and `apply_patch`. No runtime code,
+  corpus files, dependencies, APIs, workers, or infrastructure were changed.
+- **Status:** Architecture documented for approval; implementation remains
+  pending in `TODO.md`.
+
+## 2026-08-27 (Expanded Rulebook Corpus and API Cost Refresh)
+
+- **Objective:** Re-inventory newly added rulebooks and recalculate expected API
+  conversion charges from current page counts and current official rates.
+- **Actions:** Ran read-only `pdfinfo` and file-size inspection over every PDF,
+  grouped pages by rulebook family, hashed every source with SHA-256 to identify
+  exact duplicates, and searched the broader rulebook directory for the two
+  previously inventoried Trinity files. Reviewed current official Mistral OCR
+  4.1, Mistral Batch/limits, Google Document AI, AWS Textract, and Datalab
+  documentation. Replaced `docs/rulebook_corpus_cost.md` with the expanded
+  inventory, deduplication rules, provider scenarios, sensitivity cases, and
+  spend-cap recommendation. Updated current evaluation/adapter documents,
+  tasks, and durable findings.
+- **Findings:** There are 45 readable paths / 9,853 pages / 1,272.64 MiB raw and
+  44 exact-byte-distinct sources / 9,659 pages after removing one 194-page
+  duplicate. Thirty paths are new relative to the first inventory, while two
+  Trinity PDFs totaling 547 pages are absent. Current deduplicated list prices
+  are $38.64 Mistral standard, $48.30 conservative annotated, $96.59 Google
+  Layout, and approximately $144.89 AWS Layout+Tables. Mistral's official
+  general price table and Batch guide disagree between $0.40/1,000 OCR pages
+  and a 50% discount; a metered pilot is required.
+- **Tooling:** Used `find`, `sort`, `xargs`, `bash`, `pdfinfo`, `stat`, `awk`,
+  `sha256sum`, `rg`, `sed`, `apply_patch`, and primary-source web research. No
+  corpus content, API account, dependency, worker, or infrastructure was
+  modified.
+- **Status:** Cost refresh complete; corpus scope decisions and any paid API run
+  remain pending.
+
 ## 2026-08-27 (Hydrated Output Maintenance)
 
 - **Objective:** Add safe recursive CLI maintenance for large PDF trees whose
@@ -1429,27 +1751,146 @@
   and `git diff --check` also passed.
 - **Status:** Complete.
 
-## 2026-08-27 (TextPack Cleanup and Reverse Conversion)
+## 2026-08-27 (Self-hosted Backend Foundation)
 
-- **Objective:** Let large PDF trees either remove generated TextPacks or
-  restore them to the hydrated Markdown/assets layout.
-- **Actions:** Re-inspected the hydrated maintenance module, CLI parser,
-  tests, documentation, repository status, and tracking files. Chose sibling
-  `clean-textpacks` and `unpack` operations under the existing `blobforge
-  hydrated` group, with PDF-anchored discovery, preview-by-default behavior,
-  explicit `--execute`, and overwrite protection through `--force`. Implemented
-  TextPack discovery and cleanup plus reverse conversion with CRC, metadata,
-  Markdown type/body, duplicate-member, path-traversal, member-type, and
-  unexpected-entry checks. Reverse conversion stages assets, rewrites links,
-  preserves archives on error, skips existing outputs by default, and deletes
-  the archive only after restoration succeeds. Added round-trip, dry-run,
-  cleanup, force/skip, alternate `text.markdown`, and malicious traversal tests;
-  updated CLI help, README, hydrate design, tasks, and durable findings.
-- **Tooling:** Used `update_plan`, `sed`, `rg`, `git status`, `apply_patch`, and
-  uv-driven focused pytest and CLI help checks.
-- **Verification:** The combined hydrated-maintenance and hydrator suite passed
-  all 32 focused tests. The final isolated repository suite passed with 181
-  tests and 5 subtests; only two pre-existing dependency deprecation warnings
-  remain. Python byte compilation, both new CLI help paths, and
-  `git diff --check` passed.
-- **Status:** Complete. No user PDF, hydrated output, or TextPack was modified.
+- **Objective:** Replace Bunny Edge Scripting, Bunny Database, and S3 with a
+  conventional Podman-deployable service using a local database and directory,
+  while making the persistence model ready for MDAF/BLAKE3 and non-PDF media.
+- **Actions:** Audited the Bunny route/schema contract, dependency-free Python
+  coordinator client, current PDF-only worker, ingestion flow, container build,
+  and CI. Added locked `server` dependencies, a FastAPI service, SQLite WAL
+  schema, local object layout, streamed atomic transfers, HMAC capabilities,
+  lease fencing, media-filtered claims, static hashed worker bootstrap, artifact
+  history, and a `blobforge serve` entry point. Added a validating/idempotent
+  import from the checksummed local v2 stage plus a SHA-256-verifying/BLAKE3-
+  deriving importer for the 431 raw sources not represented by completed MDAFs.
+  Added a lightweight server
+  Containerfile, Podman Quadlet/volume/environment examples, full-test CI, and
+  GHCR server/CPU-worker/CUDA-worker image tags; changed the Bunny deployment
+  workflow to manual-only. Updated the client, current worker media capability,
+  README, design pointer, task list, and durable findings.
+- **Findings:** Existing workers already consume coordinator-issued transfer
+  URLs, so the storage change does not require bucket credentials or an
+  immediate worker rewrite. One server can safely coordinate many workers, but
+  SQLite makes active-active API replicas an explicit non-goal. Media type must
+  be a claim constraint, not merely metadata, or a PDF worker could consume
+  future audio/video jobs. Starlette 1.6's file response path deadlocked under
+  the installed HTTPX ASGI test transport; an async chunked local-file response
+  preserves streaming and makes in-process integration tests deterministic. A
+  stage-only cutover would have silently omitted 431 of 1,808 raw sources, so
+  completed-artifact and missing-source imports are separate, repeatable phases.
+  Final context review found roughly 46 GB of ignored migration/model/reference
+  data and dot-prefixed provider environment files not covered by
+  `.dockerignore`; all are now explicitly excluded from local and CI builds.
+- **Tooling:** Used `rg`, `sed`, `find`, `uv add`, `uv lock`, `uv sync`, Python
+  compilation, focused pytest, `apply_patch`, Podman discovery, and official
+  Podman Quadlet/GitHub Container Registry documentation. Initial dependency
+  resolution was blocked by sandbox DNS and was repeated with approved network
+  access. The first rootless Podman boot canary found that a fresh volume hides
+  the image-layer ownership; the Quadlet now uses `:U`, after which the server
+  started as UID 10001 and its loopback health endpoint returned successfully.
+- **Verification:** The full suite passes with 201 tests and 5 subtests; the
+  legacy Bunny package still passes its 25 tests and TypeScript check. Python
+  byte compilation, source/wheel builds, and `git diff --check` pass. The exact
+  server image builds successfully with Podman; a rootless named-volume boot
+  canary returned the SQLite/filesystem health payload; Podman's official
+  Quadlet generator accepted both unit files and emitted their systemd units.
+  The isolated canary container and volume were removed. The complete
+  1,377-artifact production-data import remains intentionally pending. A
+  read-only catalog/path/size dry run successfully accounted for all 1,808 raw
+  sources without creating the proposed data directory.
+- **Status:** Foundation implemented; deployment and migration canaries remain
+  intentionally gated in `TODO.md`.
+
+## 2026-08-27 (Capability Routing, Legacy Visibility, and Identity)
+
+- **Objective:** Verify legacy artifact labeling/version evidence, allow an
+  operator to select PDF conversion backends, make coordinator scheduling
+  media-neutral for constrained workers, and prepare the Citadel deployment
+  for OIDC and SCIM.
+- **Actions:** Audited the complete legacy migrator, staged recipe, MDAF
+  provenance/renditions, local importer, recipe-bound leases, worker payloads,
+  and Gandalf's Citadel service inventory, Todo Quadlet, Authentik OIDC/SCIM
+  reconciliation, Caddy compilation, and quiesced backup pattern. Added
+  explicit legacy/backend/version catalog columns and loss-aware import
+  provenance. Added a registered recipe catalog, exact recipe listing,
+  unambiguous backend selection, multi-capability worker registration and
+  claims, selected-capability lease responses, CLI/client selection, and a
+  one-capability compatibility advertisement for the existing Marker worker.
+  Added Authlib OIDC discovery/code-flow sessions, SCIM-backed request-time
+  roles, same-origin checks for cookie mutations, and bearer-protected SCIM 2.0
+  discovery plus Users/Groups CRUD/filter/PATCH endpoints. Added locked server
+  dependencies, environment examples, tests, architecture/deployment docs, and
+  removed a duplicate rendition path from future legacy activity output lists.
+- **Findings:** Every one of the 1,377 staged MDAFs is internally marked by its
+  legacy activity/rendition/recipe and records every version fact known; the
+  historical Marker/model version is genuinely unavailable. The old catalog
+  did not expose that distinction, which is now corrected. Span enrichment is
+  sparse when old Marker output lacks anchors and must not be described as
+  complete. The old worker protocol already filtered media but could advertise
+  only one recipe. Gandalf's Todo role is the correct deployment model, but
+  BlobForge must use a stable Authentik user UUID for both OIDC `sub` and SCIM
+  `externalId`, privately route SCIM, and back up the whole local data tree.
+  No Gandalf mutation or production deployment was performed; vaulted secret
+  creation, generated inventory compilation, image publication, import/restore
+  canary, and DNS cutover remain explicit gates.
+- **Tooling:** Used `rg` and `sed` for repository/Gandalf audits, official
+  Authlib, Authentik SCIM, and RFC 7644 references for protocol decisions,
+  `uv add`/`uv lock` for dependencies, `apply_patch` for implementation, and
+  focused pytest runs. Dependency download required approved network access.
+- **Verification:** The environment-isolated full suite passes with 204 tests
+  and 5 subtests. Mixed PDF/audio capability selection, recipe discovery, SCIM
+  role provisioning/deactivation, and explicit imported-legacy metadata have
+  dedicated coverage. Python byte compilation, CLI help, `git diff --check`,
+  source/wheel builds, the exact server-image build, and an import probe inside
+  that image pass. The first unisolated suite run inherited the live Bunny URL
+  and produced 17 sandbox DNS failures; explicitly removing those two external
+  environment variables reproduced CI and left one expected mock assertion,
+  which was updated for the new capabilities payload before the clean pass.
+  Gandalf was audited read-only; no check-mode deployment was claimed.
+- **Status:** BlobForge implementation complete; Gandalf deployment remains a
+  gated infrastructure follow-up.
+
+## 2026-08-27 (Complete Local Data Migration and Access-Control Boundary)
+
+- **Objective:** Confirm group-limited management access, define a safe tagging
+  and resource-authorization direction, and materialize the complete verified
+  coordinator recovery unit before the GHCR/Citadel rollout.
+- **Actions:** Audited OIDC/SCIM role checks, static/worker token behavior,
+  existing job tags, and both migration runbooks. Confirmed 959 GB free and a
+  fresh destination. Ran the full stage importer dry-run across all 1,377
+  MDAF/source pairs, executed it, validated all 1,808 legacy source records,
+  then imported the 431 sources without artifacts. Repeated both execute paths
+  to prove idempotency. Independently queried SQLite counts/provenance, matched
+  filesystem object counts, checked for duplicate source digests/orphan and
+  pending artifacts, checkpointed WAL, ran `PRAGMA quick_check`, and opened the
+  exact directory through a fresh coordinator instance to create/reuse its
+  persistent capability key. Added `MIGRATION.json`, froze all 3,188 recovery
+  files into a relative BLAKE3 manifest, and verified that manifest in full.
+  Documented current group gating, the distinction between tags and ACLs, a
+  private collection/group-role design, and the exact Citadel data handoff.
+- **Results:** The 33 GB recovery unit at
+  `.blobforge-migration/local-server-data` has 1,808 sources/jobs, 3,616 aliases,
+  1,377 done legacy MDAFs, 431 queued raw-only jobs, 1,808 source objects, 1,377
+  artifact objects, zero pending objects, zero orphan artifacts, and one
+  canonical recipe. Source bytes total 27,639,911,801 and artifact bytes total
+  6,892,298,683. All 1,377 artifacts record `blobforge-zip-v0`, Marker version
+  `unavailable`, partial metadata recovery, and
+  `page-anchors-and-exact-toc-heading-alignment`. The verified 3,188-line
+  manifest is `.blobforge-migration/local-server-data.blake3`; its BLAKE3 is
+  `b654923b59e24bd5709aab3e8a9803b351f5c03cba48596baf3df876c36ddf23`.
+- **Access finding:** Mapping only an exact SCIM group to `admin` limits all
+  interactive access to that group, and Authentik should enforce the same group
+  at the application binding. Static client tokens remain unrestricted and
+  worker tokens retain compatibility read access, so broader multi-user use is
+  gated on scoped service accounts, machine-token narrowing, private
+  collections, collection group roles, and deny-by-default query tests. Tags
+  remain discovery metadata and are not an authorization mechanism.
+- **Tooling:** Used `df`, `du`, `find`, `rg`, `sqlite3`, the two `blobforge
+  migrate import-*` commands, a fresh FastAPI application canary, `b3sum`,
+  `sha256sum`, `apply_patch`, and `git diff --check`. All migration operations
+  were local; no Bunny/S3 mutation, remote upload, DNS change, or deployment
+  occurred.
+- **Status:** Local data migration complete and frozen for transfer. Repository
+  publication, GHCR build, Gandalf provisioning, secure data transfer, restored
+  manifest verification, and DNS cutover remain.

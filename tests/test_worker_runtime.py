@@ -318,6 +318,8 @@ class TestCoordinatorObjectTransfers(unittest.TestCase):
             unittest.mock.ANY,
             recipe_digest=worker.conversion_recipe_digest,
             recipe=worker.conversion_recipe,
+            accepted_media_types=["application/pdf"],
+            capabilities=worker.capabilities,
         )
         coordinator.upload_job_output.assert_called_once()
         coordinator.complete.assert_called_once()

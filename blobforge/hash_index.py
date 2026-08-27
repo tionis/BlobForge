@@ -50,6 +50,14 @@ class HashIndex:
                 mtime_ns  INTEGER NOT NULL,
                 hash      TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS file_digests (
+                path       TEXT NOT NULL,
+                size       INTEGER NOT NULL,
+                mtime_ns   INTEGER NOT NULL,
+                algorithm  TEXT NOT NULL,
+                digest     TEXT NOT NULL,
+                PRIMARY KEY (path, algorithm)
+            );
             CREATE TABLE IF NOT EXISTS done_hashes (
                 scope TEXT NOT NULL,
                 hash  TEXT NOT NULL,
@@ -61,6 +69,10 @@ class HashIndex:
             );
             DROP TABLE IF EXISTS hash_status;
             """
+        )
+        self._conn.execute(
+            """INSERT OR IGNORE INTO file_digests(path,size,mtime_ns,algorithm,digest)
+               SELECT path,size,mtime_ns,'sha256',hash FROM file_hashes"""
         )
         columns = {
             row[1] for row in self._conn.execute("PRAGMA table_info(done_hashes)")
@@ -88,25 +100,56 @@ class HashIndex:
     # ------------------------------------------------------------------
     # File hash cache
     # ------------------------------------------------------------------
-    def get_file_hash(self, path: str, size: int, mtime_ns: int) -> Optional[str]:
+    def get_file_hash(
+        self, path: str, size: int, mtime_ns: int, algorithm: str = "sha256"
+    ) -> Optional[str]:
         """Return the cached hash if (path, size, mtime_ns) match, else None."""
         row = self._conn.execute(
-            "SELECT hash FROM file_hashes WHERE path=? AND size=? AND mtime_ns=?",
-            (path, size, mtime_ns),
+            """SELECT digest FROM file_digests
+               WHERE path=? AND size=? AND mtime_ns=? AND algorithm=?""",
+            (path, size, mtime_ns, algorithm),
         ).fetchone()
         return row[0] if row else None
 
-    def set_file_hash(self, path: str, size: int, mtime_ns: int, file_hash: str) -> None:
+    def set_file_hash(
+        self,
+        path: str,
+        size: int,
+        mtime_ns: int,
+        file_hash: str,
+        algorithm: str = "sha256",
+    ) -> None:
         self._conn.execute(
-            "INSERT OR REPLACE INTO file_hashes (path, size, mtime_ns, hash) VALUES (?,?,?,?)",
-            (path, size, mtime_ns, file_hash),
+            """INSERT OR REPLACE INTO file_digests
+               (path,size,mtime_ns,algorithm,digest) VALUES (?,?,?,?,?)""",
+            (path, size, mtime_ns, algorithm, file_hash),
         )
+        if algorithm == "sha256":
+            self._conn.execute(
+                "INSERT OR REPLACE INTO file_hashes(path,size,mtime_ns,hash) VALUES (?,?,?,?)",
+                (path, size, mtime_ns, file_hash),
+            )
         self._conn.commit()
 
     def set_file_hashes(self, entries) -> None:
         """Bulk upsert of (path, size, mtime_ns, hash) tuples."""
+        values = list(entries)
         self._conn.executemany(
-            "INSERT OR REPLACE INTO file_hashes (path, size, mtime_ns, hash) VALUES (?,?,?,?)",
+            "INSERT OR REPLACE INTO file_hashes(path,size,mtime_ns,hash) VALUES (?,?,?,?)",
+            values,
+        )
+        self._conn.executemany(
+            """INSERT OR REPLACE INTO file_digests(path,size,mtime_ns,algorithm,digest)
+               VALUES (?,?,?,'sha256',?)""",
+            values,
+        )
+        self._conn.commit()
+
+    def set_file_digests(self, entries) -> None:
+        """Bulk upsert ``(path,size,mtime_ns,algorithm,digest)`` records."""
+        self._conn.executemany(
+            """INSERT OR REPLACE INTO file_digests
+               (path,size,mtime_ns,algorithm,digest) VALUES (?,?,?,?,?)""",
             entries,
         )
         self._conn.commit()
