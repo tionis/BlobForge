@@ -43,6 +43,12 @@ dependencies, deliverables, and completion gates.
 - The converter subprocess ABI, ConversionBundle v1, shared MDAF builder and
   validator, initial adapters, exact recipe selection, and recipe-aware claims
   already exist.
+- The modular Poppler/Markdown enrichment vertical slice and resumable local
+  derived-artifact catalog are implemented. Its first 10-rulebook/153-page
+  automated canary is structurally valid. Manual mapping adjudication rejected
+  the first recipe because coarse regions, future-anchor jumps, and repeated
+  labels admitted unsupported mappings; a corrected recipe and repeat review
+  remain the Phase 1 gate before the full legacy backfill.
 
 ## Governing decisions
 

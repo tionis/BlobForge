@@ -470,6 +470,93 @@ def cmd_migrate_legacy(args):
     return 1 if failures else 0
 
 
+def cmd_migrate_enrich(args):
+    """Build derived MDAFs with PDF-backed Markdown source mappings."""
+    if not args.hashes and args.limit is None and not args.all:
+        print(
+            "Refusing an unbounded enrichment run; provide a hash, --limit for a canary, "
+            "or --all after canary approval.",
+            file=sys.stderr,
+        )
+        return 2
+    legacy_migration.inventory(args.workspace)
+    if args.hashes:
+        hashes = list(dict.fromkeys(args.hashes))
+    else:
+        _, hashes = legacy_migration.pending_enrichment_hashes(
+            args.workspace, None if args.all else args.limit
+        )
+    if not hashes:
+        print("No pending legacy enrichments for the current recipe.")
+        return 0
+    failures = 0
+    if args.jobs == 1:
+        for index, digest in enumerate(hashes, 1):
+            try:
+                output = legacy_migration.enrich_one(digest, args.workspace)
+                print(f"[{index}/{len(hashes)}] {digest} -> {output}")
+            except Exception as exc:
+                failures += 1
+                print(f"[{index}/{len(hashes)}] {digest}: ERROR: {exc}", file=sys.stderr)
+                if args.fail_fast:
+                    break
+    else:
+        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
+            futures = {
+                executor.submit(legacy_migration.enrich_one, digest, args.workspace): digest
+                for digest in hashes
+            }
+            for index, future in enumerate(as_completed(futures), 1):
+                digest = futures[future]
+                try:
+                    output = future.result()
+                    print(f"[{index}/{len(hashes)}] {digest} -> {output}")
+                except Exception as exc:
+                    failures += 1
+                    print(f"[{index}/{len(hashes)}] {digest}: ERROR: {exc}", file=sys.stderr)
+                    if args.fail_fast:
+                        for pending in futures:
+                            pending.cancel()
+                        break
+    summary = legacy_migration.enrichment_summary(args.workspace)
+    print(
+        f"Enriched {len(hashes) - failures:,}; failed {failures:,}; "
+        f"recipe total {summary.converted:,}/{summary.eligible:,}"
+    )
+    return 1 if failures else 0
+
+
+def cmd_migrate_enrich_status(args):
+    summary = legacy_migration.enrichment_summary(args.workspace)
+    print(f"Recipe:        {summary.recipe_digest}")
+    print(f"Eligible:      {summary.eligible:,}")
+    print(f"Pending:       {summary.pending:,}")
+    print(f"Processing:    {summary.processing:,}")
+    print(f"Converted:     {summary.converted:,}")
+    print(f"Failed:        {summary.failed:,}")
+    block_coverage = summary.mapped_blocks / summary.total_blocks if summary.total_blocks else 0
+    byte_coverage = summary.mapped_bytes / summary.total_bytes if summary.total_bytes else 0
+    print(
+        f"Block coverage: {summary.mapped_blocks:,}/{summary.total_blocks:,} "
+        f"({block_coverage:.1%})"
+    )
+    print(
+        f"Byte coverage:  {summary.mapped_bytes:,}/{summary.total_bytes:,} "
+        f"({byte_coverage:.1%})"
+    )
+    return 0
+
+
+def cmd_migrate_enrich_verify(args):
+    result = legacy_migration.verify_enrichments(args.workspace, args.limit)
+    print(f"Checked: {result.checked:,}")
+    print(f"Valid:   {result.valid:,}")
+    print(f"Invalid: {len(result.errors):,}")
+    for error in result.errors:
+        print(f"ERROR: {error}", file=sys.stderr)
+    return 1 if result.errors else 0
+
+
 def cmd_migrate_report(args):
     path = legacy_migration.export_manifest(args.workspace, args.output)
     summary = legacy_migration.inventory(args.workspace)
@@ -1430,6 +1517,40 @@ def main():
     )
     p_migrate_legacy.add_argument("--fail-fast", action="store_true")
     p_migrate_legacy.set_defaults(func=cmd_migrate_legacy)
+    p_migrate_enrich = migrate_subparsers.add_parser(
+        "enrich", help="Derive PDF-aligned MDAFs from converted legacy artifacts"
+    )
+    p_migrate_enrich.add_argument(
+        "hashes", nargs="*", metavar="HASH", help="One or more legacy SHA-256 values"
+    )
+    p_migrate_enrich.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_enrich.add_argument("--limit", type=int, help="Bounded canary size")
+    p_migrate_enrich.add_argument(
+        "--all", action="store_true", help="Process the complete pending backfill"
+    )
+    p_migrate_enrich.add_argument(
+        "--jobs", type=int, choices=range(1, 5), default=1,
+        help="Concurrent enrichments (default: 1)",
+    )
+    p_migrate_enrich.add_argument("--fail-fast", action="store_true")
+    p_migrate_enrich.set_defaults(func=cmd_migrate_enrich)
+    p_migrate_enrich_status = migrate_subparsers.add_parser(
+        "enrich-status", help="Show current enrichment recipe and coverage"
+    )
+    p_migrate_enrich_status.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_enrich_status.set_defaults(func=cmd_migrate_enrich_status)
+    p_migrate_enrich_verify = migrate_subparsers.add_parser(
+        "enrich-verify", help="Validate enriched derivatives and catalog lineage"
+    )
+    p_migrate_enrich_verify.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_enrich_verify.add_argument("--limit", type=int)
+    p_migrate_enrich_verify.set_defaults(func=cmd_migrate_enrich_verify)
     p_migrate_report = migrate_subparsers.add_parser(
         "report", help="Export a checksummed migration manifest"
     )

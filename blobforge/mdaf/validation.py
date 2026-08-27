@@ -181,6 +181,23 @@ def validate_mdaf(path: str | Path) -> ValidationResult:
         activity_outputs = {
             item["id"]: set(item.get("outputs", [])) for item in activities
         }
+        known_inputs = set(by_path) | {f"source:{source_id}" for source_id in source_ids}
+        for item in activities:
+            for dependency in item.get("depends_on", []):
+                if dependency not in activity_ids or dependency == item["id"]:
+                    raise MdafValidationError(
+                        f"invalid activity dependency: {item['id']} -> {dependency}"
+                    )
+            for output in item.get("outputs", []):
+                if output not in by_path:
+                    raise MdafValidationError(
+                        f"unknown activity output: {item['id']} -> {output}"
+                    )
+            for input_value in item.get("inputs", []):
+                if input_value not in known_inputs and input_value not in source_ids:
+                    raise MdafValidationError(
+                        f"unknown activity input: {item['id']} <- {input_value}"
+                    )
         for member in declared:
             if member.get("created_by") not in activity_ids:
                 raise MdafValidationError(f"unknown creating activity: {member.get('path')}")

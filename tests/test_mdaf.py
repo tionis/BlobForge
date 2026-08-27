@@ -173,3 +173,24 @@ def test_validate_rejects_span_on_utf8_continuation_byte(tmp_path):
     )
     with pytest.raises(ValueError, match="splits UTF-8"):
         validate_mdaf(result.path)
+
+
+def test_validate_rejects_unknown_activity_input(tmp_path):
+    result = build_mdaf(
+        tmp_path / "unknown-input.mdaf",
+        text="# Example\n",
+        sources=[MdafSource("document", "application/pdf", "blake3:" + "0" * 64)],
+        activities=[
+            activity(
+                activity_id="activity:test",
+                kind="test",
+                tools=[{"name": "test", "version": "1"}],
+                inputs=["artifact:blake3:" + "1" * 64],
+                outputs=["text.md", "provenance.json"],
+                parameters={},
+            )
+        ],
+        producer={"name": "test", "version": "1"},
+    )
+    with pytest.raises(ValueError, match="unknown activity input"):
+        validate_mdaf(result.path)

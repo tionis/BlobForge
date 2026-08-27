@@ -1,5 +1,90 @@
 # Work Log
 
+## 2026-08-27 (Roadmap Status Reconciliation)
+
+- **Objective:** Reconcile the current conversion-program plan with repository
+  state after the first enrichment canary inspection.
+- **State:** The self-hosted coordinator, administration console, OIDC/SCIM,
+  recipe-aware routing, worker/admin credentials, Citadel import, and recovery
+  deployment are complete as recorded. All 1,377 historical conversions exist
+  as conservative MDAFs alongside 431 raw-only queued sources. The enrichment
+  implementation is present in the working tree but not yet committed or
+  deployed. Its first 10-document derived-artifact canary was rejected for
+  mapping accuracy, leaving 1,367 enrichment rows pending. Converter evaluation
+  infrastructure and the frozen 43-rulebook/9,465-page corpus exist, while
+  production-ready Marker 1/2, Docling, Datalab, and Mistral recipes and the
+  blinded benchmark remain pending.
+- **Critical path:** Correct anchor-bounded alignment and geometry publication,
+  rerun and approve the enrichment canary, complete the append-only backfill,
+  then run the multi-engine benchmark and promote selected MDAF-producing
+  recipes into the multipurpose worker dispatcher.
+- **Tooling:** Used `git status`, `git diff --stat`, `git log`, and the canonical
+  `TODO.md`. Removed the work-log/finding entries created for the user's
+  explicitly misdirected renderer question; no implementation was reverted.
+
+## 2026-08-27 (PDF Enrichment Canary Accuracy Inspection)
+
+- **Objective:** Decide whether the first structurally valid enrichment recipe
+  is accurate enough to freeze and run across the legacy corpus.
+- **Inspection:** Restricted the catalog query to the active recipe so obsolete
+  development rows could not contaminate results. Reconstructed all 1,411
+  aligner-created rectangles from retained Poppler evidence; checked normalized
+  equality, confidence bands, selector bounds, page order, and geometry reuse.
+  Rendered the source PDFs at 144 DPI and overlaid published rectangles for 35
+  unique mappings: both confidence extremes in every document plus every page
+  regression and reused rectangle. Compared exact UTF-8 Markdown spans against
+  both visual source regions and native evidence.
+- **Findings:** Structural validation is necessary but insufficient. The audit
+  found two page regressions and six reused-rectangle groups involving 13
+  mappings. Exact/high-confidence unique matches were generally tight, while
+  mappings below 0.90 frequently selected excess block content; 68/79 had
+  reconstructed sequence similarity below 0.90 and 60/79 had normalized length
+  ratio below 0.80. Exact repeated labels can still score 1.0 at the wrong
+  occurrence. Detailed evidence and corrective requirements are recorded in
+  `docs/pdf_enrichment_canary_review.md`.
+- **Decision:** Rejected recipe
+  `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
+  for bulk backfill. Keep its ten outputs as immutable local experiments and
+  keep the remaining 1,367 pending a new recipe and repeated review. No
+  production state, source PDF, or conservative MDAF changed.
+- **Tooling:** Used `git status`, `rg`, `sed`, `sqlite3`, `jq`, `unzip`,
+  `pdftotext`, `pdftoppm`, temporary Python audit/render scripts, ImageMagick
+  capability checks, and local image inspection. The temporary review sheets
+  were not added to the repository because they contain rendered copyrighted
+  source pages.
+- **Verification:** `git diff --check` passes. Read-only CLI status still shows
+  10 converted, 1,367 pending, and zero failed for the reviewed recipe; the
+  enrichment verifier rechecked all ten as valid with zero invalid artifacts.
+
+## 2026-08-27 (PDF Enrichment Vertical Slice and Canary)
+
+- **Objective:** Implement the dependency-critical legacy PDF enrichment slice
+  before bulk backfill or production converter promotion.
+- **Implementation:** Added the `blobforge.enrichment` contract, Markdown
+  segmenter, Poppler bbox-layout extractor, conservative token-indexed
+  monotonic aligner, native evidence/report members, derived legacy MDAF
+  builder, recipe-keyed resumable catalog, bounded/all-gated CLI, aggregate
+  status, and read-only verifier. Hardened shared MDAF provenance validation.
+- **Canary findings:** The smoke artifact showed Vulcan rejects a bare parent
+  digest as an activity input; lineage now uses `derived_from` while activities
+  reference retained concrete evidence. Real rulebooks exposed legitimate
+  negative Poppler coordinates, so raw coordinates are retained and normalized
+  rectangles are clipped with diagnostics. Exhaustive string matching was too
+  slow; rare-token indexing now bounds candidates and sequence refinement.
+  Every output-affecting change produced a new recipe identity.
+- **Result:** Final recipe
+  `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
+  processed 10 rulebooks / 153 pages with zero failures. All pass BlobForge,
+  catalog/lineage, and Vulcan validation. Aggregate coverage is 1,411/2,355
+  Markdown blocks (59.9%) and 319,013/492,744 semantic bytes (64.7%);
+  per-document byte coverage ranges from 9.4% to 98.0%, so manual accuracy
+  review remains required. No production object, coordinator row, or base MDAF
+  changed.
+- **Verification:** Focused suites reached 14 passing tests; the full suite
+  passed 217 tests plus 5 subtests. The CLI verifier and independent Vulcan
+  validation of all ten canary artifacts pass. Tools included `rg`, `sed`,
+  `sqlite3`, `jq`, `pdftotext`, `pdfinfo`, `uv`, `pytest`, and `vulcan`.
+
 ## 2026-08-27 (Conversion Program Roadmap and PDF Enrichment Design)
 
 - **Objective:** Turn the agreed legacy-enrichment, converter-comparison, and

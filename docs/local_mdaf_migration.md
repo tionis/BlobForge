@@ -27,6 +27,17 @@ legacy recipe digest is
 the staged run-manifest digest is
 `blake3:8cb0de0459044c53c2038192af2f8a8e438d9a33c4c4c9502d81f930140fd213`.
 
+The conservative migration is now also an immutable input to the separately
+versioned pipeline in `pdf_enrichment_pipeline.md`. Enrichment creates derived
+MDAFs below each source's `generated/.../enriched/` directory and never rewrites
+the 1,377 baseline artifacts. The first automated canary has 10 valid derivatives
+under recipe
+`blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`;
+manual review rejected that recipe for unsupported region precision and
+repeated/wrong-page matches. The remaining 1,367 are intentionally pending a
+corrected recipe and successful repeat review. The ten derivatives remain
+immutable experimental evidence.
+
 ## Workspace
 
 ```text
@@ -73,6 +84,12 @@ uv run blobforge migrate report
 
 # Materialize the proposed v2 key tree locally after full verification.
 uv run blobforge migrate stage
+
+# Build a bounded enrichment canary, inspect aggregate coverage, and read every
+# derivative back against source/base/recipe/catalog identities.
+uv run blobforge migrate enrich --limit 10
+uv run blobforge migrate enrich-status
+uv run blobforge migrate enrich-verify
 ```
 
 Every conversion verifies that the raw bytes match the SHA-256 object name,

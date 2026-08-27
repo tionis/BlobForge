@@ -14,7 +14,7 @@ view; detailed research tasks remain in the sections below.
   `docs/conversion_program_roadmap.md`.
 - [ ] Review and approve the enrichment evidence, confidence, and publication
   rules in `docs/pdf_enrichment_pipeline.md`.
-- [ ] Define a versioned intermediate document/evidence model shared by legacy
+- [x] Define a versioned intermediate document/evidence model shared by legacy
   alignment and new converter adapters.
 - [ ] Define canonical recipes for enrichment-only and composite conversion,
   including exact model/tool identities and output-affecting settings.
@@ -24,19 +24,30 @@ view; detailed research tasks remain in the sections below.
 
 ### Phase 1: Legacy PDF enrichment
 
-- [ ] Implement modular PDF evidence extraction for pages, dimensions, native
+- [x] Implement modular PDF evidence extraction for pages, dimensions, native
   text blocks, reading order, geometry, and stable block identifiers.
-- [ ] Implement loss-aware Markdown segmentation and monotonic
+- [x] Implement loss-aware Markdown segmentation and monotonic
   Markdown-to-PDF alignment, seeded by trustworthy legacy anchors and TOC
   evidence.
-- [ ] Emit final UTF-8 spans, page/region selectors, methods, confidence,
+- [x] Emit final UTF-8 spans, page/region selectors, methods, confidence,
   outline data, and explicit unmapped/ambiguous diagnostics.
-- [ ] Add validation and coverage reports for invalid spans, non-monotonic
+- [x] Add validation and coverage reports for invalid spans, non-monotonic
   mappings, conflicting evidence, and unsupported precision.
-- [ ] Produce new derived MDAFs without overwriting the 1,377 conservative
+- [x] Produce new derived MDAFs without overwriting the 1,377 conservative
   legacy MDAFs or inventing unavailable Marker/model versions.
-- [ ] Run and review a 10-20-document canary spanning native text, scans,
-  columns, tables, equations, sidebars, and image-heavy pages.
+- [x] Run the automated first 10-document/153-page rulebook canary with
+  resumability, coverage reports, and BlobForge/Vulcan validation.
+- [x] Inspect 35 mappings across every canary document, confidence extremes,
+  page regressions, and reused rectangles; reject the first recipe and record
+  the evidence in `docs/pdf_enrichment_canary_review.md`.
+- [ ] Bound alignment by both preceding and following trusted anchors and
+  reject unexplained page regressions.
+- [ ] Retain word/line geometry, separate page from region confidence, publish
+  page-only fallbacks, and reject unjustified source-geometry reuse.
+- [ ] Add regression fixtures for future-anchor jumps, repeated labels,
+  split Markdown over coarse PDF blocks, and page-only publication.
+- [ ] Complete blinded/manual mapping review and expand the canary where needed
+  to cover scans, columns, tables, equations, sidebars, and image-heavy pages.
 - [ ] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
 - [ ] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
   source, base-artifact, recipe, and derived-artifact identities.

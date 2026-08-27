@@ -38,6 +38,37 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** Manual inspection rejected enrichment recipe
+  `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
+  for bulk backfill despite all ten canary artifacts passing structural and
+  Vulcan validation. A 35-mapping visual audit across all documents found two
+  page-order regressions and six reused-rectangle groups involving 13 mappings;
+  lower-confidence mappings often published whole Poppler blocks for partial
+  Markdown, while exact repeated labels could still score 1.0 at the wrong
+  occurrence. Of 79 mappings below confidence 0.90, 68 had reconstructed text
+  similarity below 0.90 and 60 had normalized length ratio below 0.80. The next
+  recipe must use preceding and following anchors, word/line geometry,
+  separately calibrated page/region confidence, honest page-only fallback, and
+  explicit split/join or geometry-reuse handling. The current ten derivatives
+  remain immutable experimental evidence; the remaining 1,367 stay gated.
+
+- **2026-08-27:** PDF enrichment now has an implemented, local-only vertical
+  slice. Poppler bbox-layout evidence, loss-aware Markdown segmentation,
+  token-indexed monotonic alignment, exact UTF-8 spans, conservative
+  page/rectangle publication, clipping diagnostics, native evidence, and
+  derived-artifact lineage feed the shared MDAF builder. The catalog tracks
+  `(legacy_sha256, enrichment_recipe_digest)` resumably, explicit hashes or
+  `--limit` bound canaries, and unbounded work requires `--all`. BlobForge now
+  rejects unknown provenance inputs/outputs/dependencies like Vulcan. A real
+  10-rulebook/153-page canary under recipe
+  `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
+  produced 10/10 dual-validator-valid artifacts with 59.9% block and 64.7%
+  semantic-byte coverage. Coverage is not accuracy: the subsequent manual
+  review rejected this recipe, so a corrected recipe and repeat review remain
+  the gate before freezing `pdf-enrichment/v1` or running the remaining 1,367
+  artifacts. Earlier experimental rows remain in the ignored local catalog as
+  honest failed/interrupted development evidence.
+
 - **2026-08-27:** The conversion program now has an ordered, repository-backed
   roadmap. Contract and rubric freeze precede a 10-20-document enrichment
   canary; only a reviewed `pdf-enrichment/v1` may run across all 1,377 legacy

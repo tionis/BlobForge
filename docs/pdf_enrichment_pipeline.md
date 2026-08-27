@@ -1,6 +1,6 @@
 # PDF Markdown Enrichment Pipeline
 
-Status: proposed design for review
+Status: baseline implemented; first recipe rejected by manual canary review
 
 Date: 2026-08-27
 
@@ -17,6 +17,44 @@ converter's Markdown.
 Its first production use is a derived-artifact backfill over the 1,377 legacy
 Marker results. The same modules then become Marker 1 and Marker 2 recipe stages
 and a fallback for converters without reliable native mappings.
+
+## Implemented baseline
+
+The first vertical slice implements:
+
+- `document-evidence/v1` Python types for PDF pages/blocks and Markdown blocks;
+- Poppler bbox-layout extraction with exact version identity, point geometry,
+  page dimensions, and a sanitized lossless JSON rendition;
+- loss-aware Markdown segmentation bound to final UTF-8 byte spans;
+- legacy-evidence seeding, token-indexed monotonic search, bounded fuzzy
+  refinement, ambiguity rejection, and page/rectangle mappings;
+- page-bound clipping for Poppler content outside crop bounds while retaining
+  raw native coordinates and reporting every clipping event;
+- an extension report with block/byte coverage and rejection diagnostics;
+- new derived MDAFs with exact lineage and retained base evidence/assets;
+- recipe-keyed SQLite resumability, verification, bounded multi-hash canaries,
+  and an explicit `--all` gate for bulk work;
+- stricter BlobForge provenance validation aligned with Vulcan.
+
+The current experimental recipe is
+`blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`.
+Recipe identity changes with output-affecting alignment, geometry, or search
+policy, leaving earlier experiments auditable but unselected.
+
+The first real canary processed 10 rulebooks / 153 pages with zero failed
+artifacts. All ten pass BlobForge validation, catalog/lineage verification, and
+independent Vulcan validation. Aggregate alignment covered 1,411 of 2,355
+Markdown blocks (59.9%) and 319,013 of 492,744 semantic Markdown bytes (64.7%).
+Per-document byte coverage ranges from 9.4% to 98.0%; this variance helps expose
+unsuitable document classes and is not proof of mapping accuracy.
+
+The first systematic manual review rejected this recipe for bulk use. Exact and
+high-confidence unique matches were generally precise, but the lower confidence
+bands contained whole-block rectangles for partial Markdown spans, two
+wrong-page/order regressions, and exact repeated labels attached to reused
+source geometry. See `pdf_enrichment_canary_review.md` for the protocol,
+measurements, examples, and required next iteration. The ten derived artifacts
+remain experimental evidence; the complete backfill stays gated.
 
 ## Contract
 
@@ -155,6 +193,27 @@ Bulk execution is append-only and resumable. Each row records source, base
 artifact, enrichment recipe, attempt, derived artifact, validation, metrics,
 and error. Failure never replaces the conservative legacy artifact. Publication
 and selection remain separate so derived results can be audited first.
+
+Implemented local commands are:
+
+```bash
+# Refuses an accidental unbounded run.
+uv run blobforge migrate enrich --workspace .blobforge-migration
+
+# One source, a bounded pending batch, or an explicit multi-document canary.
+uv run blobforge migrate enrich SHA256 --workspace .blobforge-migration
+uv run blobforge migrate enrich --limit 10 --workspace .blobforge-migration
+uv run blobforge migrate enrich SHA256_A SHA256_B --jobs 2 \
+  --workspace .blobforge-migration
+
+# Current recipe coverage and read-only artifact/catalog audit.
+uv run blobforge migrate enrich-status --workspace .blobforge-migration
+uv run blobforge migrate enrich-verify --workspace .blobforge-migration
+
+# Deliberately gated full backfill; wait for manual canary approval.
+uv run blobforge migrate enrich --all --jobs 2 \
+  --workspace .blobforge-migration
+```
 
 ## Reuse and future media
 

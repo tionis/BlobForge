@@ -20,6 +20,11 @@ from importlib.metadata import version
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .enrichment.legacy import (
+    enrich_legacy_mdaf,
+    enrichment_recipe,
+    enrichment_recipe_digest,
+)
 from .mdaf import MdafMemberInput, MdafSource, blake3_bytes, blake3_file, build_mdaf, validate_mdaf
 from .mdaf.builder import activity
 from .mdaf.digest import canonical_json_bytes
@@ -61,6 +66,20 @@ class StageSummary:
     root: Path
 
 
+@dataclass(frozen=True)
+class EnrichmentSummary:
+    recipe_digest: str
+    eligible: int
+    pending: int
+    processing: int
+    converted: int
+    failed: int
+    mapped_blocks: int
+    total_blocks: int
+    mapped_bytes: int
+    total_bytes: int
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path)
@@ -91,6 +110,19 @@ def _connect(path: Path) -> sqlite3.Connection:
             started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             finished_at TEXT,
             details_json TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS legacy_enrichments (
+            legacy_sha256 TEXT NOT NULL,
+            recipe_digest TEXT NOT NULL,
+            base_mdaf_identity TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            output_path TEXT,
+            mdaf_identity TEXT,
+            report_json TEXT,
+            error TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (legacy_sha256, recipe_digest),
+            FOREIGN KEY (legacy_sha256) REFERENCES legacy_artifacts(legacy_sha256)
         );
         """
     )
@@ -465,6 +497,189 @@ def pending_hashes(workspace: str | Path = DEFAULT_WORKSPACE, limit: int | None 
         return [row[0] for row in connection.execute(query, params)]
     finally:
         connection.close()
+
+
+def _ensure_enrichment_rows(connection: sqlite3.Connection, recipe_digest: str) -> None:
+    connection.execute(
+        """INSERT OR IGNORE INTO legacy_enrichments(
+               legacy_sha256, recipe_digest, base_mdaf_identity
+           )
+           SELECT legacy_sha256, ?, mdaf_identity FROM legacy_artifacts
+           WHERE status='converted' AND output_path IS NOT NULL AND mdaf_identity IS NOT NULL""",
+        (recipe_digest,),
+    )
+
+
+def enrichment_summary(
+    workspace: str | Path = DEFAULT_WORKSPACE,
+    recipe_digest: str | None = None,
+) -> EnrichmentSummary:
+    digest = recipe_digest or enrichment_recipe_digest(enrichment_recipe())
+    connection = _connect(Path(workspace) / "catalog.sqlite3")
+    try:
+        with connection:
+            _ensure_enrichment_rows(connection, digest)
+        eligible = connection.execute(
+            "SELECT count(*) FROM legacy_artifacts WHERE status='converted'"
+        ).fetchone()[0]
+        counts = {
+            row["status"]: row["count"]
+            for row in connection.execute(
+                """SELECT status, count(*) AS count FROM legacy_enrichments
+                   WHERE recipe_digest=? GROUP BY status""",
+                (digest,),
+            )
+        }
+        totals = {"mapped_blocks": 0, "total_blocks": 0, "mapped_bytes": 0, "total_bytes": 0}
+        for row in connection.execute(
+            """SELECT report_json FROM legacy_enrichments
+               WHERE recipe_digest=? AND status='converted' AND report_json IS NOT NULL""",
+            (digest,),
+        ):
+            summary = json.loads(row["report_json"])["summary"]
+            for key in totals:
+                totals[key] += int(summary[key])
+        return EnrichmentSummary(
+            digest,
+            eligible,
+            counts.get("pending", 0),
+            counts.get("processing", 0),
+            counts.get("converted", 0),
+            counts.get("failed", 0),
+            totals["mapped_blocks"],
+            totals["total_blocks"],
+            totals["mapped_bytes"],
+            totals["total_bytes"],
+        )
+    finally:
+        connection.close()
+
+
+def pending_enrichment_hashes(
+    workspace: str | Path = DEFAULT_WORKSPACE,
+    limit: int | None = None,
+) -> tuple[str, list[str]]:
+    recipe_digest = enrichment_recipe_digest(enrichment_recipe())
+    connection = _connect(Path(workspace) / "catalog.sqlite3")
+    try:
+        with connection:
+            _ensure_enrichment_rows(connection, recipe_digest)
+        query = """SELECT legacy_sha256 FROM legacy_enrichments
+                   WHERE recipe_digest=? AND status!='converted'
+                   ORDER BY legacy_sha256"""
+        parameters: tuple[Any, ...] = (recipe_digest,)
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters = (recipe_digest, limit)
+        return recipe_digest, [row[0] for row in connection.execute(query, parameters)]
+    finally:
+        connection.close()
+
+
+def enrich_one(legacy_sha256: str, workspace: str | Path = DEFAULT_WORKSPACE) -> Path:
+    root = Path(workspace)
+    recipe = enrichment_recipe()
+    recipe_digest = enrichment_recipe_digest(recipe)
+    connection = _connect(root / "catalog.sqlite3")
+    try:
+        with connection:
+            _ensure_enrichment_rows(connection, recipe_digest)
+            row = connection.execute(
+                """SELECT s.raw_path, s.blake3 AS source_digest,
+                          a.output_path AS base_path, a.mdaf_identity AS base_identity
+                   FROM sources s JOIN legacy_artifacts a USING(legacy_sha256)
+                   WHERE s.legacy_sha256=? AND a.status='converted'""",
+                (legacy_sha256,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"no converted legacy artifact for {legacy_sha256}")
+            connection.execute(
+                """UPDATE legacy_enrichments SET status='processing', error=NULL,
+                          updated_at=CURRENT_TIMESTAMP
+                   WHERE legacy_sha256=? AND recipe_digest=?""",
+                (legacy_sha256, recipe_digest),
+            )
+        source_path, base_path = Path(row["raw_path"]), Path(row["base_path"])
+        if blake3_file(source_path) != row["source_digest"]:
+            raise ValueError("source PDF BLAKE3 differs from the migration catalog")
+        digest_hex = row["source_digest"].removeprefix("blake3:")
+        recipe_hex = recipe_digest.removeprefix("blake3:")
+        destination = root / "generated" / digest_hex[:2] / digest_hex / "enriched" / f"{recipe_hex}.mdaf"
+        result = enrich_legacy_mdaf(source_path, base_path, destination)
+        report_json = json.dumps(result.alignment.report(), sort_keys=True, separators=(",", ":"))
+        with connection:
+            connection.execute(
+                """UPDATE legacy_enrichments SET status='converted', output_path=?,
+                          mdaf_identity=?, report_json=?, error=NULL,
+                          updated_at=CURRENT_TIMESTAMP
+                   WHERE legacy_sha256=? AND recipe_digest=?""",
+                (str(destination.resolve()), result.identity, report_json, legacy_sha256, recipe_digest),
+            )
+        return destination
+    except Exception as exc:
+        with connection:
+            connection.execute(
+                """UPDATE legacy_enrichments SET status='failed', error=?,
+                          updated_at=CURRENT_TIMESTAMP
+                   WHERE legacy_sha256=? AND recipe_digest=?""",
+                (str(exc), legacy_sha256, recipe_digest),
+            )
+        raise
+    finally:
+        connection.close()
+
+
+def verify_enrichments(
+    workspace: str | Path = DEFAULT_WORKSPACE,
+    limit: int | None = None,
+) -> VerificationSummary:
+    """Read back current-recipe derivatives and cross-check lineage/catalog data."""
+    recipe_digest = enrichment_recipe_digest(enrichment_recipe())
+    connection = _connect(Path(workspace) / "catalog.sqlite3")
+    try:
+        query = """SELECT e.legacy_sha256, e.base_mdaf_identity, e.output_path,
+                          e.mdaf_identity, e.report_json, s.blake3 AS source_digest
+                   FROM legacy_enrichments e
+                   JOIN sources s USING(legacy_sha256)
+                   WHERE e.recipe_digest=? AND e.status='converted'
+                   ORDER BY e.legacy_sha256"""
+        parameters: tuple[Any, ...] = (recipe_digest,)
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters = (recipe_digest, limit)
+        rows = list(connection.execute(query, parameters))
+    finally:
+        connection.close()
+    errors: list[str] = []
+    for row in rows:
+        try:
+            if not row["output_path"]:
+                raise ValueError("catalog has no enriched output path")
+            validated = validate_mdaf(row["output_path"])
+            if validated.identity != row["mdaf_identity"]:
+                raise ValueError("enriched artifact identity differs from catalog")
+            if validated.manifest.get("derived_from") != [row["base_mdaf_identity"]]:
+                raise ValueError("base artifact lineage differs from catalog")
+            if not any(
+                source.get("digest") == row["source_digest"]
+                for source in validated.manifest.get("sources", [])
+            ):
+                raise ValueError("source BLAKE3 differs from catalog")
+            with zipfile.ZipFile(row["output_path"]) as archive:
+                provenance = json.loads(archive.read("provenance.json"))
+                enrichments = [
+                    item for item in provenance["activities"] if item["id"] == "activity:enrich"
+                ]
+                if len(enrichments) != 1 or enrichments[0]["parameters"].get("recipe_digest") != recipe_digest:
+                    raise ValueError("enrichment recipe provenance differs from catalog")
+                report = json.loads(
+                    archive.read("extensions/dev.tionis.blobforge.pdf-enrichment/report.json")
+                )
+                if row["report_json"] is None or report != json.loads(row["report_json"]):
+                    raise ValueError("enrichment report differs from catalog")
+        except Exception as exc:
+            errors.append(f"{row['legacy_sha256']}: {exc}")
+    return VerificationSummary(len(rows), len(rows) - len(errors), tuple(errors))
 
 
 def verify_outputs(
