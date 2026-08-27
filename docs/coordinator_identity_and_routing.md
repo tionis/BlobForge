@@ -132,5 +132,6 @@ The coordinator, OIDC provider, and private SCIM integration are live and
 healthy on Citadel. The only configured interactive role group is
 `blobforge-admin`. Public DNS and TLS now terminate on Citadel; API health, the
 OIDC redirect, public SCIM denial, and an existing ingress endpoint passed after
-the approved Caddy restart. The first quiesced backup/restore drill remains a
-cutover follow-up.
+the approved Caddy restart. The first quiesced backup completed in 55 seconds;
+the isolated restore recovered 32.165 GiB and passed SQLite verification in 201
+seconds. Daily backup and weekly restore-test timers are enabled.

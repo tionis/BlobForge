@@ -206,6 +206,13 @@ health, the Authentik redirect, public SCIM denial, and an existing Citadel
 endpoint passed after the approved shared Caddy restart. The legacy Bunny/S3
 data has not been deleted or modified.
 
+Citadel's declared Restic profile is installed and enabled. Its first quiesced
+snapshot completed successfully in 55 seconds, adding only 715 repository bytes
+because the shared repository already contained the content. The isolated
+restore recovered 32.165 GiB in 201 seconds and its restored SQLite
+`quick_check` passed. BlobForge resumed healthy, and the daily backup plus
+weekly restore-test timers report successful metrics.
+
 ## CI and publication
 
 `.github/workflows/container.yml` first installs the locked development/server

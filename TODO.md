@@ -21,7 +21,7 @@
   compile generated inventory and run a check-mode deployment before cutover.
 - [x] Activate the validated Caddy configuration with an explicitly approved
   shared-ingress restart and verify public TLS, OIDC, and SCIM denial.
-- [ ] Apply Citadel's shared Restic role to install the declared BlobForge
+- [x] Apply Citadel's shared Restic role to install the declared BlobForge
   profile, then run and verify its first backup/restore test.
 - [ ] Add public digest-alias resolution and switch new ingestion keys from the
   SHA-256 compatibility key to canonical BLAKE3.

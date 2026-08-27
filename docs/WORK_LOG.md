@@ -1935,6 +1935,10 @@
   The provisioned `blobforge-admin` SCIM group currently has zero members, so
   interactive login remains deny-by-default until an administrator is added in
   Authentik.
-- **Remaining gate:** Applying Citadel's Restic role affects shared backup
-  schedules and therefore requires separate explicit approval. The declared
-  BlobForge profile and first restore drill are not installed yet.
+- **Recovery completion:** After explicit approval, applied Citadel's complete
+  Restic role. The BlobForge profile's first quiesced snapshot succeeded in 55
+  seconds, committed 715 new repository bytes through existing deduplication,
+  and restarted a healthy coordinator. Its isolated restore recovered 32.165
+  GiB in 201 seconds and passed restored SQLite `quick_check`. Daily backup and
+  weekly restore-test timers are enabled, both profile metrics report success,
+  current SQLite remains healthy, and the public API canary passes.

@@ -55,6 +55,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
   and an existing Citadel endpoint pass. Deployment credentials were
   rotated after an unsafe status diagnostic rendered their environment; never
   use full unit status/ExecStart output for secret-bearing Quadlets.
+  The declared Restic profile is installed: its first quiesced snapshot
+  succeeded in 55 seconds, committed 715 new repository bytes through existing
+  deduplication, and resumed BlobForge healthy. The isolated restore recovered
+  32.165 GiB and passed restored SQLite verification in 201 seconds. Daily
+  backup and weekly restore-test timers are enabled and publish success metrics.
 
 - **2026-08-27:** The local coordinator migration is complete at the ignored
   `.blobforge-migration/local-server-data` recovery unit. Two fail-closed full
