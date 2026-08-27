@@ -92,3 +92,58 @@ During hydration, those references are rewritten to `<stem>.assets/...` so multi
 
 - Returns `0` when no runtime errors occur (even if some PDFs are missing conversion output).
 - Returns `1` if one or more hydration operations fail due to I/O/archive errors.
+
+## Hydrated Output Maintenance
+
+Large recursive libraries can replace the two-file/folder hydrated layout with
+one portable archive, or remove the hydrated outputs entirely. Both maintenance
+operations are anchored to discovered PDFs and only consider a sibling
+`<stem>.md`; unrelated Markdown and `.assets` directories are left alone.
+
+```bash
+# Preview deletion of hydrated Markdown/assets under a tree
+blobforge hydrated clean ./library
+
+# Apply the deletion
+blobforge hydrated clean ./library --execute
+
+# Preview replacement by one <stem>.textpack per hydrated PDF
+blobforge hydrated textpack ./library
+
+# Create each TextPack, validate it, then remove its source Markdown/assets
+blobforge hydrated textpack ./library --execute
+
+# Replace existing TextPacks; without --force they are skipped safely
+blobforge hydrated textpack ./library --execute --force
+
+# Preview or restore TextPacks to <stem>.md and <stem>.assets/
+blobforge hydrated unpack ./library
+blobforge hydrated unpack ./library --execute
+
+# Replace existing unpacked outputs
+blobforge hydrated unpack ./library --execute --force
+
+# Preview or remove generated TextPacks
+blobforge hydrated clean-textpacks ./library
+blobforge hydrated clean-textpacks ./library --execute
+```
+
+The TextPack operation implements the TextBundle v2 compressed format. Each
+ZIP-based `.textpack` contains lowercase `text.md`, `info.json`, and `assets/`;
+Markdown references are changed from `<stem>.assets/...` back to
+`assets/...`. Creation uses a temporary file in the destination directory and
+validates ZIP CRCs and required metadata before atomic replacement. Only then
+are the sibling Markdown and assets removed. Symbolic links anywhere in the
+asset tree are rejected so packaging cannot read outside that tree.
+
+`unpack` performs the reverse operation. It accepts a TextBundle v2 Markdown
+body named `text.*`, validates metadata and ZIP CRCs, rejects duplicate,
+unexpected, traversal, and non-regular asset members, stages extracted assets,
+and rewrites `assets/...` links to `<stem>.assets/...`. Existing Markdown or
+assets cause a safe skip unless `--force` is supplied. The `.textpack` is
+removed only after restoration succeeds, so a bad archive remains available
+for diagnosis or recovery. `clean-textpacks` removes PDF-anchored TextPacks
+without touching PDFs or unrelated archives.
+
+The `blobforge hydrated` command is deliberately a command group so additional
+local maintenance operations can be added without expanding the top-level CLI.

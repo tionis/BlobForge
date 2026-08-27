@@ -14,6 +14,10 @@
 - [ ] Optionally add conversion-artifact history and recipe selection controls to the management console; equivalent CLI/API operations are available.
 
 ## Done
+- [x] Add `blobforge hydrated clean-textpacks` and safe `unpack` reverse
+  conversion with validation, dry runs, and overwrite protection.
+- [x] Add dry-run-first `blobforge hydrated clean` and `textpack` maintenance
+  operations for PDF-anchored Markdown/assets outputs.
 - [x] Add CLI commands for listing, downloading, previewing, selecting, and requesting recipe-specific conversion artifacts.
 - [x] Include effective output-affecting Marker/Surya settings in recipe identity while excluding performance-only worker tuning.
 - [x] Add canonical recipe-aware conversion identity, exact runtime/model provenance, composite artifact storage, recipe-bound leases, legacy artifact preservation, and explicit artifact selection/reconversion APIs.

@@ -3,6 +3,7 @@ BlobForge CLI - Command-line interface for managing PDF conversion jobs.
 
 Commands:
 - ingest: Scan directory and queue PDFs for processing
+- hydrated: Clean or package local hydrated outputs
 - status: Check status of a specific job by hash
 - list: List queue statistics
 - reprioritize: Change priority of a queued job
@@ -25,6 +26,7 @@ from .s3_client import S3Client
 from . import ingestor
 from . import status as status_module
 from . import hydrator as hydrator_module
+from . import hydrated_outputs
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
 
@@ -377,6 +379,34 @@ def cmd_hydrate(args):
         dry_run=args.dry_run,
         client=coordinator,
         refresh_status=args.refresh_status,
+    )
+
+
+def cmd_hydrated_clean(args):
+    """Preview or remove hydrated Markdown/assets next to PDFs."""
+    return hydrated_outputs.clean(args.paths, execute=args.execute)
+
+
+def cmd_hydrated_textpack(args):
+    """Preview or replace hydrated outputs with TextPack archives."""
+    return hydrated_outputs.textpack(
+        args.paths,
+        execute=args.execute,
+        force=args.force,
+    )
+
+
+def cmd_hydrated_clean_textpacks(args):
+    """Preview or remove TextPacks next to PDFs."""
+    return hydrated_outputs.clean_textpacks(args.paths, execute=args.execute)
+
+
+def cmd_hydrated_unpack(args):
+    """Preview or restore TextPacks to hydrated Markdown/assets."""
+    return hydrated_outputs.unpack(
+        args.paths,
+        execute=args.execute,
+        force=args.force,
     )
 
 
@@ -1110,6 +1140,68 @@ def main():
     p_hydrate.add_argument("--coordinator-url", help="Coordinator base URL")
     p_hydrate.add_argument("--token", help="Admin token for the coordinator")
     p_hydrate.set_defaults(func=cmd_hydrate)
+
+    # Local maintenance for outputs previously created by hydrate.
+    p_hydrated = subparsers.add_parser(
+        "hydrated",
+        help="Maintain hydrated Markdown/assets next to PDFs",
+    )
+    hydrated_subparsers = p_hydrated.add_subparsers(
+        dest="hydrated_command", required=True
+    )
+    p_hydrated_clean = hydrated_subparsers.add_parser(
+        "clean",
+        help="Find and remove hydrated Markdown/assets (dry run by default)",
+    )
+    p_hydrated_clean.add_argument(
+        "paths", nargs="+", help="PDF files or directories to scan recursively"
+    )
+    p_hydrated_clean.add_argument(
+        "--execute", action="store_true", help="Remove the discovered outputs"
+    )
+    p_hydrated_clean.set_defaults(func=cmd_hydrated_clean)
+
+    p_hydrated_textpack = hydrated_subparsers.add_parser(
+        "textpack",
+        help="Replace hydrated outputs with .textpack archives (dry run by default)",
+    )
+    p_hydrated_textpack.add_argument(
+        "paths", nargs="+", help="PDF files or directories to scan recursively"
+    )
+    p_hydrated_textpack.add_argument(
+        "--execute", action="store_true", help="Create archives and remove source outputs"
+    )
+    p_hydrated_textpack.add_argument(
+        "--force", action="store_true", help="Overwrite existing .textpack files"
+    )
+    p_hydrated_textpack.set_defaults(func=cmd_hydrated_textpack)
+
+    p_hydrated_clean_textpacks = hydrated_subparsers.add_parser(
+        "clean-textpacks",
+        help="Find and remove .textpack files (dry run by default)",
+    )
+    p_hydrated_clean_textpacks.add_argument(
+        "paths", nargs="+", help="PDF files or directories to scan recursively"
+    )
+    p_hydrated_clean_textpacks.add_argument(
+        "--execute", action="store_true", help="Remove the discovered TextPacks"
+    )
+    p_hydrated_clean_textpacks.set_defaults(func=cmd_hydrated_clean_textpacks)
+
+    p_hydrated_unpack = hydrated_subparsers.add_parser(
+        "unpack",
+        help="Restore .textpack files to Markdown/assets (dry run by default)",
+    )
+    p_hydrated_unpack.add_argument(
+        "paths", nargs="+", help="PDF files or directories to scan recursively"
+    )
+    p_hydrated_unpack.add_argument(
+        "--execute", action="store_true", help="Restore outputs and remove each TextPack"
+    )
+    p_hydrated_unpack.add_argument(
+        "--force", action="store_true", help="Overwrite existing Markdown/assets"
+    )
+    p_hydrated_unpack.set_defaults(func=cmd_hydrated_unpack)
     
     # Status (single job)
     p_status = subparsers.add_parser("status", help="Check status of a specific job")

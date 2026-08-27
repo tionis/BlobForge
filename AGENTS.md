@@ -38,6 +38,20 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** Local hydrated-output maintenance is grouped under
+  `blobforge hydrated`. `clean` recursively removes only PDF-anchored sibling
+  `<stem>.md` and `<stem>.assets/` outputs; `textpack` replaces each pair with a
+  TextBundle v2 compressed `<stem>.textpack` containing `text.md`, `info.json`,
+  and `assets/`. Both operations are previews unless `--execute` is supplied.
+  TextPack creation uses a same-directory temporary archive, validates required
+  entries, metadata, and CRCs before atomic publication, skips existing targets
+  unless `--force` is explicit, and rejects symlinks in source Markdown or
+  assets so recursive maintenance cannot escape the selected tree.
+  `clean-textpacks` removes only same-stem TextPacks next to discovered PDFs.
+  `unpack` validates a Markdown TextBundle v2 archive, rejects unsafe ZIP
+  members, restores `<stem>.md`/`<stem>.assets/`, and removes the archive only
+  after success; it skips existing outputs unless `--force` is explicit.
+
 - **2026-08-21:** The post-implementation provenance audit found two rollout
   follow-ups. Production images build without `.git`, so the container workflow
   now injects `${{ github.sha }}` as the runtime

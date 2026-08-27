@@ -335,6 +335,37 @@ blobforge hydrate ./library --dry-run
 blobforge hydrate ./library --force
 ```
 
+For large trees, preview and then either remove those hydrated siblings or
+replace each Markdown/assets pair with one standard TextPack archive:
+
+```bash
+# Both commands are previews unless --execute is supplied
+blobforge hydrated clean ./library
+blobforge hydrated clean ./library --execute
+
+blobforge hydrated textpack ./library
+blobforge hydrated textpack ./library --execute
+
+# Existing .textpack files are skipped unless explicitly replaced
+blobforge hydrated textpack ./library --execute --force
+
+# Restore TextPacks to <stem>.md and <stem>.assets/, removing each archive
+blobforge hydrated unpack ./library
+blobforge hydrated unpack ./library --execute
+
+# Existing Markdown/assets are skipped unless explicitly replaced
+blobforge hydrated unpack ./library --execute --force
+
+# Preview/remove PDF-anchored TextPack files
+blobforge hydrated clean-textpacks ./library
+blobforge hydrated clean-textpacks ./library --execute
+```
+
+Discovery is PDF-anchored, so unrelated Markdown/assets are not touched. A
+TextPack is validated before its source Markdown and assets are removed. Reverse
+conversion validates the archive before restoring Markdown/assets and only
+removes the TextPack after the restoration succeeds.
+
 ### 8. Remove legacy coordination objects
 
 After confirming the Bunny coordinator contains the full backlog, preview and

@@ -1398,3 +1398,58 @@
   fingerprints effective conversion settings; `39b00c1` exposes artifacts in
   the CLI.
 - **Status:** Complete.
+
+## 2026-08-27 (Hydrated Output Maintenance)
+
+- **Objective:** Add safe recursive CLI maintenance for large PDF trees whose
+  sibling hydrated Markdown and asset directories create filesystem clutter.
+- **Actions:** Inspected the CLI, hydrator, hydration tests and docs,
+  repository status, task/work-log conventions, and searched the repository for
+  an existing TextPack implementation. Confirmed no `textpack` executable or
+  project dependency is installed. Consulted the TextBundle v2 specification:
+  `.textpack` is a ZIP containing lowercase `text.*`, `info.json`, and `assets/`,
+  and bundled asset references use the `assets/` prefix. Chose an extensible
+  `blobforge hydrated` command group with dry-run-first `clean` and `textpack`
+  operations. Implemented PDF-anchored discovery, source-path validation,
+  recursive cleanup, TextBundle v2 metadata and layout, asset-link rewriting,
+  same-directory atomic archive replacement, CRC/structure validation,
+  existing-target skip/force semantics, and symlink containment. Added focused
+  tests and documented commands and safety behavior in README and the hydrate
+  design.
+- **Tooling:** Used `git status`/diff, `rg`, `sed`, command discovery, the
+  TextBundle primary specification, `update_plan`, `apply_patch`, and uv-driven
+  pytest/compile/help checks. The initial uv run needed network access to fetch
+  the editable build requirement. The first full suite inherited live
+  coordinator environment variables and caused 16 existing mocked worker tests
+  to attempt DNS; rerunning with those variables unset passed. No local library
+  files, remote service state, dependencies, or infrastructure were changed.
+- **Verification:** Focused hydration/maintenance tests passed. The final full
+  isolated suite passed with 172 tests, 5 subtests, and only two pre-existing
+  dependency deprecation warnings. Python byte compilation, CLI nested help,
+  and `git diff --check` also passed.
+- **Status:** Complete.
+
+## 2026-08-27 (TextPack Cleanup and Reverse Conversion)
+
+- **Objective:** Let large PDF trees either remove generated TextPacks or
+  restore them to the hydrated Markdown/assets layout.
+- **Actions:** Re-inspected the hydrated maintenance module, CLI parser,
+  tests, documentation, repository status, and tracking files. Chose sibling
+  `clean-textpacks` and `unpack` operations under the existing `blobforge
+  hydrated` group, with PDF-anchored discovery, preview-by-default behavior,
+  explicit `--execute`, and overwrite protection through `--force`. Implemented
+  TextPack discovery and cleanup plus reverse conversion with CRC, metadata,
+  Markdown type/body, duplicate-member, path-traversal, member-type, and
+  unexpected-entry checks. Reverse conversion stages assets, rewrites links,
+  preserves archives on error, skips existing outputs by default, and deletes
+  the archive only after restoration succeeds. Added round-trip, dry-run,
+  cleanup, force/skip, alternate `text.markdown`, and malicious traversal tests;
+  updated CLI help, README, hydrate design, tasks, and durable findings.
+- **Tooling:** Used `update_plan`, `sed`, `rg`, `git status`, `apply_patch`, and
+  uv-driven focused pytest and CLI help checks.
+- **Verification:** The combined hydrated-maintenance and hydrator suite passed
+  all 32 focused tests. The final isolated repository suite passed with 181
+  tests and 5 subtests; only two pre-existing dependency deprecation warnings
+  remain. Python byte compilation, both new CLI help paths, and
+  `git diff --check` passed.
+- **Status:** Complete. No user PDF, hydrated output, or TextPack was modified.
