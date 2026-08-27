@@ -16,6 +16,8 @@
   multi-capability claim routing while retaining the current worker protocol.
 - [x] Add Authlib OIDC login plus SCIM 2.0 user/group provisioning with
   SCIM-backed role and account-lifecycle enforcement.
+- [x] Add an authenticated self-hosted root landing page with OIDC redirect,
+  queue counts, and API navigation instead of FastAPI's default 404.
 - [x] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,
   private Authentik SCIM backchannel, Caddy route, and quiesced Citadel backup;
   compile generated inventory and run a check-mode deployment before cutover.

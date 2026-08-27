@@ -38,6 +38,15 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** The self-hosted server root must not fall through to
+  FastAPI's JSON 404. It now redirects unauthenticated OIDC deployments to
+  `/auth/login` and serves authorized sessions/client tokens a private,
+  no-store coordinator overview with queue counts and API navigation under a
+  restrictive CSP. This is deliberately a landing page, not a claim that the
+  Bunny-era file library, worker enrollment, or token-management console has
+  been ported. Production access still requires membership in the configured
+  SCIM role group.
+
 - **2026-08-27:** The complete local recovery unit is verified on Citadel at
   `/srv/blobforge`: all 3,188 manifest entries match, SQLite `quick_check` is
   `ok`, and counts remain 1,808 sources/jobs, 3,616 aliases, 1,377 legacy MDAFs,

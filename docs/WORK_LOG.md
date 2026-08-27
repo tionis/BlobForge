@@ -1942,3 +1942,21 @@
   GiB in 201 seconds and passed restored SQLite `quick_check`. Daily backup and
   weekly restore-test timers are enabled, both profile metrics report success,
   current SQLite remains healthy, and the public API canary passes.
+
+## 2026-08-27 (Self-hosted Root Landing)
+
+- **Objective:** Replace the production root's FastAPI `404 Not Found` response
+  with a useful, group-gated browser entry point.
+- **Finding:** The self-hosted coordinator implemented OIDC callbacks and APIs
+  but intentionally had no replacement for the Bunny management console, so a
+  successful Caddy request to `/` correctly reached FastAPI and then fell
+  through to its default 404.
+- **Actions:** Added a root handler that redirects unauthenticated OIDC browsers
+  to `/auth/login` and renders an authorized overview for SCIM-backed sessions
+  or client tokens. The page shows coordinator counts and links to OpenAPI,
+  snapshot, and recipe endpoints. It is private/no-store, HTML-escapes identity
+  and labels, and sets a restrictive CSP plus `nosniff`.
+- **Verification:** Focused local-server tests pass, including authenticated
+  rendering and unauthenticated OIDC redirect coverage. The full Bunny-era
+  file library, worker enrollment, and token-management console remains an
+  explicit future feature rather than being implied by the landing page.

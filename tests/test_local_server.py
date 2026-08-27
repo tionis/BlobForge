@@ -38,6 +38,11 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
         assert (await client.get("/api/v1/health")).json()["backend"] == "sqlite-filesystem"
+        landing = await client.get("/", headers=client_headers)
+        assert landing.status_code == 200
+        assert "BlobForge" in landing.text
+        assert "API documentation" in landing.text
+        assert landing.headers["cache-control"] == "private, no-store"
         transfer = (await client.post(
             f"/api/v1/jobs/{source_hash}/raw-upload-url",
             headers=client_headers,
@@ -122,6 +127,28 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
         assert (await client.get(
             f"/api/v1/jobs/{source_hash}", headers=client_headers
         )).json()["status"] == "todo"
+
+
+@pytest.mark.anyio
+async def test_root_redirects_unauthenticated_browser_to_oidc(tmp_path):
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={},
+        public_url="https://blobforge.example",
+        oidc_issuer="https://auth.example/application/o/blobforge/",
+        oidc_client_id="blobforge",
+        oidc_client_secret="oidc-secret",
+        session_secret="session-secret",
+    ))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="https://blobforge.example",
+        follow_redirects=False,
+    ) as client:
+        response = await client.get("/")
+    assert response.status_code == 307
+    assert response.headers["location"] == "/auth/login"
 
 
 @pytest.mark.anyio

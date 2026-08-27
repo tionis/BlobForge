@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import secrets
@@ -12,7 +13,7 @@ from urllib.parse import urlencode
 
 from blake3 import blake3
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -145,6 +146,48 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     @app.get("/api/v1/health")
     async def health() -> dict[str, Any]:
         return {"ok": True, "backend": "sqlite-filesystem", "schema": 1}
+
+    @app.get("/", response_class=HTMLResponse)
+    async def landing(request: Request) -> Response:
+        try:
+            authorize(request)
+        except HTTPException as exc:
+            if exc.status_code == 401 and settings.oidc_enabled:
+                return RedirectResponse("/auth/login")
+            raise
+        principal = getattr(request.state, "principal", None)
+        identity = (
+            str(principal.get("display_name") or principal.get("user_name") or "OIDC user")
+            if principal
+            else "API token"
+        )
+        roles = ", ".join(str(role) for role in principal.get("roles", [])) if principal else "service administrator"
+        counts = database.snapshot()["counts"]
+        count_cards = "".join(
+            f"<li><strong>{int(value):,}</strong><span>{html.escape(str(label).replace('_', ' '))}</span></li>"
+            for label, value in sorted(counts.items())
+        )
+        page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BlobForge</title><style>
+:root{{color-scheme:dark;background:#101316;color:#f3f5f7;font:16px/1.5 system-ui,sans-serif}}body{{margin:0}}
+main{{max-width:72rem;margin:auto;padding:clamp(2rem,6vw,6rem)}}h1{{font-size:clamp(2.5rem,8vw,6rem);margin:0;letter-spacing:-.06em}}
+.eyebrow{{color:#8be0bd;text-transform:uppercase;letter-spacing:.16em;font-weight:700}}.muted{{color:#a9b2bc}}
+ul{{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1rem;padding:0;margin:2.5rem 0;list-style:none}}
+li{{background:#1a2026;border:1px solid #303942;border-radius:1rem;padding:1.25rem}}li strong{{display:block;font-size:1.8rem}}li span{{color:#a9b2bc}}
+nav{{display:flex;flex-wrap:wrap;gap:.75rem}}a{{color:#101316;background:#8be0bd;padding:.7rem 1rem;border-radius:.65rem;text-decoration:none;font-weight:700}}
+a.secondary{{color:#dce3e9;background:#242c33}}code{{color:#8be0bd}}</style></head>
+<body><main><p class="eyebrow">Coordinator online</p><h1>BlobForge</h1>
+<p>Signed in as <strong>{html.escape(identity)}</strong> · {html.escape(roles)}</p>
+<p class="muted">Self-hosted media conversion coordination and immutable MDAF artifact storage.</p>
+<ul>{count_cards}</ul><nav><a href="/docs">API documentation</a><a class="secondary" href="/api/v1/snapshot">Snapshot JSON</a><a class="secondary" href="/api/v1/recipes">Conversion recipes</a></nav>
+<p class="muted">The full browser file library and token-management console are not implemented yet.</p>
+</main></body></html>"""
+        return HTMLResponse(page, headers={
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            "X-Content-Type-Options": "nosniff",
+        })
 
     @app.get("/auth/login")
     async def oidc_login(request: Request) -> Response:
