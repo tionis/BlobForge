@@ -38,6 +38,22 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-28:** Corrected PDF-enrichment recipe
+  `blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`
+  passes the native-text canary but is not yet frozen for bulk backfill. Its
+  generation-2 aligner uses nearest trusted anchors on both sides, monotonic
+  pages, retained Poppler line/word evidence, disjoint word-region refinement,
+  separately gated region publication, and honest page-only fallback. Across
+  15 complete books / 1,957 pages it mapped 20,047 of 31,997 blocks: 13,044
+  regions and 7,003 page-only. All artifacts pass BlobForge, catalog/lineage,
+  and independent Vulcan validation; repeat runs preserve MDAF identity; an
+  invariant audit found zero page regressions and zero duplicate rectangles;
+  and 51 visually adjudicated mappings were correct at advertised precision.
+  A five-book/1,804-page expansion took about 23 minutes with concurrency two,
+  with 400–500-page books taking roughly 15–18 minutes. Add scan/OCR and
+  equation-heavy canaries plus runtime/peak-memory recording and size-aware
+  concurrency before freezing or starting the complete backfill.
+
 - **2026-08-27:** Manual inspection rejected enrichment recipe
   `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
   for bulk backfill despite all ten canary artifacts passing structural and

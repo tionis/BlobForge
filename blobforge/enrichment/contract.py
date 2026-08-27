@@ -9,6 +9,36 @@ EVIDENCE_CONTRACT = "dev.tionis.blobforge.document-evidence/v1"
 
 
 @dataclass(frozen=True)
+class PdfWord:
+    id: str
+    text: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def as_json(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PdfLine:
+    id: str
+    text: str
+    x: float
+    y: float
+    width: float
+    height: float
+    words: tuple[PdfWord, ...] = ()
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            **{key: value for key, value in asdict(self).items() if key != "words"},
+            "words": [word.as_json() for word in self.words],
+        }
+
+
+@dataclass(frozen=True)
 class PdfBlock:
     id: str
     page: int
@@ -18,9 +48,17 @@ class PdfBlock:
     y: float
     width: float
     height: float
+    lines: tuple[PdfLine, ...] = ()
+
+    @property
+    def words(self) -> tuple[PdfWord, ...]:
+        return tuple(word for line in self.lines for word in line.words)
 
     def as_json(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            **{key: value for key, value in asdict(self).items() if key != "lines"},
+            "lines": [line.as_json() for line in self.lines],
+        }
 
 
 @dataclass(frozen=True)

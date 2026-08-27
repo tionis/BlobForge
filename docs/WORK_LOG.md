@@ -1,5 +1,64 @@
 # Work Log
 
+## 2026-08-28 (Corrected PDF Enrichment Candidate and Expanded Canary)
+
+- **Objective:** Repair the mapping-accuracy failures that rejected the first
+  PDF-enrichment recipe, verify the replacement against the same corpus, and
+  expand the canary before any bulk backfill.
+- **Implementation:** Replaced one-sided block alignment with nearest-anchor
+  bounded, page-monotonic alignment. Poppler evidence now retains stable line
+  and word IDs with point geometry. Candidate refinement consumes disjoint word
+  ranges; exact whole blocks can retain clipped block geometry; fuzzy prose
+  regions are limited to one source block and separately gated by similarity,
+  Markdown-token coverage, and normalized-length ratio. Strong page matches
+  that cannot defend a rectangle publish the namespaced page-only method. Added
+  an independent publication audit for monotonicity, method/selector contracts,
+  duplicate rectangles, and report counts. All output-affecting policies are in
+  generation-2 recipe identity
+  `blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`.
+- **Regression coverage:** Added fixtures for following-anchor bounds, disjoint
+  split paragraphs, page-only fallback, multi-block precision downgrade,
+  repeated evidence, page regression, geometry reuse, and retained word/line
+  evidence. Extended the resumability test to recover a `processing` row and
+  atomically replace an interrupted partial destination.
+- **Initial canary:** Reprocessed the original ten documents twice with two
+  jobs. All MDAF identities were stable. Coverage improved to 1,666/2,355
+  blocks (70.7%) and 381,074/492,744 semantic bytes (77.3%): 1,078 mappings
+  have regions and 588 are page-only. Previously observed wrong-page,
+  repeated-label, coarse-column, and split-block failures are fixed or safely
+  omitted/downgraded.
+- **Expanded canary:** Added five complete difficult books (German Cthulhu,
+  *Paths of Storytelling*, *Cortex Prime*, Shadowrun 5 core, and *Curseborne*)
+  for 15 artifacts / 1,957 pages total. The combined output maps 20,047/31,997
+  blocks (62.7%) and 4,678,882/10,282,814 bytes (45.5%), with 13,044 region and
+  7,003 page-only mappings. The five-book/1,804-page run took about 23 minutes
+  at concurrency two; 400–500-page books took roughly 15–18 minutes.
+- **Inspection:** Reconstructed every mapping against retained Poppler
+  evidence. There are zero page regressions and zero duplicate published
+  rectangles. Rendered and manually reviewed 51 unique records spanning each
+  document's lowest-confidence region, lowest-confidence page-only mapping,
+  highest-confidence mapping, and every retained known v1 failure span. The
+  sample covered rotated layouts, tables, columns, forms, sidebars, unusual
+  fonts, German text, dark backgrounds, and image-heavy pages; all were correct
+  at their advertised precision. Review sheets stayed in `/tmp` because they
+  contain copyrighted source pages.
+- **Verification:** The focused enrichment suite passed 11 tests; the repository
+  suite passed 223 tests plus 5 subtests. All 15 outputs pass the read-only
+  enrichment verifier and independent Vulcan validation. `git diff --check`
+  passed after the documentation updates. A conversion-extra attempt was unable
+  to download a CUDA transitive dependency in the network-restricted sandbox;
+  the visualization was rerun successfully with the host's existing Pillow,
+  without changing project dependencies.
+- **Decision:** The candidate passes the native-text canary, but remains gated.
+  Deliberately add scan/OCR and equation-heavy inputs, record duration and peak
+  memory, define size-aware bulk concurrency, and formally freeze the
+  publication policy before invoking the explicit `--all` backfill.
+- **Tooling:** Used `apply_patch`, `rg`, `sed`, `git`, `sqlite3`, `jq`, `uv`,
+  `pytest`, `pdftotext`, `pdffonts`, `pdftoppm`, temporary local audit/render
+  scripts, image inspection, and the independent `vulcan artifact validate`
+  command. No production object, coordinator row, base MDAF, or source PDF was
+  modified.
+
 ## 2026-08-27 (Roadmap Status Reconciliation)
 
 - **Objective:** Reconcile the current conversion-program plan with repository

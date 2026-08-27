@@ -20,6 +20,7 @@ from importlib.metadata import version
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+from .enrichment.align import validate_alignment_publication
 from .enrichment.legacy import (
     enrich_legacy_mdaf,
     enrichment_recipe,
@@ -677,6 +678,13 @@ def verify_enrichments(
                 )
                 if row["report_json"] is None or report != json.loads(row["report_json"]):
                     raise ValueError("enrichment report differs from catalog")
+                source_map = json.loads(archive.read("source-map.json"))
+                publication_errors = validate_alignment_publication(source_map, report)
+                if publication_errors:
+                    raise ValueError(
+                        "enrichment publication invariants failed: "
+                        + "; ".join(publication_errors)
+                    )
         except Exception as exc:
             errors.append(f"{row['legacy_sha256']}: {exc}")
     return VerificationSummary(len(rows), len(rows) - len(errors), tuple(errors))

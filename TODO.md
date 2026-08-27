@@ -40,14 +40,21 @@ view; detailed research tasks remain in the sections below.
 - [x] Inspect 35 mappings across every canary document, confidence extremes,
   page regressions, and reused rectangles; reject the first recipe and record
   the evidence in `docs/pdf_enrichment_canary_review.md`.
-- [ ] Bound alignment by both preceding and following trusted anchors and
+- [x] Bound alignment by both preceding and following trusted anchors and
   reject unexplained page regressions.
-- [ ] Retain word/line geometry, separate page from region confidence, publish
+- [x] Retain word/line geometry, separate page from region confidence, publish
   page-only fallbacks, and reject unjustified source-geometry reuse.
-- [ ] Add regression fixtures for future-anchor jumps, repeated labels,
+- [x] Add regression fixtures for future-anchor jumps, repeated labels,
   split Markdown over coarse PDF blocks, and page-only publication.
-- [ ] Complete blinded/manual mapping review and expand the canary where needed
-  to cover scans, columns, tables, equations, sidebars, and image-heavy pages.
+- [x] Repeat the corrected ten-document canary, verify deterministic identities,
+  and manually review precision extremes and all known first-recipe failures.
+- [x] Expand the corrected canary by five difficult whole books; verify columns,
+  tables, rotated layouts, sidebars, forms, unusual fonts, German text, and
+  image-heavy pages across 1,957 total pages.
+- [ ] Add deliberately selected scan/OCR and equation-heavy inputs to the
+  enrichment canary and record expected omission/fallback behavior.
+- [ ] Add per-document duration and peak-memory recording, then define
+  size-aware concurrency for the complete CPU backfill.
 - [ ] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
 - [ ] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
   source, base-artifact, recipe, and derived-artifact identities.

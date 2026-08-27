@@ -8,7 +8,7 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .contract import PdfBlock, PdfEvidence, PdfPage
+from .contract import PdfBlock, PdfEvidence, PdfLine, PdfPage, PdfWord
 
 
 def poppler_version() -> str:
@@ -25,6 +25,12 @@ def _number(element: ET.Element, key: str, *, nonnegative: bool = False) -> floa
     if not math.isfinite(value) or (nonnegative and value < 0):
         raise ValueError(f"invalid PDF layout coordinate {key}={value}")
     return value
+
+
+def _box(element: ET.Element) -> tuple[float, float, float, float]:
+    x_min, y_min = _number(element, "xMin"), _number(element, "yMin")
+    x_max, y_max = _number(element, "xMax"), _number(element, "yMax")
+    return x_min, y_min, x_max - x_min, y_max - y_min
 
 
 def extract_pdf_evidence(path: str | Path) -> PdfEvidence:
@@ -48,18 +54,52 @@ def extract_pdf_evidence(path: str | Path) -> PdfEvidence:
     for page_index, page in enumerate(root.findall(".//{*}page")):
         blocks: list[PdfBlock] = []
         for block_index, element in enumerate(page.findall(".//{*}block")):
-            lines = []
-            for line in element.findall("./{*}line"):
-                words = ["".join(word.itertext()).strip() for word in line.findall("./{*}word")]
-                line_text = " ".join(word for word in words if word)
+            lines: list[PdfLine] = []
+            for line_index, line in enumerate(element.findall("./{*}line")):
+                words: list[PdfWord] = []
+                for word_index, word in enumerate(line.findall("./{*}word")):
+                    word_text = "".join(word.itertext()).strip()
+                    if not word_text:
+                        continue
+                    x, y, width, height = _box(word)
+                    if width <= 0 or height <= 0:
+                        continue
+                    words.append(
+                        PdfWord(
+                            id=(
+                                f"pdf-p{page_index:06d}-b{block_index:06d}"
+                                f"-l{line_index:06d}-w{word_index:06d}"
+                            ),
+                            text=word_text,
+                            x=x,
+                            y=y,
+                            width=width,
+                            height=height,
+                        )
+                    )
+                line_text = " ".join(word.text for word in words)
                 if line_text:
-                    lines.append(line_text)
-            text = "\n".join(lines).strip()
+                    x, y, width, height = _box(line)
+                    if width > 0 and height > 0:
+                        lines.append(
+                            PdfLine(
+                                id=(
+                                    f"pdf-p{page_index:06d}-b{block_index:06d}"
+                                    f"-l{line_index:06d}"
+                                ),
+                                text=line_text,
+                                x=x,
+                                y=y,
+                                width=width,
+                                height=height,
+                                words=tuple(words),
+                            )
+                        )
+            text = "\n".join(line.text for line in lines).strip()
             if not text:
                 continue
-            x_min, y_min = _number(element, "xMin"), _number(element, "yMin")
-            x_max, y_max = _number(element, "xMax"), _number(element, "yMax")
-            if x_max <= x_min or y_max <= y_min:
+            x, y, width, height = _box(element)
+            if width <= 0 or height <= 0:
                 continue
             blocks.append(
                 PdfBlock(
@@ -67,10 +107,11 @@ def extract_pdf_evidence(path: str | Path) -> PdfEvidence:
                     page=page_index,
                     order=order,
                     text=text,
-                    x=x_min,
-                    y=y_min,
-                    width=x_max - x_min,
-                    height=y_max - y_min,
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    lines=tuple(lines),
                 )
             )
             order += 1

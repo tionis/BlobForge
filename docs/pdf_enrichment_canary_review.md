@@ -1,13 +1,72 @@
 # PDF Enrichment Canary Review
 
-Date: 2026-08-27
+Date: 2026-08-27; corrected candidate reviewed 2026-08-28
 
-Status: recipe rejected for bulk backfill
+Status: first recipe rejected; corrected candidate passes the native-text
+canary but remains gated pending scan/equation coverage and explicit freeze
 
-Recipe:
+Rejected recipe:
 `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
 
-## Decision
+Corrected candidate:
+`blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`
+
+## Corrected candidate decision
+
+The corrected candidate resolves every failure that rejected the first recipe
+and passes the native-text canary. It is suitable for a final scan/equation
+canary and recipe-freeze decision; it is not yet authorization to run the
+unbounded backfill.
+
+The implementation now uses the nearest trusted anchors on both sides,
+enforces monotonic pages, refines defensible regions from disjoint Poppler word
+evidence, and separates region publication from page-only publication. Fuzzy
+prose regions cannot span multiple Poppler blocks. Exact whole-block matches
+retain block geometry, while insufficient region evidence preserves only the
+page selector. A verifier independently rejects page regressions, page/region
+method violations, duplicate rectangles, and report/count disagreement.
+
+The original ten-document/153-page canary was repeated twice. Every MDAF
+identity was stable, and all ten passed BlobForge and independent Vulcan
+validation. Coverage increased from 1,411 to 1,666 of 2,355 blocks (59.9% to
+70.7%) and from 319,013 to 381,074 of 492,744 semantic bytes (64.7% to 77.3%).
+Of the 1,666 mappings, 1,078 have region evidence and 588 are explicitly
+page-only.
+
+The expanded canary added five complete difficult books: the 436-page German
+Cthulhu rulebook, the older low-text-density *Paths of Storytelling*, the
+highly visual *Cortex Prime*, the dense 502-page Shadowrun 5 core book, and the
+modern 389-page *Curseborne* core book. Together the 15 artifacts cover 1,957
+pages and 31,997 Markdown blocks. They publish 20,047 mappings (62.7% block
+coverage): 13,044 region mappings and 7,003 page-only mappings. Semantic-byte
+coverage is 4,678,882 of 10,282,814 bytes (45.5%). Lower byte coverage in the
+long books is accepted here because omitted precision is safer than forced
+evidence.
+
+All 15 artifacts pass catalog/lineage verification, BlobForge validation, and
+independent Vulcan validation. A complete invariant audit found zero page
+regressions and zero duplicate published rectangles. Manual review covered 51
+unique records: the lowest-confidence region, lowest-confidence page-only, and
+highest-confidence mapping in every document plus every retained mapping at a
+known v1 failure span. The sample included rotated text, tables, columns,
+sidebars, forms, dark backgrounds, unusual fonts, German text, and image-heavy
+pages. All region samples selected the intended text; page-only samples
+selected the intended page without claiming a rectangle. Rendered source
+sheets remain temporary because they contain copyrighted book pages.
+
+The five-book expansion took about 23 minutes at concurrency two on the local
+CPU host. Individual 400–500-page books took roughly 15–18 minutes. This fits
+the 32-GiB deployment target, but the bulk runner should record per-document
+runtime and peak memory and use size-aware concurrency before the complete
+backfill begins.
+
+Remaining freeze gates are a deliberately selected scan/OCR and equation-heavy
+sample, formal acceptance of the publication policy, and a final check that
+runtime/resource recording is sufficient for the bulk audit. Restart safety is
+covered by a regression that recovers a `processing` catalog row and replaces
+an interrupted partial destination atomically.
+
+## First-candidate decision
 
 Do not freeze this recipe and do not run it over the remaining 1,367 legacy
 artifacts. Its artifacts are structurally valid and useful as retained

@@ -1,8 +1,8 @@
 # PDF Markdown Enrichment Pipeline
 
-Status: baseline implemented; first recipe rejected by manual canary review
+Status: corrected native-text candidate passes canary; final freeze gates remain
 
-Date: 2026-08-27
+Date: 2026-08-28
 
 Related: `conversion_program_roadmap.md`, `local_mdaf_migration.md`,
 `mdaf_redesign.md`, `converter_adapter_architecture.md`
@@ -36,7 +36,7 @@ The first vertical slice implements:
   and an explicit `--all` gate for bulk work;
 - stricter BlobForge provenance validation aligned with Vulcan.
 
-The current experimental recipe is
+The first experimental recipe was
 `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`.
 Recipe identity changes with output-affecting alignment, geometry, or search
 policy, leaving earlier experiments auditable but unselected.
@@ -55,6 +55,40 @@ wrong-page/order regressions, and exact repeated labels attached to reused
 source geometry. See `pdf_enrichment_canary_review.md` for the protocol,
 measurements, examples, and required next iteration. The ten derived artifacts
 remain experimental evidence; the complete backfill stays gated.
+
+## Corrected candidate
+
+Recipe
+`blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`
+implements the required second iteration:
+
+- nearest preceding and following trusted anchors bound candidate pages;
+- all newly published mappings are page-monotonic;
+- Poppler line and word IDs/geometry are retained in native evidence;
+- word sequence refinement derives a narrow region from disjoint evidence;
+- fuzzy prose regions are limited to one source block and must pass separate
+  score, Markdown-token-coverage, and normalized-length thresholds;
+- a strong page match with insufficient geometry emits a page-only method;
+- exact whole-block equivalence may use clipped block geometry;
+- an independent publication validator rejects page regressions, duplicate
+  rectangles, method/selector disagreement, and report/count disagreement.
+
+Its generation-2 recipe identity includes every output-affecting threshold and
+policy. The report contract remains compatible while adding explicit region
+and page-only mapping counts. Previous recipe outputs remain immutable local
+experiments and are not silently selected.
+
+The 15-document/1,957-page native-text canary passed all structural,
+catalog/lineage, BlobForge, and independent Vulcan checks. It has zero page
+regressions and zero duplicate published rectangles; 51 visually reviewed
+mappings were correct at their advertised precision. Repeat conversion of the
+original ten documents produced identical MDAF identities. See
+`pdf_enrichment_canary_review.md` for measurements and adjudication details.
+
+The candidate remains gated rather than frozen until scan/OCR and
+equation-heavy inputs are deliberately covered and the publication policy is
+formally accepted. The unbounded `--all` command must not be run before that
+decision.
 
 ## Contract
 
