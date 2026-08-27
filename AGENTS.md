@@ -38,6 +38,15 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** BlobForge OIDC authorization intentionally consults only its
+  active local SCIM user/group state; Authentik group membership or identity
+  claims alone cannot authorize a session. After changing membership in the
+  Authentik `blobforge-admin` access group, operators can immediately converge
+  production with Gandalf's targeted `blobforge_scim` tag and
+  `blobforge_scim_force_sync=true`. The private SCIM readiness check succeeding
+  only proves reachability; verify the expected membership count in
+  `scim_group_members` when diagnosing a callback denial.
+
 - **2026-08-27:** The self-hosted server root must not fall through to
   FastAPI's JSON 404. It now redirects unauthenticated OIDC deployments to
   `/auth/login` and serves authorized sessions/client tokens a private,

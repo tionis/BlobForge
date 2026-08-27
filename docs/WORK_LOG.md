@@ -1965,3 +1965,23 @@
   remains green. The full Bunny-era file library, worker enrollment, and
   token-management console remains an explicit future feature rather than
   being implied by the landing page.
+
+## 2026-08-27 (Initial SCIM Administrator Reconciliation)
+
+- **Objective:** Resolve the production OIDC callback denial after the initial
+  authorized administrator was added to Authentik's `blobforge-admin` group.
+- **Finding:** The account was active and already belonged to the Authentik
+  access group, while BlobForge still had no corresponding group membership.
+  The callback therefore correctly rejected the identity: authorization is
+  resolved exclusively from active local SCIM state, not from OIDC claims.
+- **Actions:** Inspected the Gandalf OIDC/SCIM reconciliation contract and
+  production identity state, then ran the targeted Citadel `blobforge_scim`
+  Ansible tag with `blobforge_scim_force_sync=true`. This dispatched an
+  Authentik SCIM reconciliation and verified the private backchannel without
+  changing the coordinator image or relaxing access control.
+- **Verification:** The play completed with no failures and BlobForge's SQLite
+  identity tables now contain one member of `blobforge-admin`; the configured
+  group maps to the `admin` role. A public GET still returns the intended 307
+  redirect to `/auth/login`. Tooling used included `rg`, `sed`, `curl`,
+  Ansible, the Authentik Django shell for sanitized read-only checks, and a
+  read-only SQLite aggregate query.
