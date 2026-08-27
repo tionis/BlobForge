@@ -201,10 +201,10 @@ verified against `/srv/blobforge/MIGRATION.blake3`: 3,188 files, 1,808 source
 objects, 1,377 artifact objects, zero pending/orphan artifacts, and SQLite
 `quick_check=ok`. The digest-pinned coordinator is healthy, and Authentik OIDC
 plus private SCIM reconciliation succeeds for the sole management group
-`blobforge-admin`. Canonical DNS now points at Citadel. Caddy's installed
-configuration validates, but its admin API is disabled, so an explicitly
-approved shared-ingress restart is still required to activate the site and
-issue public TLS. The legacy Bunny/S3 data has not been deleted or modified.
+`blobforge-admin`. Canonical DNS and public TLS now terminate at Citadel; API
+health, the Authentik redirect, public SCIM denial, and an existing Citadel
+endpoint passed after the approved shared Caddy restart. The legacy Bunny/S3
+data has not been deleted or modified.
 
 ## CI and publication
 

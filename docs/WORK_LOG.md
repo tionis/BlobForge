@@ -1929,8 +1929,12 @@
   production-profile lint. The private Caddy-to-BlobForge route and container
   health pass. The private runbook publish preview could not contact Outline
   because `OUTLINE_API_TOKEN` is absent in this shell.
-- **Remaining gate:** The installed Caddyfile validates and contains the
-  BlobForge route, but Caddy runs with `admin off`; a brief shared-ingress
-  restart needs explicit approval before public TLS, OIDC redirect, and public
-  SCIM-denial canaries can pass. The BlobForge backup profile and first restore
-  drill also remain to be activated and verified.
+- **Cutover completion:** After explicit approval, restarted the shared Caddy
+  service and verified public TLS/API health, HTTP 404 for public SCIM, the OIDC
+  redirect to Authentik, and continued health of an existing Citadel endpoint.
+  The provisioned `blobforge-admin` SCIM group currently has zero members, so
+  interactive login remains deny-by-default until an administrator is added in
+  Authentik.
+- **Remaining gate:** Applying Citadel's Restic role affects shared backup
+  schedules and therefore requires separate explicit approval. The declared
+  BlobForge profile and first restore drill are not installed yet.

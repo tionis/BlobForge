@@ -50,9 +50,9 @@ The virtual environment is located at `.venv/` and should be activated automatic
   Quadlet environment values must escape backslashes and double quotes because
   canonical JSON otherwise becomes invalid in the generated Podman command.
   Canonical DNS now replaces the legacy Bunny Pull Zone record with a CNAME to
-  Citadel. The installed Caddyfile validates, but `admin off` means activation
-  requires a shared Caddy restart; do not claim public TLS is healthy until that
-  explicitly approved restart and canary complete. Deployment credentials were
+  Citadel. The explicitly approved shared Caddy restart activated the validated
+  configuration; public TLS/API health, Authentik redirect, public SCIM 404,
+  and an existing Citadel endpoint pass. Deployment credentials were
   rotated after an unsafe status diagnostic rendered their environment; never
   use full unit status/ExecStart output for secret-bearing Quadlets.
 

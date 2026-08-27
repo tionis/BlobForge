@@ -130,6 +130,7 @@ Citadel backup policy. Generated host-var views must be produced with
 `ghcr.io/tionis/blobforge@sha256:5c503c83b8940af4037135b58f747af7db24070419108e291114ad38186b06bc`.
 The coordinator, OIDC provider, and private SCIM integration are live and
 healthy on Citadel. The only configured interactive role group is
-`blobforge-admin`. Public DNS now targets Citadel; activating the validated
-Caddy configuration still requires an explicitly approved shared-ingress
-restart. The first quiesced backup/restore drill remains a cutover follow-up.
+`blobforge-admin`. Public DNS and TLS now terminate on Citadel; API health, the
+OIDC redirect, public SCIM denial, and an existing ingress endpoint passed after
+the approved Caddy restart. The first quiesced backup/restore drill remains a
+cutover follow-up.

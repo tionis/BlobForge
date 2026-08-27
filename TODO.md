@@ -19,9 +19,10 @@
 - [x] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,
   private Authentik SCIM backchannel, Caddy route, and quiesced Citadel backup;
   compile generated inventory and run a check-mode deployment before cutover.
-- [ ] Activate the validated Caddy configuration with an explicitly approved
-  shared-ingress restart, verify public TLS/OIDC/SCIM denial, install the
-  BlobForge backup profile, and complete its first restore test.
+- [x] Activate the validated Caddy configuration with an explicitly approved
+  shared-ingress restart and verify public TLS, OIDC, and SCIM denial.
+- [ ] Apply Citadel's shared Restic role to install the declared BlobForge
+  profile, then run and verify its first backup/restore test.
 - [ ] Add public digest-alias resolution and switch new ingestion keys from the
   SHA-256 compatibility key to canonical BLAKE3.
 - [ ] Replace environment-only worker bootstrap with revocable token CRUD and a
