@@ -16,9 +16,12 @@
   multi-capability claim routing while retaining the current worker protocol.
 - [x] Add Authlib OIDC login plus SCIM 2.0 user/group provisioning with
   SCIM-backed role and account-lifecycle enforcement.
-- [ ] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,
+- [x] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,
   private Authentik SCIM backchannel, Caddy route, and quiesced Citadel backup;
   compile generated inventory and run a check-mode deployment before cutover.
+- [ ] Activate the validated Caddy configuration with an explicitly approved
+  shared-ingress restart, verify public TLS/OIDC/SCIM denial, install the
+  BlobForge backup profile, and complete its first restore test.
 - [ ] Add public digest-alias resolution and switch new ingestion keys from the
   SHA-256 compatibility key to canonical BLAKE3.
 - [ ] Replace environment-only worker bootstrap with revocable token CRUD and a
@@ -33,8 +36,9 @@
 - [ ] Generalize filesystem ingestion beyond `.pdf`, including safe media-type
   detection, adapter selection, and source-type-specific limits.
 - [x] Run the complete 1,377-artifact plus 431 raw-source local import and audit.
-- [ ] Transfer the verified recovery unit to Citadel and pass an isolated
-  restored-volume canary before changing DNS or making Bunny/S3 read-only.
+- [x] Transfer the verified recovery unit to Citadel, verify its complete
+  BLAKE3 manifest plus SQLite/object counts, and start a healthy coordinator
+  before changing the canonical DNS record. Bunny/S3 remains preserved.
 
 ## MDAF / BLAKE3 Redesign
 

@@ -196,6 +196,16 @@ and one low-risk conversion. Keep Bunny/S3 read-only and available through a
 rollback window; DNS cutover is reversible, whereas deleting the old objects is
 not part of migration.
 
+The recovery unit was copied to `/srv/blobforge` on Citadel and independently
+verified against `/srv/blobforge/MIGRATION.blake3`: 3,188 files, 1,808 source
+objects, 1,377 artifact objects, zero pending/orphan artifacts, and SQLite
+`quick_check=ok`. The digest-pinned coordinator is healthy, and Authentik OIDC
+plus private SCIM reconciliation succeeds for the sole management group
+`blobforge-admin`. Canonical DNS now points at Citadel. Caddy's installed
+configuration validates, but its admin API is disabled, so an explicitly
+approved shared-ingress restart is still required to activate the site and
+issue public TLS. The legacy Bunny/S3 data has not been deleted or modified.
+
 ## CI and publication
 
 `.github/workflows/container.yml` first installs the locked development/server

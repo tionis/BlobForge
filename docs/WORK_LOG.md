@@ -1829,8 +1829,10 @@
   sparse when old Marker output lacks anchors and must not be described as
   complete. The old worker protocol already filtered media but could advertise
   only one recipe. Gandalf's Todo role is the correct deployment model, but
-  BlobForge must use a stable Authentik user UUID for both OIDC `sub` and SCIM
-  `externalId`, privately route SCIM, and back up the whole local data tree.
+  BlobForge must keep OIDC `sub` equal to SCIM `externalId`, privately route
+  SCIM, and back up the whole local data tree. Authentik's official SCIM
+  documentation confirms its default `hashed_user_id` OIDC mode already equals
+  the default SCIM external ID, correcting the earlier UUID recommendation.
   No Gandalf mutation or production deployment was performed; vaulted secret
   creation, generated inventory compilation, image publication, import/restore
   canary, and DNS cutover remain explicit gates.
@@ -1894,3 +1896,41 @@
 - **Status:** Local data migration complete and frozen for transfer. Repository
   publication, GHCR build, Gandalf provisioning, secure data transfer, restored
   manifest verification, and DNS cutover remain.
+
+## 2026-08-27 (Publish, Transfer, and Citadel Cutover)
+
+- **Objective:** Publish the self-hosted coordinator, transfer the complete
+  recovery unit, deploy the group-gated service on Citadel, and cut the
+  canonical hostname over without deleting the legacy backend.
+- **Actions:** Pushed BlobForge commit `60988ef`; GitHub Actions run
+  `33069776111` passed tests and all server/CPU/CUDA image builds. Transferred
+  34,536,741,338 bytes in 3,188 files to `/srv/blobforge`, copied the frozen
+  manifest as `/srv/blobforge/MIGRATION.blake3`, and verified every file plus
+  SQLite and object/catalog counts on Citadel. Added and validated Gandalf's
+  digest-pinned Quadlet, OIDC/SCIM integration, private SCIM route, Caddy site,
+  and quiesced backup profile. Rotated all deployment credentials after a
+  diagnostic exposed a rendered secret-bearing unit command. Fixed generic
+  Quadlet quote/backslash escaping, selected the exact `blobforge-admin` group,
+  and added regression coverage. The DNS planner was extended with
+  retirement-only Bunny `PULLZONE` support and delete-before-add ordering; the
+  reviewed plan deleted only the legacy BlobForge Pull Zone record and created
+  the managed CNAME to Citadel.
+- **Results:** The coordinator container is running and healthy from
+  `ghcr.io/tionis/blobforge@sha256:5c503c83b8940af4037135b58f747af7db24070419108e291114ad38186b06bc`.
+  Private SCIM readiness succeeds, OIDC uses matching `hashed_user_id` /
+  `externalId`, and only `blobforge-admin` maps to `admin`. Public DNS resolves
+  through `citadel.tionis.dev` to `159.195.20.56`. The old Bunny/S3 objects were
+  not mutated or deleted.
+- **Verification:** Citadel reported the exact accepted 1,808/3,616/1,377/431
+  database split, 1,808 source objects, 1,377 artifact objects, no
+  pending/orphan objects, all manifest hashes valid, and SQLite
+  `quick_check=ok`. Gandalf's full suite passed 730 tests plus 4 subtests, 13
+  Bunny tests, generated-artifact/DNS/inventory checks, Ansible syntax, and
+  production-profile lint. The private Caddy-to-BlobForge route and container
+  health pass. The private runbook publish preview could not contact Outline
+  because `OUTLINE_API_TOKEN` is absent in this shell.
+- **Remaining gate:** The installed Caddyfile validates and contains the
+  BlobForge route, but Caddy runs with `admin off`; a brief shared-ingress
+  restart needs explicit approval before public TLS, OIDC redirect, and public
+  SCIM-denial canaries can pass. The BlobForge backup profile and first restore
+  drill also remain to be activated and verified.

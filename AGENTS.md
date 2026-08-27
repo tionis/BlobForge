@@ -38,6 +38,24 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** The complete local recovery unit is verified on Citadel at
+  `/srv/blobforge`: all 3,188 manifest entries match, SQLite `quick_check` is
+  `ok`, and counts remain 1,808 sources/jobs, 3,616 aliases, 1,377 legacy MDAFs,
+  431 queued raw-only jobs, 1,808 source objects, 1,377 artifact objects, and
+  zero pending/orphan objects. GH Actions run `33069776111` published the
+  digest-pinned server image
+  `ghcr.io/tionis/blobforge@sha256:5c503c83b8940af4037135b58f747af7db24070419108e291114ad38186b06bc`.
+  Citadel's coordinator and private SCIM backchannel are healthy; Authentik and
+  BlobForge both restrict interactive management to `blobforge-admin`.
+  Quadlet environment values must escape backslashes and double quotes because
+  canonical JSON otherwise becomes invalid in the generated Podman command.
+  Canonical DNS now replaces the legacy Bunny Pull Zone record with a CNAME to
+  Citadel. The installed Caddyfile validates, but `admin off` means activation
+  requires a shared Caddy restart; do not claim public TLS is healthy until that
+  explicitly approved restart and canary complete. Deployment credentials were
+  rotated after an unsafe status diagnostic rendered their environment; never
+  use full unit status/ExecStart output for secret-bearing Quadlets.
+
 - **2026-08-27:** The local coordinator migration is complete at the ignored
   `.blobforge-migration/local-server-data` recovery unit. Two fail-closed full
   stage passes validated all 1,377 MDAF/source pairs; the first imported all

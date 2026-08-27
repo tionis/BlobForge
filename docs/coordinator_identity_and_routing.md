@@ -97,8 +97,11 @@ Podman network and blocked at public Caddy ingress.
 
 Required runtime settings are shown in
 `deploy/quadlet/blobforge.env.example`. The OIDC `sub`/SCIM `externalId`
-contract is fail-closed; Gandalf's Authentik provider must use the same stable
-user UUID for both rather than its existing Todo `hashed_user_id` example.
+contract is fail-closed. Authentik documents that its default SCIM
+`externalId` matches the OIDC provider's default `hashed_user_id` subject mode,
+so Gandalf should retain the existing Todo pattern for both providers. If the
+subject mode or SCIM mappings are customized later, they must still produce the
+same identifier.
 
 ## Citadel/Gandalf deployment contract
 
@@ -108,7 +111,7 @@ Authentik, exact Authentik OIDC/SCIM reconciliation, SCIM backchannel readiness,
 and quiesced SQLite backups. BlobForge should follow that pattern with these
 differences:
 
-- image `ghcr.io/tionis/blobforge:latest`, internal port 8080;
+- digest-pinned server image, internal port 8080;
 - state `/srv/blobforge` mounted at `/var/lib/blobforge`;
 - public URL `https://blobforge.tionis.dev`;
 - callback `https://blobforge.tionis.dev/auth/callback`;
@@ -123,7 +126,10 @@ The canonical Gandalf changes belong in a new `blobforge` role,
 `inventory/services/blobforge/{service,secrets}.yml`, Citadel playbook role
 ordering before Caddy, the infrastructure endpoint/network attachments, and
 Citadel backup policy. Generated host-var views must be produced with
-`scripts/infra compile`, not edited by hand. Deployment remains gated on vault
-creation for client, worker, OIDC, session, and SCIM secrets; an imported-data
-backup/restore drill; GHCR image publication; and DNS/cutover planning for the
-existing hostname.
+`scripts/infra compile`, not edited by hand. The initial deployment uses
+`ghcr.io/tionis/blobforge@sha256:5c503c83b8940af4037135b58f747af7db24070419108e291114ad38186b06bc`.
+The coordinator, OIDC provider, and private SCIM integration are live and
+healthy on Citadel. The only configured interactive role group is
+`blobforge-admin`. Public DNS now targets Citadel; activating the validated
+Caddy configuration still requires an explicitly approved shared-ingress
+restart. The first quiesced backup/restore drill remains a cutover follow-up.
