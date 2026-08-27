@@ -1956,7 +1956,12 @@
   or client tokens. The page shows coordinator counts and links to OpenAPI,
   snapshot, and recipe endpoints. It is private/no-store, HTML-escapes identity
   and labels, and sets a restrictive CSP plus `nosniff`.
-- **Verification:** Focused local-server tests pass, including authenticated
-  rendering and unauthenticated OIDC redirect coverage. The full Bunny-era
-  file library, worker enrollment, and token-management console remains an
-  explicit future feature rather than being implied by the landing page.
+- **Verification:** The full suite passes with 205 tests and 5 subtests,
+  including authenticated rendering and unauthenticated OIDC redirect coverage.
+  GitHub Actions published revision `6b8aa75`; Gandalf pinned manifest
+  `sha256:97f764f71d329c25c0783617595d7ee4b3ec5c586a2e3d481d7612c0ab56f330`
+  and deployed it successfully. Production `/` returns HTTP 307 to
+  `/auth/login`, the container label matches the intended revision, and health
+  remains green. The full Bunny-era file library, worker enrollment, and
+  token-management console remains an explicit future feature rather than
+  being implied by the landing page.

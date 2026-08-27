@@ -53,7 +53,8 @@ The virtual environment is located at `.venv/` and should be activated automatic
   431 queued raw-only jobs, 1,808 source objects, 1,377 artifact objects, and
   zero pending/orphan objects. GH Actions run `33069776111` published the
   digest-pinned server image
-  `ghcr.io/tionis/blobforge@sha256:5c503c83b8940af4037135b58f747af7db24070419108e291114ad38186b06bc`.
+  `ghcr.io/tionis/blobforge@sha256:97f764f71d329c25c0783617595d7ee4b3ec5c586a2e3d481d7612c0ab56f330`
+  (revision `6b8aa75`).
   Citadel's coordinator and private SCIM backchannel are healthy; Authentik and
   BlobForge both restrict interactive management to `blobforge-admin`.
   Quadlet environment values must escape backslashes and double quotes because

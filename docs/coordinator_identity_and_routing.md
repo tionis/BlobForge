@@ -127,7 +127,8 @@ The canonical Gandalf changes belong in a new `blobforge` role,
 ordering before Caddy, the infrastructure endpoint/network attachments, and
 Citadel backup policy. Generated host-var views must be produced with
 `scripts/infra compile`, not edited by hand. The initial deployment uses
-`ghcr.io/tionis/blobforge@sha256:5c503c83b8940af4037135b58f747af7db24070419108e291114ad38186b06bc`.
+`ghcr.io/tionis/blobforge@sha256:97f764f71d329c25c0783617595d7ee4b3ec5c586a2e3d481d7612c0ab56f330`
+(revision `6b8aa75`).
 The coordinator, OIDC provider, and private SCIM integration are live and
 healthy on Citadel. The only configured interactive role group is
 `blobforge-admin`. Public DNS and TLS now terminate on Citadel; API health, the
