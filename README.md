@@ -10,10 +10,8 @@ former Bunny/S3 backend remains only as a migration source during cutover.
 ## 🚀 Key Features
 
 *   **Self-hosted Coordination:** One SQLite/filesystem service replaces Bunny and S3 without requiring PostgreSQL, Redis, or a message broker.
-*   **Management UI:** IndieAuth-protected queue, worker enrollment/revocation, retry, priority, cancellation, and runtime configuration controls.
-*   **Public Handbook:** CDN-cacheable landing page with worker installation, scheduling, operations, and runtime-policy guidance.
-*   **Portable Backups:** Admin-triggered, transaction-consistent Bunny Database exports are stored privately in S3 with checksums.
-*   **Web Library:** Upload PDFs, search paths/tags/sources, filter and page through every job state, download source/result files, and safely render completed GFM Markdown with its assets and a persistent document ToC.
+*   **Management UI:** OIDC/SCIM-gated job operations, worker registration, revocable admin tokens, recipe controls, and an audit feed.
+*   **Web Library:** Stream-upload sources, search paths/tags/hashes, filter and page through every job state, inspect failures/artifacts, and download source/result files.
 *   **Least-Privilege Workers:** Per-worker tokens and lease-bound presigned transfers remove bucket credentials from conversion hosts.
 *   **Git LFS Optimized:** "Materializes" PDFs from LFS pointers only when necessary, saving bandwidth and storage.
 *   **Fenced Leases:** Atomic SQLite statements assign expiring, opaque lease tokens and recover abandoned work on the next claim or management request.
@@ -33,6 +31,8 @@ The target architecture and deployment/cutover guide are documented in
 [docs/local_backend.md](docs/local_backend.md). The prior Bunny design is
 retained in [docs/bunny_coordination_backend.md](docs/bunny_coordination_backend.md)
 as migration history.
+Administrator workflows and mutation semantics are documented in
+[docs/management_console.md](docs/management_console.md).
 
 Set `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` on clients and
 workers. They use coordinator-issued signed transfers and require neither host

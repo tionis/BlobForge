@@ -34,7 +34,7 @@
   profile, then run and verify its first backup/restore test.
 - [ ] Add public digest-alias resolution and switch new ingestion keys from the
   SHA-256 compatibility key to canonical BLAKE3.
-- [ ] Replace environment-only worker bootstrap with revocable token CRUD and a
+- [x] Replace environment-only worker bootstrap with revocable token CRUD and a
   narrowly scoped management UI/API.
 - [ ] Add private collections, SCIM-group collection roles, normalized
   discovery tags, scoped service-account tokens, worker-only token enforcement,
@@ -134,7 +134,8 @@
 - [ ] Consider adding optional SQS/SNS integration for larger scale.
 
 ## Low Priority
-- [ ] Optionally add conversion-artifact history and recipe selection controls to the management console; equivalent CLI/API operations are available.
+- [x] Add conversion-artifact history and exact recipe selection controls to
+  the management console.
 
 ## Done
 - [x] Add `blobforge hydrated clean-textpacks` and safe `unpack` reverse

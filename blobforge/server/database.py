@@ -97,7 +97,9 @@ class Database:
                 CREATE TABLE IF NOT EXISTS recipes (
                     recipe_digest TEXT PRIMARY KEY, backend TEXT NOT NULL,
                     recipe_json TEXT NOT NULL, media_types_json TEXT NOT NULL,
-                    artifact_type TEXT NOT NULL, last_seen INTEGER NOT NULL
+                    artifact_type TEXT NOT NULL, last_seen INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1, display_name TEXT NOT NULL DEFAULT '',
+                    notes TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS worker_recipes (
                     worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
@@ -109,7 +111,8 @@ class Database:
                     worker_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, hostname TEXT,
                     status TEXT NOT NULL DEFAULT 'offline', metadata_json TEXT NOT NULL DEFAULT '{}',
                     current_job TEXT, last_seen INTEGER, created_at INTEGER NOT NULL,
-                    revoked INTEGER NOT NULL DEFAULT 0
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    managed_by TEXT NOT NULL DEFAULT 'dynamic'
                 );
                 CREATE TABLE IF NOT EXISTS job_failures (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, source_key TEXT NOT NULL,
@@ -133,6 +136,16 @@ class Database:
                     user_id TEXT NOT NULL REFERENCES scim_users(id) ON DELETE CASCADE,
                     PRIMARY KEY(group_id,user_id)
                 );
+                CREATE TABLE IF NOT EXISTS admin_tokens (
+                    id TEXT PRIMARY KEY, label TEXT NOT NULL, token_prefix TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+                    last_used INTEGER, expires_at INTEGER, revoked_at INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL,
+                    action TEXT NOT NULL, target TEXT NOT NULL,
+                    detail_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
+                );
             """)
             artifact_columns = {row[1] for row in db.execute("PRAGMA table_info(artifacts)")}
             for name, declaration in (
@@ -142,15 +155,122 @@ class Database:
             ):
                 if name not in artifact_columns:
                     db.execute(f"ALTER TABLE artifacts ADD COLUMN {name} {declaration}")
+            recipe_columns = {row[1] for row in db.execute("PRAGMA table_info(recipes)")}
+            for name, declaration in (
+                ("enabled", "INTEGER NOT NULL DEFAULT 1"),
+                ("display_name", "TEXT NOT NULL DEFAULT ''"),
+                ("notes", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if name not in recipe_columns:
+                    db.execute(f"ALTER TABLE recipes ADD COLUMN {name} {declaration}")
+            worker_columns = {row[1] for row in db.execute("PRAGMA table_info(workers)")}
+            if "managed_by" not in worker_columns:
+                db.execute("ALTER TABLE workers ADD COLUMN managed_by TEXT NOT NULL DEFAULT 'dynamic'")
+                # Before dynamic enrollment existed every worker row came from environment config.
+                db.execute("UPDATE workers SET managed_by='environment'")
 
     def bootstrap_workers(self, worker_tokens: Mapping[str, str]) -> None:
         timestamp = now_ms()
         with self.transaction() as db:
-            db.execute("UPDATE workers SET revoked=1")
+            db.execute("UPDATE workers SET revoked=1 WHERE managed_by='environment'")
             for worker_id, token in worker_tokens.items():
-                db.execute("""INSERT INTO workers(worker_id,token_hash,created_at,revoked) VALUES(?,?,?,0)
-                    ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash,revoked=0""",
+                db.execute("""INSERT INTO workers(worker_id,token_hash,created_at,revoked,managed_by) VALUES(?,?,?,0,'environment')
+                    ON CONFLICT(worker_id) DO UPDATE SET token_hash=excluded.token_hash,revoked=0,managed_by='environment'""",
                     (worker_id, token_hash(token), timestamp))
+
+    def create_worker(self, worker_id: str) -> dict[str, Any]:
+        token = "bfw_" + secrets.token_urlsafe(32)
+        timestamp = now_ms()
+        try:
+            with self.transaction() as db:
+                db.execute("""INSERT INTO workers(worker_id,token_hash,status,created_at,revoked,managed_by)
+                    VALUES(?,?,'offline',?,0,'dynamic')""", (worker_id, token_hash(token), timestamp))
+        except sqlite3.IntegrityError as exc:
+            raise Conflict(f"worker {worker_id!r} already exists") from exc
+        return {"worker_id": worker_id, "token": token, "created_at": timestamp}
+
+    def rotate_worker_token(self, worker_id: str) -> dict[str, Any]:
+        token = "bfw_" + secrets.token_urlsafe(32)
+        with self.transaction() as db:
+            row = db.execute("SELECT managed_by FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
+            if not row:
+                raise KeyError(worker_id)
+            if row["managed_by"] == "environment":
+                raise Conflict("environment-managed worker credentials must be changed in deployment configuration")
+            changed = db.execute("""UPDATE workers SET token_hash=?,revoked=0,managed_by='dynamic'
+                WHERE worker_id=?""", (token_hash(token), worker_id)).rowcount
+        if not changed:
+            raise KeyError(worker_id)
+        return {"worker_id": worker_id, "token": token}
+
+    def revoke_worker(self, worker_id: str) -> None:
+        with self.transaction() as db:
+            row = db.execute("SELECT managed_by FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
+            if not row:
+                raise KeyError(worker_id)
+            if row["managed_by"] == "environment":
+                raise Conflict("environment-managed workers must be removed from deployment configuration")
+            changed = db.execute("UPDATE workers SET revoked=1,status='offline' WHERE worker_id=?", (worker_id,)).rowcount
+        if not changed:
+            raise KeyError(worker_id)
+
+    def workers(self, include_revoked: bool = True) -> list[dict[str, Any]]:
+        clause = "" if include_revoked else "WHERE revoked=0"
+        with self.connect() as db:
+            rows = list(db.execute(f"""SELECT worker_id,hostname,status,current_job,last_seen,
+                created_at,revoked,managed_by,metadata_json FROM workers {clause} ORDER BY revoked,worker_id"""))
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["revoked"] = bool(value["revoked"])
+            value["metadata"] = json.loads(value.pop("metadata_json") or "{}")
+            result.append(value)
+        return result
+
+    def create_admin_token(self, label: str, expires_at: int | None = None) -> dict[str, Any]:
+        identifier = secrets.token_hex(8)
+        token = f"bfa_{identifier}_{secrets.token_urlsafe(32)}"
+        timestamp = now_ms()
+        with self.transaction() as db:
+            db.execute("""INSERT INTO admin_tokens(id,label,token_prefix,token_hash,created_at,expires_at)
+                VALUES(?,?,?,?,?,?)""", (identifier, label, token[:20], token_hash(token), timestamp, expires_at))
+        return {"id": identifier, "label": label, "token": token, "token_prefix": token[:20],
+                "created_at": timestamp, "expires_at": expires_at}
+
+    def admin_token(self, token: str) -> dict[str, Any] | None:
+        timestamp = now_ms()
+        digest = token_hash(token)
+        with self.transaction() as db:
+            row = db.execute("""SELECT id,label,token_prefix,created_at,last_used,expires_at FROM admin_tokens
+                WHERE token_hash=? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?)""",
+                (digest, timestamp)).fetchone()
+            if row:
+                db.execute("UPDATE admin_tokens SET last_used=? WHERE id=?", (timestamp, row["id"]))
+        return dict(row) if row else None
+
+    def admin_tokens(self) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("""SELECT id,label,token_prefix,created_at,last_used,
+                expires_at,revoked_at FROM admin_tokens ORDER BY created_at DESC""")]
+
+    def revoke_admin_token(self, identifier: str) -> None:
+        with self.transaction() as db:
+            changed = db.execute("UPDATE admin_tokens SET revoked_at=? WHERE id=? AND revoked_at IS NULL",
+                                 (now_ms(), identifier)).rowcount
+        if not changed:
+            raise KeyError(identifier)
+
+    def audit(self, principal: str, action: str, target: str, detail: Mapping[str, Any] | None = None) -> None:
+        with self.transaction() as db:
+            db.execute("INSERT INTO audit_log(principal,action,target,detail_json,created_at) VALUES(?,?,?,?,?)",
+                       (principal, action, target, json.dumps(detail or {}, sort_keys=True), now_ms()))
+
+    def audit_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,))]
+        for row in rows:
+            row["detail"] = json.loads(row.pop("detail_json") or "{}")
+        return rows
 
     def worker_for_token(self, token: str) -> str | None:
         with self.connect() as db:
@@ -191,20 +311,23 @@ class Database:
 
     def recipes(self, media_type: str | None = None) -> list[dict[str, Any]]:
         with self.connect() as db:
-            rows = list(db.execute("""SELECT r.*,COUNT(wr.worker_id) worker_count FROM recipes r
-                LEFT JOIN worker_recipes wr USING(recipe_digest) GROUP BY r.recipe_digest
+            rows = list(db.execute("""SELECT r.*,COUNT(w.worker_id) worker_count FROM recipes r
+                LEFT JOIN worker_recipes wr USING(recipe_digest)
+                LEFT JOIN workers w ON w.worker_id=wr.worker_id AND w.revoked=0
+                GROUP BY r.recipe_digest
                 ORDER BY r.backend,r.recipe_digest"""))
         result = []
         for row in rows:
             value = dict(row)
             value["recipe"] = json.loads(value.pop("recipe_json"))
             value["media_types"] = json.loads(value.pop("media_types_json"))
+            value["enabled"] = bool(value["enabled"])
             if media_type is None or media_type in value["media_types"]:
                 result.append(value)
         return result
 
     def resolve_backend(self, backend: str, media_type: str) -> str:
-        matches = [item for item in self.recipes(media_type) if item["backend"] == backend.lower() and item["worker_count"]]
+        matches = [item for item in self.recipes(media_type) if item["backend"] == backend.lower() and item["worker_count"] and item["enabled"]]
         if not matches:
             raise KeyError(backend)
         if len(matches) != 1:
@@ -250,6 +373,93 @@ class Database:
         if not row:
             raise KeyError(key)
         return self._job(row)
+
+    def list_jobs(
+        self, *, search: str = "", status: str = "", priority: str = "", media_type: str = "",
+        limit: int = 50, offset: int = 0,
+    ) -> dict[str, Any]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if search:
+            conditions.append("(LOWER(s.original_name) LIKE ? OR LOWER(j.source_key) LIKE ? OR LOWER(j.paths_json) LIKE ? OR LOWER(j.tags_json) LIKE ?)")
+            needle = f"%{search.lower()}%"
+            params.extend([needle, needle, needle, needle])
+        if status:
+            conditions.append("j.status=?"); params.append(status)
+        if priority:
+            conditions.append("j.priority=?"); params.append(priority)
+        if media_type:
+            conditions.append("s.media_type=?"); params.append(media_type)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        with self.connect() as db:
+            total = int(db.execute(f"SELECT COUNT(*) FROM jobs j JOIN sources s USING(source_key) {where}", params).fetchone()[0])
+            rows = list(db.execute(f"""SELECT j.*,s.digest_algorithm,s.digest,s.media_type,
+                s.original_name,s.size_bytes,s.source FROM jobs j JOIN sources s USING(source_key) {where}
+                ORDER BY j.updated_at DESC LIMIT ? OFFSET ?""", (*params, limit, offset)))
+        return {"total": total, "limit": limit, "offset": offset, "jobs": [self._job(row) for row in rows]}
+
+    def job_failures(self, key: str) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            rows = [dict(row) for row in db.execute("SELECT * FROM job_failures WHERE source_key=? ORDER BY id DESC", (key,))]
+        for row in rows:
+            row["context"] = json.loads(row.pop("context_json") or "{}")
+        return rows
+
+    def set_priority(self, key: str, priority: str) -> dict[str, Any]:
+        with self.transaction() as db:
+            changed = db.execute("UPDATE jobs SET priority=?,updated_at=? WHERE source_key=?",
+                                 (priority, now_ms(), key)).rowcount
+        if not changed:
+            raise KeyError(key)
+        return self.get_job(key)
+
+    def requeue_job(self, key: str, *, reset_retries: bool = False) -> dict[str, Any]:
+        with self.transaction() as db:
+            row = db.execute("SELECT status FROM jobs WHERE source_key=?", (key,)).fetchone()
+            if not row:
+                raise KeyError(key)
+            if row["status"] == "done":
+                raise Conflict("completed jobs require a different recipe conversion request")
+            retry_sql = ",retry_count=0" if reset_retries else ""
+            db.execute(f"""UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                lease_expires_at=NULL,progress_json=NULL,error_message=NULL,updated_at=?{retry_sql}
+                WHERE source_key=?""", (now_ms(), key))
+        return self.get_job(key)
+
+    def delete_job(self, key: str) -> dict[str, Any]:
+        with self.transaction() as db:
+            source = db.execute("SELECT * FROM sources WHERE source_key=?", (key,)).fetchone()
+            if not source:
+                raise KeyError(key)
+            job = db.execute("SELECT status FROM jobs WHERE source_key=?", (key,)).fetchone()
+            if job and job["status"] == "processing":
+                raise Conflict("processing jobs must be requeued before deletion")
+            artifacts = [dict(row) for row in db.execute("SELECT storage_path FROM artifacts WHERE source_key=?", (key,))]
+            db.execute("UPDATE workers SET current_job=NULL WHERE current_job=?", (key,))
+            db.execute("DELETE FROM job_failures WHERE source_key=?", (key,))
+            db.execute("DELETE FROM artifacts WHERE source_key=?", (key,))
+            db.execute("DELETE FROM source_aliases WHERE source_key=?", (key,))
+            db.execute("DELETE FROM jobs WHERE source_key=?", (key,))
+            db.execute("DELETE FROM sources WHERE source_key=?", (key,))
+        return {"source": dict(source), "artifacts": artifacts}
+
+    def update_recipe(self, digest: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        fields: list[str] = []
+        params: list[Any] = []
+        if "enabled" in body:
+            fields.append("enabled=?"); params.append(int(bool(body["enabled"])))
+        if "display_name" in body:
+            fields.append("display_name=?"); params.append(str(body["display_name"]).strip()[:160])
+        if "notes" in body:
+            fields.append("notes=?"); params.append(str(body["notes"]).strip()[:4000])
+        if not fields:
+            raise ValueError("enabled, display_name, or notes is required")
+        with self.transaction() as db:
+            changed = db.execute(f"UPDATE recipes SET {','.join(fields)} WHERE recipe_digest=?",
+                                 (*params, digest)).rowcount
+        if not changed:
+            raise KeyError(digest)
+        return next(item for item in self.recipes() if item["recipe_digest"] == digest)
 
     @staticmethod
     def _job(row: sqlite3.Row) -> dict[str, Any]:

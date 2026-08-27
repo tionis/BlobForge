@@ -19,12 +19,13 @@ independently refuses users absent from the provisioned SCIM group. Management
 routes must require the `admin` role; ingest and conversion requests require
 `operator`; read-only routes require `viewer`.
 
-The current static client token is intentionally an unrestricted automation
-credential and therefore bypasses SCIM. It should be replaced before broader
-multi-user use with revocable service-account tokens carrying explicit scopes.
-Worker tokens are machine identities, not user identities. The compatibility
-API currently permits them on some read routes; the management/API hardening
-phase should restrict them to registration, claim, lease, and transfer calls.
+The static client token remains an unrestricted recovery/bootstrap credential
+and therefore bypasses SCIM. Administrators can now create individually
+revocable, optionally expiring `bfa_` automation tokens; they are stored hashed
+and record last use, but currently also carry global admin rather than explicit
+collection scopes. Worker tokens are machine identities, not user identities,
+and are rejected by every role-gated management mutation. Some compatibility
+read routes still accept them and should be narrowed with the collection work.
 
 ## Tags are not ACLs
 
@@ -57,7 +58,8 @@ administrative collection and keep all API-token access trusted-operator only.
 
 Before enabling multi-user management:
 
-1. add scoped, revocable service-account tokens and narrow worker tokens;
+1. add collection scopes to the existing revocable service-account tokens and
+   narrow worker tokens on compatibility read routes;
 2. add collection-aware authorization to every source, job, artifact, transfer,
    search, and status query;
 3. normalize tag CRUD and filtering independently of policy evaluation;
@@ -65,4 +67,3 @@ Before enabling multi-user management:
    inaccessible object existence;
 5. audit every authorization decision with principal, role, collection,
    operation, and outcome.
-

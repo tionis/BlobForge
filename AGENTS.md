@@ -38,6 +38,17 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** The self-hosted root is now a complete, admin-only operations
+  console rather than a JSON-navigation landing page. It manages paginated
+  jobs, streaming source uploads/downloads, fenced requeue/retry/priority/delete
+  actions, failure/artifact history, dynamic `bfw_` worker credentials,
+  immutable recipe selection/retirement metadata, and revocable `bfa_` admin
+  tokens. Plaintext credentials are shown once and stored hashed. Environment
+  workers remain deployment-owned; deleted object bytes move to recoverable
+  local trash. OIDC mutations require exact same origin and all administrative
+  mutations are audited. Recipe canonical JSON remains immutable because its
+  digest is an output identity, not editable application configuration.
+
 - **2026-08-27:** Authentik 2026.8 does dispatch outgoing SCIM membership
   changes in real time, but the membership path only resolves existing
   `SCIMProviderUser` mappings. The first addition to an application-filtered

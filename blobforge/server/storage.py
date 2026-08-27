@@ -34,7 +34,8 @@ class LocalStorage:
         self.sources = root / "objects" / "sources"
         self.artifacts = root / "objects" / "artifacts"
         self.pending = root / "pending"
-        for path in (self.sources, self.artifacts, self.pending):
+        self.trash_root = root / "trash"
+        for path in (self.sources, self.artifacts, self.pending, self.trash_root):
             path.mkdir(parents=True, exist_ok=True)
 
     def source_path(self, algorithm: str, digest: str) -> Path:
@@ -47,6 +48,25 @@ class LocalStorage:
 
     def artifact_path(self, source_key: str, recipe_digest: str, identity: str) -> Path:
         return self.artifacts / _safe_component(source_key)[:2] / _safe_component(source_key) / _safe_component(recipe_digest) / _safe_component(identity)
+
+    def trash(self, paths: list[Path], reason: str) -> list[str]:
+        """Move managed objects into a recoverable trash tree."""
+        root = self.root.resolve()
+        destination_root = self.trash_root / f"{int(time.time() * 1000)}-{_safe_component(reason)}"
+        moved: list[str] = []
+        for path in paths:
+            resolved = path.resolve()
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("refusing to trash a path outside the storage root") from exc
+            if not resolved.is_file():
+                continue
+            destination = destination_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(resolved, destination)
+            moved.append(str(destination.relative_to(root)))
+        return moved
 
     @staticmethod
     def inspect(path: Path) -> StoredObject:

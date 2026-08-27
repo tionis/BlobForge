@@ -231,6 +231,228 @@ async def test_reused_oidc_callback_renders_recovery_page(tmp_path, monkeypatch)
 
 
 @pytest.mark.anyio
+async def test_oidc_admin_mutations_require_same_origin(tmp_path, monkeypatch):
+    class FakeOIDC:
+        async def authorize_access_token(self, _request):
+            return {"userinfo": {"sub": "oidc-admin"}}
+
+    class FakeOAuth:
+        def __init__(self):
+            self.oidc = FakeOIDC()
+
+        def register(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(server_app, "OAuth", FakeOAuth)
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={},
+        public_url="https://blobforge.example",
+        oidc_issuer="https://auth.example/application/o/blobforge/",
+        oidc_client_id="blobforge",
+        oidc_client_secret="oidc-secret",
+        session_secret="session-secret",
+        scim_token="scim-secret",
+    ))
+    scim = {"Authorization": "Bearer scim-secret"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://blobforge.example"
+    ) as client:
+        user = (await client.post("/scim/v2/Users", headers=scim, json={
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+            "externalId": "oidc-admin", "userName": "admin", "active": True,
+        })).json()
+        await client.post("/scim/v2/Groups", headers=scim, json={
+            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"],
+            "displayName": "blobforge-admin", "members": [{"value": user["id"]}],
+        })
+        assert (await client.get("/auth/callback")).status_code == 307
+        denied = await client.post(
+            "/api/v1/admin/workers", json={"worker_id": "browser-worker"}
+        )
+        allowed = await client.post(
+            "/api/v1/admin/workers",
+            headers={"Origin": "https://blobforge.example"},
+            json={"worker_id": "browser-worker"},
+        )
+
+    assert denied.status_code == 403
+    assert allowed.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_path):
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={},
+    ))
+    headers = {"Authorization": "Bearer client-secret"}
+    source = b"%PDF-1.7\nadmin upload\n"
+    digest = hashlib.sha256(source).hexdigest()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        root = await client.get("/", headers=headers)
+        assert root.status_code == 200
+        assert "Register worker" in root.text
+        assert "Create admin token" in root.text
+        assert "Snapshot JSON" not in root.text
+        assert "Conversion recipes" not in root.text
+        assert "script-src 'self'" in root.headers["content-security-policy"]
+        assert (await client.get("/static/management-v1.js")).status_code == 200
+
+        uploaded = await client.post(
+            "/api/v1/admin/uploads",
+            params={
+                "filename": "rulebook.pdf",
+                "media_type": "application/pdf",
+                "priority": "2_high",
+                "tags": "rulebook, evaluation",
+            },
+            headers=headers,
+            content=source,
+        )
+        assert uploaded.status_code == 200
+        assert uploaded.json()["hash"] == digest
+        assert uploaded.json()["tags"] == ["rulebook", "evaluation"]
+
+        listed = (await client.get(
+            "/api/v1/admin/jobs", params={"search": "rulebook", "priority": "2_high"},
+            headers=headers,
+        )).json()
+        assert listed["total"] == 1
+        assert listed["jobs"][0]["original_name"] == "rulebook.pdf"
+        assert (await client.patch(
+            f"/api/v1/admin/jobs/{digest}/priority",
+            headers=headers,
+            json={"priority": "1_urgent"},
+        )).json()["priority"] == "1_urgent"
+        assert (await client.post(
+            f"/api/v1/admin/jobs/{digest}/requeue", headers=headers, json={"reset_retries": True}
+        )).json()["status"] == "todo"
+        detail = (await client.get(f"/api/v1/admin/jobs/{digest}", headers=headers)).json()
+        assert detail["artifacts"] == []
+        assert detail["failures"] == []
+        source_url = (await client.get(
+            f"/api/v1/admin/jobs/{digest}/source-url", headers=headers
+        )).json()["url"]
+        source_download = await client.get(source_url)
+        assert source_download.status_code == 200
+        assert source_download.content == source
+        assert source_download.headers["content-type"] == "application/pdf"
+
+        deleted = await client.delete(f"/api/v1/admin/jobs/{digest}", headers=headers)
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+        assert deleted.json()["trash"]
+        assert not app.state.storage.source_path("sha256", digest).exists()
+        assert list((tmp_path / "trash").rglob(digest))
+        assert (await client.get(f"/api/v1/admin/jobs/{digest}", headers=headers)).status_code == 404
+        audit = (await client.get("/api/v1/admin/overview", headers=headers)).json()["audit"]
+        assert {event["action"] for event in audit} >= {
+            "job.upload", "job.priority", "job.requeue", "job.delete"
+        }
+
+
+@pytest.mark.anyio
+async def test_dynamic_worker_and_admin_token_lifecycle_survives_restart(tmp_path):
+    settings = ServerSettings(data_dir=tmp_path, client_token="client-secret", worker_tokens={})
+    app = create_app(settings)
+    admin = {"Authorization": "Bearer client-secret"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        worker = (await client.post(
+            "/api/v1/admin/workers", headers=admin, json={"worker_id": "mixed-worker"}
+        )).json()
+        worker_token = worker["token"]
+        assert worker_token.startswith("bfw_")
+        worker_headers = {"Authorization": f"Bearer {worker_token}"}
+        assert (await client.get("/api/v1/workers/me", headers=worker_headers)).json()["worker_id"] == "mixed-worker"
+        assert (await client.get("/api/v1/admin/workers", headers=worker_headers)).status_code == 403
+
+        token = (await client.post(
+            "/api/v1/admin/tokens", headers=admin,
+            json={"label": "automation", "expires_in_days": 30},
+        )).json()
+        assert token["token"].startswith("bfa_")
+        token_headers = {"Authorization": f"Bearer {token['token']}"}
+        assert (await client.get("/api/v1/admin/overview", headers=token_headers)).status_code == 200
+        token_list = (await client.get("/api/v1/admin/tokens", headers=admin)).json()["tokens"]
+        assert token_list[0]["label"] == "automation"
+        assert "token" not in token_list[0]
+
+    restarted = create_app(settings)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=restarted), base_url="http://testserver"
+    ) as client:
+        assert (await client.get("/api/v1/workers/me", headers=worker_headers)).status_code == 200
+        rotated = (await client.post(
+            "/api/v1/admin/workers/mixed-worker/token", headers=admin, json={}
+        )).json()
+        assert (await client.get("/api/v1/workers/me", headers=worker_headers)).status_code == 401
+        replacement = {"Authorization": f"Bearer {rotated['token']}"}
+        assert (await client.get("/api/v1/workers/me", headers=replacement)).status_code == 200
+        assert (await client.post(
+            "/api/v1/admin/workers/mixed-worker/revoke", headers=admin, json={}
+        )).status_code == 200
+        assert (await client.get("/api/v1/workers/me", headers=replacement)).status_code == 401
+
+        assert (await client.get("/api/v1/admin/overview", headers=token_headers)).status_code == 200
+        assert (await client.post(
+            f"/api/v1/admin/tokens/{token['id']}/revoke", headers=admin, json={}
+        )).status_code == 200
+        assert (await client.get("/api/v1/admin/overview", headers=token_headers)).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_recipe_management_labels_and_retires_worker_recipe(tmp_path):
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={},
+    ))
+    admin = {"Authorization": "Bearer client-secret"}
+    digest = "blake3:" + "a" * 64
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        credential = (await client.post(
+            "/api/v1/admin/workers", headers=admin, json={"worker_id": "recipe-worker"}
+        )).json()["token"]
+        worker = {"Authorization": f"Bearer {credential}"}
+        registered = await client.post("/api/v1/workers/register", headers=worker, json={
+            "worker_id": "recipe-worker",
+            "capabilities": [{
+                "backend": "marker",
+                "recipe_digest": digest,
+                "recipe": {"engine": "marker", "schema_version": 1},
+                "media_types": ["application/pdf"],
+                "artifact_type": "mdaf/v1",
+            }],
+        })
+        assert registered.status_code == 200
+        updated = await client.patch(
+            f"/api/v1/admin/recipes/{digest}", headers=admin,
+            json={"display_name": "Marker baseline", "notes": "Evaluation control", "enabled": False},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["display_name"] == "Marker baseline"
+        assert updated.json()["enabled"] is False
+        recipes = (await client.get("/api/v1/recipes", headers=admin)).json()["recipes"]
+        assert recipes[0]["notes"] == "Evaluation control"
+        with pytest.raises(KeyError):
+            app.state.database.resolve_backend("marker", "application/pdf")
+        await client.post(
+            "/api/v1/admin/workers/recipe-worker/revoke", headers=admin, json={}
+        )
+        recipes = (await client.get("/api/v1/recipes", headers=admin)).json()["recipes"]
+        assert recipes[0]["worker_count"] == 0
+
+
+@pytest.mark.anyio
 async def test_pdf_worker_does_not_claim_other_media(tmp_path):
     app = create_app(ServerSettings(
         data_dir=tmp_path,

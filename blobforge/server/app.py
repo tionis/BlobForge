@@ -6,6 +6,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import secrets
 from pathlib import Path
 from typing import Any
@@ -21,9 +22,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import ServerSettings
-from .database import Conflict, Database, token_hash
+from .database import Conflict, Database, now_ms, token_hash
+from .management_ui import ASSET_VERSION, CSS as MANAGEMENT_CSS, JS as MANAGEMENT_JS, console_html
 from .storage import CapabilitySigner, LocalStorage
 from .scim import create_scim_router
+
+
+PRIORITIES = {"1_urgent", "2_high", "3_normal", "4_low"}
+WORKER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 
 def _bearer(request: Request) -> str:
@@ -35,6 +41,12 @@ def _digest(value: str, field: str = "digest") -> str:
     value = value.lower()
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise HTTPException(400, f"{field} must be 64 hexadecimal characters")
+    return value
+
+
+def _recipe_identifier(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", value):
+        raise HTTPException(400, "invalid recipe identifier")
     return value
 
 
@@ -123,24 +135,44 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         worker_id = database.worker_for_token(token) if token else None
         if worker and not worker_id:
             raise HTTPException(401, "valid worker token required")
-        if not worker:
-            if worker_id or (token and secrets.compare_digest(token_hash(token), client_hash)):
+        if worker:
+            request.state.principal = {"id": f"worker:{worker_id}", "authentication": "worker", "roles": []}
+            return worker_id
+        principal: dict[str, Any] | None = None
+        if token and secrets.compare_digest(token_hash(token), client_hash):
+            principal = {"id": "token:bootstrap", "display_name": "Bootstrap token",
+                         "authentication": "bootstrap_token", "roles": ["admin"], "groups": []}
+        elif token:
+            admin_token = database.admin_token(token)
+            if admin_token:
+                principal = {"id": f"token:{admin_token['id']}", "display_name": admin_token["label"],
+                             "authentication": "admin_token", "roles": ["admin"], "groups": []}
+            elif worker_id:
+                if roles:
+                    raise HTTPException(403, "worker credentials cannot access management operations")
                 return worker_id
+        if principal is None:
             subject = request.session.get("sub") if settings.oidc_enabled else None
             principal = database.oidc_principal(str(subject), settings.role_groups) if subject else None
             if not principal:
                 raise HTTPException(401, "valid client token or provisioned OIDC session required")
-            hierarchy = {"viewer": 1, "operator": 2, "admin": 3}
-            required = min((hierarchy[role] for role in (roles or {"viewer"})), default=1)
-            granted = max((hierarchy[role] for role in principal["roles"]), default=0)
-            if granted < required:
-                raise HTTPException(403, "insufficient BlobForge role")
-            if roles and request.method not in {"GET", "HEAD", "OPTIONS"}:
-                expected_origin = (settings.public_url or str(request.base_url)).rstrip("/")
-                if request.headers.get("origin", "").rstrip("/") != expected_origin:
-                    raise HTTPException(403, "session-authenticated mutation requires the configured same origin")
-            request.state.principal = principal
+            principal["authentication"] = "oidc"
+        hierarchy = {"viewer": 1, "operator": 2, "admin": 3}
+        required = min((hierarchy[role] for role in (roles or {"viewer"})), default=1)
+        granted = max((hierarchy[role] for role in principal["roles"]), default=0)
+        if granted < required:
+            raise HTTPException(403, "insufficient BlobForge role")
+        if (principal.get("authentication") == "oidc" and roles
+                and request.method not in {"GET", "HEAD", "OPTIONS"}):
+            expected_origin = (settings.public_url or str(request.base_url)).rstrip("/")
+            if request.headers.get("origin", "").rstrip("/") != expected_origin:
+                raise HTTPException(403, "session-authenticated mutation requires the configured same origin")
+        request.state.principal = principal
         return worker_id
+
+    def principal_id(request: Request) -> str:
+        principal = getattr(request.state, "principal", None) or {}
+        return str(principal.get("id") or "unknown")
 
     def base_url(request: Request) -> str:
         return (settings.public_url or str(request.base_url)).rstrip("/")
@@ -197,7 +229,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def landing(request: Request) -> Response:
         try:
-            authorize(request)
+            authorize(request, roles={"admin"})
         except HTTPException as exc:
             if exc.status_code == 401 and settings.oidc_enabled:
                 return RedirectResponse("/auth/login")
@@ -208,33 +240,19 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             if principal
             else "API token"
         )
-        roles = ", ".join(str(role) for role in principal.get("roles", [])) if principal else "service administrator"
-        counts = database.snapshot()["counts"]
-        count_cards = "".join(
-            f"<li><strong>{int(value):,}</strong><span>{html.escape(str(label).replace('_', ' '))}</span></li>"
-            for label, value in sorted(counts.items())
-        )
-        page = f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BlobForge</title><style>
-:root{{color-scheme:dark;background:#101316;color:#f3f5f7;font:16px/1.5 system-ui,sans-serif}}body{{margin:0}}
-main{{max-width:72rem;margin:auto;padding:clamp(2rem,6vw,6rem)}}h1{{font-size:clamp(2.5rem,8vw,6rem);margin:0;letter-spacing:-.06em}}
-.eyebrow{{color:#8be0bd;text-transform:uppercase;letter-spacing:.16em;font-weight:700}}.muted{{color:#a9b2bc}}
-ul{{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1rem;padding:0;margin:2.5rem 0;list-style:none}}
-li{{background:#1a2026;border:1px solid #303942;border-radius:1rem;padding:1.25rem}}li strong{{display:block;font-size:1.8rem}}li span{{color:#a9b2bc}}
-nav{{display:flex;flex-wrap:wrap;gap:.75rem}}a{{color:#101316;background:#8be0bd;padding:.7rem 1rem;border-radius:.65rem;text-decoration:none;font-weight:700}}
-a.secondary{{color:#dce3e9;background:#242c33}}code{{color:#8be0bd}}</style></head>
-<body><main><p class="eyebrow">Coordinator online</p><h1>BlobForge</h1>
-<p>Signed in as <strong>{html.escape(identity)}</strong> · {html.escape(roles)}</p>
-<p class="muted">Self-hosted media conversion coordination and immutable MDAF artifact storage.</p>
-<ul>{count_cards}</ul><nav><a href="/docs">API documentation</a><a class="secondary" href="/api/v1/snapshot">Snapshot JSON</a><a class="secondary" href="/api/v1/recipes">Conversion recipes</a></nav>
-<p class="muted">The full browser file library and token-management console are not implemented yet.</p>
-</main></body></html>"""
-        return HTMLResponse(page, headers={
+        return HTMLResponse(console_html(identity, list(principal.get("roles", [])) if principal else ["admin"]), headers={
             "Cache-Control": "private, no-store",
-            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            "Content-Security-Policy": "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
             "X-Content-Type-Options": "nosniff",
         })
+
+    @app.get(f"/static/management-{ASSET_VERSION}.css")
+    async def management_css() -> Response:
+        return Response(MANAGEMENT_CSS, media_type="text/css", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    @app.get(f"/static/management-{ASSET_VERSION}.js")
+    async def management_js() -> Response:
+        return Response(MANAGEMENT_JS, media_type="text/javascript", headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
     @app.get("/auth/login")
     async def oidc_login(request: Request) -> Response:
@@ -293,6 +311,167 @@ a.secondary{{color:#dce3e9;background:#242c33}}code{{color:#8be0bd}}</style></he
     async def snapshot(request: Request) -> dict[str, Any]:
         authorize(request)
         return database.snapshot()
+
+    @app.get("/api/v1/admin/overview")
+    async def admin_overview(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        snap = database.snapshot()
+        workers = database.workers()
+        return {"counts": snap["counts"], "priority": snap["priority"],
+                "workers": {"total": len(workers), "online": sum(1 for value in workers if not value["revoked"] and value["status"] != "offline")},
+                "audit": database.audit_events(25), "generated_at": snap["generated_at"]}
+
+    @app.get("/api/v1/admin/jobs")
+    async def admin_jobs(request: Request, search: str = "", status: str = "", priority: str = "",
+                         media_type: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        if status and status not in {"todo", "processing", "failed", "dead", "done"}:
+            raise HTTPException(400, "unsupported job status")
+        if priority and priority not in PRIORITIES:
+            raise HTTPException(400, "unsupported priority")
+        return database.list_jobs(search=search[:200], status=status, priority=priority,
+                                  media_type=media_type[:120], limit=max(1, min(limit, 200)), offset=max(0, offset))
+
+    @app.post("/api/v1/admin/uploads")
+    async def admin_upload(request: Request, filename: str, media_type: str = "application/octet-stream",
+                           priority: str = "3_normal", tags: str = "") -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        filename = filename.strip()
+        if not filename or len(filename) > 512:
+            raise HTTPException(400, "filename must contain 1-512 characters")
+        if priority not in PRIORITIES:
+            raise HTTPException(400, "unsupported priority")
+        temporary = storage.pending / "admin-upload" / secrets.token_urlsafe(18)
+        result = await atomic_request_body(request, temporary)
+        key = str(result["sha256"])
+        destination = storage.source_path("sha256", key)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            temporary.unlink(missing_ok=True)
+        else:
+            os.replace(temporary, destination)
+        job = database.enqueue(key, {"digest_algorithm": "sha256", "digest": key,
+            "media_type": media_type[:120], "original_name": filename,
+            "size_bytes": int(result["size_bytes"]), "paths": [filename],
+            "tags": [value.strip() for value in tags.split(",") if value.strip()][:100],
+            "priority": priority, "source": "management-ui",
+            "aliases": {"blake3": str(result["blake3"])}})
+        database.audit(principal_id(request), "job.upload", key,
+                       {"filename": filename, "size_bytes": result["size_bytes"]})
+        return job
+
+    @app.get("/api/v1/admin/jobs/{key}")
+    async def admin_job(key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        try:
+            return {"job": database.get_job(key), "artifacts": database.artifacts(key),
+                    "failures": database.job_failures(key)}
+        except KeyError:
+            raise HTTPException(404, "job not found") from None
+
+    @app.get("/api/v1/admin/jobs/{key}/source-url")
+    async def admin_source_url(key: str, request: Request) -> dict[str, str]:
+        authorize(request, roles={"admin"})
+        try: job = database.get_job(key)
+        except KeyError: raise HTTPException(404, "job not found") from None
+        algorithm = str(job["digest_algorithm"])
+        digest = str(job["digest"])
+        path = storage.source_path(algorithm, digest)
+        if not path.is_file(): raise HTTPException(404, "source object missing")
+        subject = f"{key}|{algorithm}|{digest}"
+        return {"url": capability_url(
+            request, "GET", "source", subject, f"/api/v1/transfers/sources/{key}",
+            {"algorithm": algorithm, "digest": digest, "media_type": str(job["media_type"])},
+        )}
+
+    @app.patch("/api/v1/admin/jobs/{key}/priority")
+    async def admin_priority(key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); body = await request.json(); priority = str(body.get("priority") or "")
+        if priority not in PRIORITIES:
+            raise HTTPException(400, "priority must be 1_urgent, 2_high, 3_normal, or 4_low")
+        try: job = database.set_priority(key, priority)
+        except KeyError: raise HTTPException(404, "job not found") from None
+        database.audit(principal_id(request), "job.priority", key, {"priority": priority})
+        return job
+
+    @app.post("/api/v1/admin/jobs/{key}/requeue")
+    @app.post("/api/v1/admin/jobs/{key}/retry")
+    async def admin_requeue(key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); body = await request.json()
+        try: job = database.requeue_job(key, reset_retries=bool(body.get("reset_retries")))
+        except KeyError: raise HTTPException(404, "job not found") from None
+        database.audit(principal_id(request), "job.requeue", key, {"reset_retries": bool(body.get("reset_retries"))})
+        return job
+
+    @app.delete("/api/v1/admin/jobs/{key}")
+    async def admin_delete_job(key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        try: removed = database.delete_job(key)
+        except KeyError: raise HTTPException(404, "job not found") from None
+        source = removed["source"]
+        paths = [storage.source_path(str(source["digest_algorithm"]), str(source["digest"]))]
+        paths.extend(storage.root / str(value["storage_path"]) for value in removed["artifacts"])
+        moved = storage.trash(paths, f"job-{key[:16]}")
+        database.audit(principal_id(request), "job.delete", key, {"trash": moved})
+        return {"deleted": True, "trash": moved}
+
+    @app.get("/api/v1/admin/workers")
+    async def admin_workers(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); return {"workers": database.workers()}
+
+    @app.post("/api/v1/admin/workers")
+    async def admin_create_worker(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); body = await request.json(); worker_id = str(body.get("worker_id") or "")
+        if not WORKER_ID.fullmatch(worker_id):
+            raise HTTPException(400, "worker_id must be 2-63 lowercase letters, digits, or hyphens")
+        value = database.create_worker(worker_id); database.audit(principal_id(request), "worker.create", worker_id)
+        return value
+
+    @app.post("/api/v1/admin/workers/{worker_id}/token")
+    async def admin_rotate_worker(worker_id: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        try: value = database.rotate_worker_token(worker_id)
+        except KeyError: raise HTTPException(404, "worker not found") from None
+        database.audit(principal_id(request), "worker.rotate", worker_id); return value
+
+    @app.post("/api/v1/admin/workers/{worker_id}/revoke")
+    async def admin_revoke_worker(worker_id: str, request: Request) -> dict[str, bool]:
+        authorize(request, roles={"admin"})
+        try: database.revoke_worker(worker_id)
+        except KeyError: raise HTTPException(404, "worker not found") from None
+        database.audit(principal_id(request), "worker.revoke", worker_id); return {"revoked": True}
+
+    @app.get("/api/v1/admin/tokens")
+    async def admin_tokens(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); return {"tokens": database.admin_tokens()}
+
+    @app.post("/api/v1/admin/tokens")
+    async def admin_create_token(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); body = await request.json(); label = str(body.get("label") or "").strip()
+        if not label or len(label) > 120: raise HTTPException(400, "label must contain 1-120 characters")
+        days = body.get("expires_in_days")
+        if days is not None and (not isinstance(days, int) or days < 1 or days > 3650):
+            raise HTTPException(400, "expires_in_days must be between 1 and 3650")
+        expires = now_ms() + days * 86400000 if days else None
+        value = database.create_admin_token(label, expires); database.audit(principal_id(request), "token.create", value["id"], {"label": label})
+        return value
+
+    @app.post("/api/v1/admin/tokens/{identifier}/revoke")
+    async def admin_revoke_token(identifier: str, request: Request) -> dict[str, bool]:
+        authorize(request, roles={"admin"})
+        try: database.revoke_admin_token(identifier)
+        except KeyError: raise HTTPException(404, "active token not found") from None
+        database.audit(principal_id(request), "token.revoke", identifier); return {"revoked": True}
+
+    @app.patch("/api/v1/admin/recipes/{digest}")
+    async def admin_update_recipe(digest: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"}); digest = _recipe_identifier(digest); body = await request.json()
+        try: value = database.update_recipe(digest, body)
+        except KeyError: raise HTTPException(404, "recipe not found") from None
+        except ValueError as exc: raise HTTPException(400, str(exc)) from exc
+        database.audit(principal_id(request), "recipe.update", digest,
+                       {key: body[key] for key in ("enabled", "display_name") if key in body})
+        return value
 
     @app.post("/api/v1/jobs/status")
     async def statuses(request: Request) -> dict[str, Any]:
@@ -477,7 +656,9 @@ a.secondary{{color:#dce3e9;background:#242c33}}code{{color:#8be0bd}}</style></he
                 raise HTTPException(404, "no active recipe for that backend and media type")
         if not recipe:
             raise HTTPException(400, "recipe_digest or backend is required")
-        return database.request_conversion(key, recipe)
+        result = database.request_conversion(key, recipe)
+        database.audit(principal_id(request), "job.convert", key, {"recipe_digest": recipe})
+        return result
 
     @app.post("/api/v1/jobs/{key}/download-url")
     async def download_url(key: str, request: Request) -> dict[str, str]:

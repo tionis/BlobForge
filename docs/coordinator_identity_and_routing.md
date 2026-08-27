@@ -81,10 +81,12 @@ otherwise valid browser session. Access and refresh tokens are not persisted.
 | `blobforge-operator` | viewer plus ingest and conversion requests |
 | `blobforge-admin` | operator plus administration |
 
-The mapping is configurable with `BLOBFORGE_SERVER_ROLE_GROUPS`. Static client
-tokens remain an automation/admin mechanism, and worker tokens remain bound to
-worker-only operations. Cookie-authenticated mutations additionally require a
-same-origin `Origin` header.
+The mapping is configurable with `BLOBFORGE_SERVER_ROLE_GROUPS`. The static
+client token remains a recovery/bootstrap admin mechanism. Revocable `bfa_`
+admin tokens support automation, while per-worker `bfw_` credentials are bound
+to one worker identity and cannot call admin-role routes. Cookie-authenticated
+mutations additionally require a same-origin `Origin` header. The complete UI
+and credential lifecycle is documented in `docs/management_console.md`.
 
 OIDC uses discovery, Authorization Code flow, issuer/signature/audience/nonce
 validation through Authlib, a Secure HttpOnly SameSite=Lax host-only session

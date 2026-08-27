@@ -60,7 +60,8 @@ directly after source-map and package validation.
 ├── objects/
 │   ├── sources/<algorithm>/<shard>/<digest>
 │   └── artifacts/<source-shard>/<source>/<recipe>/<identity>
-└── pending/<source>/<lease-token>
+├── pending/<source>/<lease-token>
+└── trash/<timestamp>-<reason>/...
 ```
 
 Do not place the SQLite database on NFS or a storage system with unreliable
@@ -82,12 +83,11 @@ tokens. TLS belongs at a local reverse proxy for non-loopback deployments.
 OIDC/SCIM settings and the authorization model are documented in
 `docs/coordinator_identity_and_routing.md`.
 
-The server root is an authenticated coordinator overview. An unauthenticated
-browser is redirected to `/auth/login`; after OIDC authorization it shows
-current queue counts and links to the OpenAPI documentation, snapshot, and
-recipe APIs. Responses are private/no-store and use a restrictive CSP. This is
-not yet the full Bunny-era file library, worker enrollment, or token-management
-console.
+The server root is the authenticated administration console. An unauthenticated
+browser is redirected to `/auth/login`; after OIDC authorization an admin can
+operate jobs, worker identities, recipes, and revocable automation tokens.
+Responses are private/no-store and use a restrictive CSP. The controls and
+their safety semantics are documented in `docs/management_console.md`.
 
 ## Podman Quadlet deployment
 
@@ -231,10 +231,9 @@ window.
 
 ## Known first-release gaps
 
-- No full replacement management Web UI or token CRUD yet; the authenticated
-  root provides a coordinator overview, while worker tokens are bootstrapped
-  from the authoritative environment mapping and stored hashed in SQLite.
-  Removing a worker from the mapping revokes it on the next restart.
+- The management console provides global administration, but does not yet have
+  private collections, normalized tag CRUD, scoped service accounts, an online
+  backup control, trash restoration/retention controls, or inline MDAF preview.
 - No online backup endpoint, metrics endpoint, rate limiting, or reverse proxy.
 - The generic persistence and multipurpose claim contract is implemented, but
   filesystem ingestion still defaults to PDFs and the production worker still

@@ -1,5 +1,45 @@
 # Work Log
 
+## 2026-08-27 (Self-hosted Administration Console)
+- **Objective:** Replace the diagnostic root page with an admin interface that
+  can operate the self-hosted application without hand-written API calls.
+- **Design:** Organized the console around Overview, Jobs, Workers, Recipes,
+  and Access. Kept canonical recipe content immutable while allowing names,
+  notes, and retirement. Added per-identity dynamic worker credentials and
+  revocable automation-admin tokens; environment workers remain controlled by
+  Gandalf. Job deletion uses a recoverable trash tree and active requeue clears
+  the lease so stale workers remain fenced.
+- **Implementation:** Added paginated/filterable job queries; streamed
+  SHA-256+BLAKE3 upload; source/artifact downloads; priority, requeue, retry,
+  conversion, and delete actions; failure/artifact detail; worker create,
+  rotate, and revoke; admin-token create/list/revoke; recipe metadata controls;
+  and an administrative audit feed. Replaced the raw Snapshot JSON and recipe
+  registry links with the task-oriented responsive console. The versioned
+  same-origin JS/CSS bundle uses a no-inline-script CSP. Added SQLite migrations
+  for recipe metadata, credential ownership, admin tokens, and audit events.
+- **Security and correctness:** Worker credentials cannot access role-gated
+  administration. OIDC session mutations require the configured exact origin.
+  Tokens are shown once and only hashes are stored. Source download capability
+  tests caught and fixed missing digest query/signature context before release.
+  Dynamic workers survive restarts; environment-managed credentials cannot be
+  silently rotated in the database. Job deletion refuses active work and moves
+  files rather than unlinking them.
+- **Tooling and verification:** Audited application/database/storage/UI and
+  existing authorization docs with `rg`, `sed`, and SQLite; edited with
+  `apply_patch`; checked the browser bundle with Node; compiled Python; ran
+  focused and full pytest; built both Python distributions; and checked the
+  diff. The first isolated `uv build` could not resolve Hatchling because the
+  sandbox has no DNS; the approved network retry built the sdist and wheel.
+  Firefox is installed, but sandbox socket binding prevented a local
+  screenshot server, so no screenshot claim is made. Focused server coverage
+  passes 12 tests and the complete suite passes 211 tests plus 5 subtests.
+  A copied 1,808-source migration database upgraded additively with
+  `quick_check=ok`, retained every source, and gained the expected worker,
+  recipe, token, and audit schema. Coverage includes the complete job/source
+  lifecycle, tagged legacy recipe identifiers, credential restart/rotation/
+  revocation, revoked-worker recipe availability, recipe retirement, and OIDC
+  same-origin enforcement. Deployment verification follows in this work item.
+
 ## 2026-08-21 (done_seq migration ordering fix)
 - **Objective:** Fix `Internal error` (500) on every coordinator API request
   after upgrading a pre-0.4.0 database.
