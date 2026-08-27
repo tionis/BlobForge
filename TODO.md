@@ -1,5 +1,88 @@
 # TODO List
 
+## Canonical Conversion Roadmap
+
+The ordered roadmap for legacy enrichment, recipe evaluation, and worker
+deployment is documented in `docs/conversion_program_roadmap.md`. Detailed
+source-alignment decisions and acceptance gates are in
+`docs/pdf_enrichment_pipeline.md`. This section is the canonical short status
+view; detailed research tasks remain in the sections below.
+
+### Phase 0: Freeze contracts and evaluation inputs
+
+- [ ] Review and approve the staged program in
+  `docs/conversion_program_roadmap.md`.
+- [ ] Review and approve the enrichment evidence, confidence, and publication
+  rules in `docs/pdf_enrichment_pipeline.md`.
+- [ ] Define a versioned intermediate document/evidence model shared by legacy
+  alignment and new converter adapters.
+- [ ] Define canonical recipes for enrichment-only and composite conversion,
+  including exact model/tool identities and output-affecting settings.
+- [ ] Select and label the hard-page adjudication set from the frozen
+  43-rulebook corpus; record API rights and retain a hidden holdout.
+- [ ] Freeze the scoring rubric before examining candidate outputs.
+
+### Phase 1: Legacy PDF enrichment
+
+- [ ] Implement modular PDF evidence extraction for pages, dimensions, native
+  text blocks, reading order, geometry, and stable block identifiers.
+- [ ] Implement loss-aware Markdown segmentation and monotonic
+  Markdown-to-PDF alignment, seeded by trustworthy legacy anchors and TOC
+  evidence.
+- [ ] Emit final UTF-8 spans, page/region selectors, methods, confidence,
+  outline data, and explicit unmapped/ambiguous diagnostics.
+- [ ] Add validation and coverage reports for invalid spans, non-monotonic
+  mappings, conflicting evidence, and unsupported precision.
+- [ ] Produce new derived MDAFs without overwriting the 1,377 conservative
+  legacy MDAFs or inventing unavailable Marker/model versions.
+- [ ] Run and review a 10-20-document canary spanning native text, scans,
+  columns, tables, equations, sidebars, and image-heavy pages.
+- [ ] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
+- [ ] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
+  source, base-artifact, recipe, and derived-artifact identities.
+
+### Phase 2: Conversion recipes
+
+- [ ] Integrate the shared enrichment stages into a pinned Marker 1 recipe.
+- [ ] Promote the Marker 2 evaluator into a pinned composite recipe; require a
+  verifiable model revision or manifest checksum and declared inference backend.
+- [ ] Add Datalab and promote the Mistral OCR evaluator into production-ready
+  API adapters that preserve sanitized native evidence, exact returned
+  identity, geometry, usage, and spend data.
+- [ ] Promote Docling from the current evaluation path into the principal local
+  structured recipe, preserving its lossless document representation rather
+  than only Markdown.
+- [ ] Keep MinerU as a conditional challenger when first-round results identify
+  a material gap; do not expand the matrix without an explicit reason.
+- [ ] Require every recipe to produce a shared-builder MDAF that passes both
+  BlobForge and independent Vulcan validation/import.
+
+### Phase 3: Rulebook evaluation
+
+- [ ] Run every eligible recipe twice on identical adjudication inputs and
+  retain outputs, native evidence, logs, timings, resources, and cost.
+- [ ] Generate blinded review bundles and separately score text, reading order,
+  hierarchy, lists, tables, equations, assets, references, and source maps.
+- [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,
+  unsupported precision, and manual correction time.
+- [ ] Compare failures, retries, determinism, throughput, RAM/VRAM, artifact
+  size, and API cost under fixed budgets.
+- [ ] Validate shortlisted recipes on the hidden holdout and publish results and
+  limitations in `docs/converter_benchmark_results.md`.
+
+### Phase 4: Routing and production rollout
+
+- [ ] Define versioned routing based on media type, scan ratio, layout,
+  language, tables/equations, quality tier, privacy, and cost ceiling.
+- [ ] Support explicit per-job recipe overrides and audit the routing decision
+  and rationale.
+- [ ] Deploy exact-recipe worker capabilities incrementally and verify that a
+  multipurpose supervisor safely dispatches isolated adapters between jobs.
+- [ ] Run production canaries with rollback to retained legacy artifacts before
+  expanding any selected recipe.
+- [ ] Periodically reevaluate defaults and fallbacks without changing existing
+  immutable artifact identities.
+
 ## Self-hosted Backend
 
 - [x] Implement a conventional FastAPI coordinator using SQLite WAL, local

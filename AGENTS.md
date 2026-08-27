@@ -38,6 +38,20 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** The conversion program now has an ordered, repository-backed
+  roadmap. Contract and rubric freeze precede a 10-20-document enrichment
+  canary; only a reviewed `pdf-enrichment/v1` may run across all 1,377 legacy
+  artifacts. Enrichment produces a new immutable derived artifact from the
+  exact source and base artifact, never an in-place rewrite or invented
+  recovery of unavailable historical Marker/model versions. Conversion and
+  enrichment share a normalized evidence boundary: trustworthy native geometry
+  is preserved, while Markdown-only output uses modular PDF evidence extraction
+  and monotonic alignment. Accuracy and coverage remain separate; unsupported
+  precision stays unmapped. The first evaluation round is legacy/Marker 1,
+  Marker 2, Docling, Datalab, and Mistral OCR, with MinerU conditional on an
+  identified quality gap. Routing and production canaries follow blinded
+  corpus and holdout evaluation.
+
 - **2026-08-27:** The self-hosted root is now a complete, admin-only operations
   console rather than a JSON-navigation landing page. It manages paginated
   jobs, streaming source uploads/downloads, fenced requeue/retry/priority/delete

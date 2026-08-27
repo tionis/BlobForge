@@ -1,5 +1,28 @@
 # Work Log
 
+## 2026-08-27 (Conversion Program Roadmap and PDF Enrichment Design)
+
+- **Objective:** Turn the agreed legacy-enrichment, converter-comparison, and
+  production-routing sequence into persistent project planning and design
+  records.
+- **Findings:** The repository already had a large `TODO.md`, a frozen
+  43-document/9,465-page corpus, converter ABI and MDAF design documents, and
+  1,377 conservative legacy MDAFs. Those artifacts preserve available page
+  anchors and exact TOC-heading matches; they are not a completed
+  PDF-to-Markdown alignment backfill.
+- **Actions:** Added a canonical phased roadmap to `TODO.md`; documented
+  deliverables, dependencies, exit gates, parallel work, candidate recipes,
+  evaluation, and routing in `docs/conversion_program_roadmap.md`; specified the
+  reusable evidence extraction, segmentation, monotonic alignment, structure,
+  confidence, validation, canary, and resumable-backfill contract in
+  `docs/pdf_enrichment_pipeline.md`; and recorded the architectural decision in
+  `AGENTS.md`.
+- **Tooling:** Used `rg`, `sed`, `git status`, and `apply_patch` to inventory,
+  inspect, and update the repository. No sources, artifacts, coordinator state,
+  or external services were changed.
+- **Verification:** The documentation-only patch passed `git diff --check`; no
+  application tests were required.
+
 ## 2026-08-27 (Self-hosted Administration Console)
 - **Objective:** Replace the diagnostic root page with an admin interface that
   can operate the self-hosted application without hand-written API calls.
