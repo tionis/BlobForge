@@ -18,6 +18,11 @@
   SCIM-backed role and account-lifecycle enforcement.
 - [x] Provision the initial authorized administrator through Authentik and
   force-reconcile the `blobforge-admin` membership into production SCIM state.
+- [x] Replace raw browser JSON and reused-callback 500 responses with private,
+  recovery-oriented HTML error pages while preserving API/SCIM JSON errors.
+- [ ] Close Authentik's filtered-SCIM first-membership gap with ordered,
+  event-driven user-before-membership provisioning; retain a short bounded
+  full-sync safety net without widening BlobForge's directory scope.
 - [x] Add an authenticated self-hosted root landing page with OIDC redirect,
   queue counts, and API navigation instead of FastAPI's default 404.
 - [x] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,

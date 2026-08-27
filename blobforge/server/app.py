@@ -12,9 +12,12 @@ from typing import Any
 from urllib.parse import urlencode
 
 from blake3 import blake3
+from authlib.integrations.base_client.errors import OAuthError
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from authlib.integrations.starlette_client import OAuth
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import ServerSettings
@@ -33,6 +36,43 @@ def _digest(value: str, field: str = "digest") -> str:
     if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
         raise HTTPException(400, f"{field} must be 64 hexadecimal characters")
     return value
+
+
+def _browser_request(request: Request) -> bool:
+    """Return true only for browser navigation outside machine-facing APIs."""
+    return (
+        request.method in {"GET", "HEAD"}
+        and "text/html" in request.headers.get("accept", "").lower()
+        and not request.url.path.startswith(("/api/", "/scim/"))
+    )
+
+
+def _browser_error(status: int, detail: str) -> HTMLResponse:
+    titles = {
+        400: "Sign-in could not be completed",
+        401: "Sign-in required",
+        403: "Access is not provisioned",
+        404: "Page not found",
+    }
+    title = titles.get(status, "Something went wrong")
+    retry = status in {400, 401, 403}
+    action_href = "/auth/login" if retry else "/"
+    action_label = "Start a new sign-in" if retry else "Return to BlobForge"
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{status} · BlobForge</title><style>
+:root{{color-scheme:dark;background:#101316;color:#f3f5f7;font:16px/1.5 system-ui,sans-serif}}body{{margin:0}}
+main{{max-width:46rem;margin:auto;padding:clamp(2rem,8vw,7rem)}}.eyebrow{{color:#8be0bd;text-transform:uppercase;letter-spacing:.16em;font-weight:700}}
+h1{{font-size:clamp(2.4rem,7vw,5rem);line-height:1;margin:.2em 0;letter-spacing:-.055em}}p{{color:#b8c1ca;font-size:1.08rem;max-width:40rem}}
+a{{display:inline-block;margin-top:1.5rem;color:#101316;background:#8be0bd;padding:.75rem 1rem;border-radius:.65rem;text-decoration:none;font-weight:700}}
+code{{color:#8be0bd}}</style></head><body><main><p class="eyebrow">BlobForge · HTTP {status}</p>
+<h1>{html.escape(title)}</h1><p>{html.escape(detail)}</p><a href="{action_href}">{action_label}</a>
+</main></body></html>"""
+    return HTMLResponse(page, status_code=status, headers={
+        "Cache-Control": "private, no-store",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 def create_app(settings: ServerSettings | None = None) -> FastAPI:
@@ -70,6 +110,13 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         )
     if settings.scim_token:
         app.include_router(create_scim_router(database, settings.scim_token))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def friendly_http_error(request: Request, exc: StarletteHTTPException) -> Response:
+        if _browser_request(request):
+            detail = str(exc.detail) if isinstance(exc.detail, str) else "The request could not be completed."
+            return _browser_error(exc.status_code, detail)
+        return await http_exception_handler(request, exc)
 
     def authorize(request: Request, *, worker: bool = False, roles: set[str] | None = None) -> str | None:
         token = _bearer(request)
@@ -200,12 +247,22 @@ a.secondary{{color:#dce3e9;background:#242c33}}code{{color:#8be0bd}}</style></he
     async def oidc_callback(request: Request) -> Response:
         if not oauth:
             raise HTTPException(404, "OIDC is not configured")
-        token = await oauth.oidc.authorize_access_token(request)  # type: ignore[union-attr]
+        try:
+            token = await oauth.oidc.authorize_access_token(request)  # type: ignore[union-attr]
+        except OAuthError as exc:
+            request.session.clear()
+            raise HTTPException(
+                400,
+                "This sign-in request expired or was already used. Start a new sign-in.",
+            ) from exc
         userinfo = token.get("userinfo") or {}
         subject = str(userinfo.get("sub") or "")
         if not subject or not database.oidc_principal(subject, settings.role_groups):
             request.session.clear()
-            raise HTTPException(403, "OIDC identity is not an active, authorized SCIM user")
+            raise HTTPException(
+                403,
+                "Your identity was verified, but BlobForge has not received an active authorized membership from SCIM. If access was just granted, start a new sign-in shortly; otherwise contact an administrator.",
+            )
         request.session.clear(); request.session["sub"] = subject
         return RedirectResponse("/")
 

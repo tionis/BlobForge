@@ -1985,3 +1985,30 @@
   redirect to `/auth/login`. Tooling used included `rg`, `sed`, `curl`,
   Ansible, the Authentik Django shell for sanitized read-only checks, and a
   read-only SQLite aggregate query.
+
+## 2026-08-27 (SCIM Root Cause and Browser Error UX)
+
+- **Objective:** Explain why the initial Authentik group grant was not visible
+  to BlobForge in real time and replace raw framework errors on browser routes.
+- **Production evidence:** Authentik queued the BlobForge membership task at
+  `16:04:23.988Z`, processed it at `16:04:24.494Z`, and marked it successful at
+  `16:04:24.987Z`. BlobForge received only `GET /scim/v2/Groups/{id}` during
+  that task. It received no user creation or group mutation, and OIDC callbacks
+  at `16:04:30Z` and `16:04:37Z` correctly returned 403. The forced full sync
+  later issued `POST /scim/v2/Users` followed by `PUT /scim/v2/Groups/{id}`.
+- **Root cause:** Authentik's filtered-provider membership handler looks up
+  existing provider-specific user mappings and returns without mutation when
+  none exist. A first access-group addition makes the user newly eligible, but
+  that handler does not provision the user first. Its task therefore records a
+  successful no-op; the native full-sync fallback is every four hours.
+- **Actions:** Added content-negotiated browser exception handling, a friendly
+  SCIM authorization explanation with a fresh-login action, and explicit
+  handling for expired/reused OAuth codes. `/api/` and `/scim/` retain JSON
+  errors. Documented the filtered-SCIM caveat and a pending ordered-provisioning
+  fix that preserves least-privilege directory scope.
+- **Verification:** The focused server suite passed 8 tests. The full suite
+  initially inherited this shell's production coordinator environment and
+  produced 16 unrelated network failures; rerunning with those two variables
+  explicitly unset passed 207 tests and 5 subtests. Read-only diagnosis used
+  `rg`, `sed`, Ansible, Authentik's task database and installed source, and
+  filtered systemd journal queries.

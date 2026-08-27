@@ -89,6 +89,11 @@ same-origin `Origin` header.
 OIDC uses discovery, Authorization Code flow, issuer/signature/audience/nonce
 validation through Authlib, a Secure HttpOnly SameSite=Lax host-only session
 cookie, and `/auth/login`, `/auth/callback`, `/auth/logout`, and `/api/v1/me`.
+Browser navigation errors outside `/api/` and `/scim/` use private, no-store
+HTML recovery pages with a fresh-login action. Machine-facing routes retain
+structured JSON errors. Reused or expired OIDC authorization codes are handled
+as a recoverable 400 response rather than leaking an exception or returning a
+generic 500.
 
 SCIM 2.0 is served below `/scim/v2` with a separate bearer token. It supports
 service discovery and Users/Groups list, filter, create, replace, patch, and
@@ -136,3 +141,19 @@ OIDC redirect, public SCIM denial, and an existing ingress endpoint passed after
 the approved Caddy restart. The first quiesced backup completed in 55 seconds;
 the isolated restore recovered 32.165 GiB and passed SQLite verification in 201
 seconds. Daily backup and weekly restore-test timers are enabled.
+
+### Authentik filtered-SCIM membership caveat
+
+Authentik 2026.8 dispatches membership changes immediately, but its outgoing
+SCIM membership task assumes the affected user already has a provider-specific
+SCIM mapping. A user's first addition to the application access group also
+makes that user newly eligible for the filtered backchannel provider. In that
+case the real-time task can finish successfully without first creating the
+user, so it has no remote member ID to add. Authentik's full-sync safety net is
+scheduled only every four hours; the Gandalf targeted reconciliation with
+`blobforge_scim_force_sync=true` is the current immediate recovery operation.
+
+Do not work around this by widening BlobForge's SCIM scope to every Authentik
+user. The durable fix should preserve the access-group filter and order an
+in-scope user sync before the membership update (preferably upstream in
+Authentik), with a short bounded full-sync reconciliation only as a safety net.

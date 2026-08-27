@@ -4,7 +4,9 @@ import zipfile
 
 import httpx
 import pytest
+from authlib.integrations.base_client.errors import OAuthError
 
+import blobforge.server.app as server_app
 from blobforge.server.app import create_app
 from blobforge.server.config import ServerSettings
 
@@ -149,6 +151,83 @@ async def test_root_redirects_unauthenticated_browser_to_oidc(tmp_path):
         response = await client.get("/")
     assert response.status_code == 307
     assert response.headers["location"] == "/auth/login"
+
+
+@pytest.mark.anyio
+async def test_browser_oidc_denial_is_friendly_while_api_errors_remain_json(
+    tmp_path, monkeypatch
+):
+    class FakeOIDC:
+        async def authorize_access_token(self, _request):
+            return {"userinfo": {"sub": "not-provisioned"}}
+
+    class FakeOAuth:
+        def __init__(self):
+            self.oidc = FakeOIDC()
+
+        def register(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(server_app, "OAuth", FakeOAuth)
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={},
+        public_url="https://blobforge.example",
+        oidc_issuer="https://auth.example/application/o/blobforge/",
+        oidc_client_id="blobforge",
+        oidc_client_secret="oidc-secret",
+        session_secret="session-secret",
+    ))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://blobforge.example"
+    ) as client:
+        browser = await client.get("/auth/callback", headers={"Accept": "text/html"})
+        api = await client.get("/api/v1/me", headers={"Accept": "application/json"})
+
+    assert browser.status_code == 403
+    assert browser.headers["content-type"].startswith("text/html")
+    assert browser.headers["cache-control"] == "private, no-store"
+    assert "Access is not provisioned" in browser.text
+    assert "Start a new sign-in" in browser.text
+    assert "OIDC identity is not" not in browser.text
+    assert api.status_code == 401
+    assert api.json() == {"detail": "valid client token or provisioned OIDC session required"}
+
+
+@pytest.mark.anyio
+async def test_reused_oidc_callback_renders_recovery_page(tmp_path, monkeypatch):
+    class FakeOIDC:
+        async def authorize_access_token(self, _request):
+            raise OAuthError("invalid_grant", "authorization code was already used")
+
+    class FakeOAuth:
+        def __init__(self):
+            self.oidc = FakeOIDC()
+
+        def register(self, **_kwargs):
+            return None
+
+    monkeypatch.setattr(server_app, "OAuth", FakeOAuth)
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={},
+        public_url="https://blobforge.example",
+        oidc_issuer="https://auth.example/application/o/blobforge/",
+        oidc_client_id="blobforge",
+        oidc_client_secret="oidc-secret",
+        session_secret="session-secret",
+    ))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://blobforge.example"
+    ) as client:
+        response = await client.get("/auth/callback", headers={"Accept": "text/html"})
+
+    assert response.status_code == 400
+    assert "Sign-in could not be completed" in response.text
+    assert "expired or was already used" in response.text
+    assert "authorization code was already used" not in response.text
 
 
 @pytest.mark.anyio

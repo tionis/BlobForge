@@ -38,6 +38,18 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-27:** Authentik 2026.8 does dispatch outgoing SCIM membership
+  changes in real time, but the membership path only resolves existing
+  `SCIMProviderUser` mappings. The first addition to an application-filtered
+  access group makes a user newly in scope, so the task may report success
+  after only reading the remote group and never create the user or update its
+  membership. The built-in full sync runs every four hours. Preserve the
+  narrow access-group scope; use Gandalf's forced full sync for immediate
+  recovery and pursue ordered user-before-membership provisioning plus a short
+  reconciliation safety net. BlobForge browser errors are now content
+  negotiated: browser navigation receives no-store HTML recovery pages, while
+  API and SCIM requests retain JSON.
+
 - **2026-08-27:** BlobForge OIDC authorization intentionally consults only its
   active local SCIM user/group state; Authentik group membership or identity
   claims alone cannot authorize a session. After changing membership in the
