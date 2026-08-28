@@ -113,7 +113,10 @@ backend-specific behavior in the packager.
 
 Implement PDF evidence extraction, Markdown segmentation, alignment, outline
 generation, diagnostics, and resumable derived-artifact production. Start with
-10-20 complete documents representing difficult corpus strata.
+10-20 complete born-digital rulebooks representing difficult corpus strata.
+The legacy/Marker compatibility recipes target digitally generated PDFs with
+usable embedded text; scan-heavy PDFs require a separate future OCR recipe and
+do not block this phase.
 
 The canary must establish that final byte spans, sampled page/region mappings,
 reading order, page furniture, ambiguity reporting, provenance, repeatability,
@@ -144,6 +147,13 @@ specific deficit.
 API adapters enforce rights approval, idempotency, bounded retries, per-attempt
 and per-job spend ceilings, response sanitization, and checkpoints that prevent
 packaging retries from repeating billable calls.
+
+Promotional credits or subscription quota may fund the Mistral and Datalab
+evaluation incrementally over several months. Scheduling is quota-aware and
+resumable by `(source_digest, recipe_digest)`. Reports retain both normalized
+list-price cost and actual billed usage/credit consumption so temporary credits
+do not distort the long-term recipe comparison. Credentials and account credit
+balances remain runtime secrets and never enter recipe JSON or MDAFs.
 
 Exit gate: every eligible recipe emits a BlobForge- and Vulcan-valid MDAF,
 records reproducibility information or an explicit experimental warning, and

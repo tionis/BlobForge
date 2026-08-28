@@ -110,6 +110,15 @@ If the two absent Trinity books are restored, add 547 pages: the corpus becomes
 10,012 pages and costs $40.05 for Mistral standard, $50.06 annotated, $100.12
 for Google Layout, or $150.18 for AWS Layout+Tables.
 
+The operator has a low-cost Mistral subscription with promotional API credits.
+Those credits can fund adjudication and whole-book batches over successive
+quota periods, reducing immediate cash expenditure. They do not change the
+normalized list-price figures above. Evaluation records must keep list-price
+cost, actual billed amount, and credits applied as separate fields, and retain
+hard page/spend ceilings even when a batch is expected to be fully credited.
+Account balances, expiry details, and credentials remain private runtime
+configuration rather than repository or MDAF metadata.
+
 ## Other provider controls
 
 Datalab/Chandra pricing remains dashboard-dependent. Official documentation

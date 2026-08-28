@@ -14,3 +14,10 @@ MISTRAL_API_KEY=... uv run blobforge evaluate mistral book.pdf \
 
 The full native OCR response, including blocks and confidence data, is retained
 as an opaque rendition; page Markdown becomes exact page-level UTF-8 mappings.
+
+Although the provider calls this an OCR API, BlobForge initially evaluates it
+on the same born-digital PnP rulebook corpus for layout and Markdown quality.
+Available subscription credits may be consumed in resumable bounded batches
+over several quota periods. Record list-price estimate, billed usage, and
+credits applied separately; never relax `--max-pages` or `--max-cost-usd`
+because a request is expected to be credited.

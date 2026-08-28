@@ -38,6 +38,18 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-28:** The current PDF-enrichment and local compatibility program is
+  explicitly scoped to born-digital illustrated pen-and-paper rulebooks with
+  usable embedded text. Image-only and scan-heavy PDFs are not an acceptance
+  gate; any future BlobForge OCR path must be a distinct recipe with its own
+  provenance and evaluation. Mistral and Datalab API evaluation may be spread
+  across subscription/quota periods using available promotional credits.
+  Provider responses must be cached by `(source_digest, recipe_digest)` before
+  packaging, and every attempt must retain page usage, normalized list-price
+  cost, billed amount, and credits applied separately. Hard page/spend caps and
+  rights checks still apply, and credentials/account balances never enter
+  recipe JSON or MDAFs.
+
 - **2026-08-28:** Corrected PDF-enrichment recipe
   `blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`
   passes the native-text canary but is not yet frozen for bulk backfill. Its
@@ -50,9 +62,10 @@ The virtual environment is located at `.venv/` and should be activated automatic
   invariant audit found zero page regressions and zero duplicate rectangles;
   and 51 visually adjudicated mappings were correct at advertised precision.
   A five-book/1,804-page expansion took about 23 minutes with concurrency two,
-  with 400–500-page books taking roughly 15–18 minutes. Add scan/OCR and
-  equation-heavy canaries plus runtime/peak-memory recording and size-aware
-  concurrency before freezing or starting the complete backfill.
+  with 400–500-page books taking roughly 15–18 minutes. Scan/OCR coverage was
+  subsequently declared outside this born-digital recipe's applicability; add
+  runtime/peak-memory recording and size-aware concurrency before freezing or
+  starting the complete backfill.
 
 - **2026-08-27:** Manual inspection rejected enrichment recipe
   `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`

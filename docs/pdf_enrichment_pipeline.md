@@ -1,6 +1,6 @@
 # PDF Markdown Enrichment Pipeline
 
-Status: corrected native-text candidate passes canary; final freeze gates remain
+Status: corrected born-digital candidate passes canary; operational freeze gate remains
 
 Date: 2026-08-28
 
@@ -78,16 +78,22 @@ policy. The report contract remains compatible while adding explicit region
 and page-only mapping counts. Previous recipe outputs remain immutable local
 experiments and are not silently selected.
 
-The 15-document/1,957-page native-text canary passed all structural,
+The 15-document/1,957-page born-digital canary passed all structural,
 catalog/lineage, BlobForge, and independent Vulcan checks. It has zero page
 regressions and zero duplicate published rectangles; 51 visually reviewed
 mappings were correct at their advertised precision. Repeat conversion of the
 original ten documents produced identical MDAF identities. See
 `pdf_enrichment_canary_review.md` for measurements and adjudication details.
 
-The candidate remains gated rather than frozen until scan/OCR and
-equation-heavy inputs are deliberately covered and the publication policy is
-formally accepted. The unbounded `--all` command must not be run before that
+The candidate is explicitly a born-digital PDF recipe for illustrated
+pen-and-paper rulebooks with usable embedded text. It does not invoke OCR and
+is not expected to enrich image-only or scan-heavy sources. OCR support, if
+later needed in BlobForge, must be a distinct recipe with its own model,
+provenance, cost, and acceptance corpus rather than an invisible fallback.
+
+The candidate remains gated rather than frozen until the publication policy is
+formally accepted and runtime/peak-memory recording is adequate for auditing
+the bulk run. The unbounded `--all` command must not be run before that
 decision.
 
 ## Contract
@@ -116,8 +122,8 @@ renditions, extensions, and `provenance.json`.
 Extract page indexes, dimensions, rotation and boxes; native text at available
 granularity and geometry; fonts and styles; images, drawings, links,
 annotations, bookmarks and printed labels; reading order, columns, tables,
-figures, captions, equations, furniture and sidebars; and page render
-fingerprints for scan/OCR fallback.
+figures, captions, equations, furniture and sidebars; and, only for a distinct
+OCR-capable recipe, page render fingerprints for scan/OCR fallback.
 
 Retain lossless sanitized native evidence. Normalized coordinates always
 declare unit and origin. Page-only evidence is useful; missing geometry is not
@@ -140,7 +146,7 @@ Generate candidates using, in descending strength:
 3. exact TOC/bookmark-to-heading matches;
 4. normalized exact text matches;
 5. locality-constrained fuzzy matches;
-6. OCR evidence for pages without useful native text.
+6. optional OCR evidence only in a separately identified OCR-capable recipe.
 
 Comparison may normalize Unicode, whitespace, ligatures, hyphenation, soft
 hyphens, punctuation, and line breaks, but published spans always target final
@@ -209,9 +215,10 @@ mappings are a regression.
 
 ## Canary and backfill
 
-The canary uses 10-20 complete documents spanning native text, scans, columns,
-tables, equations, sidebars, unusual fonts, full-page art, and known failures.
-Deeply review selected pages while complete books expose cross-page behavior.
+The current canary uses 10-20 complete born-digital documents spanning columns,
+tables, rotated layouts, sidebars, unusual fonts, full-page art, and known
+failures. Deeply review selected pages while complete books expose cross-page
+behavior. Image-only scans are outside this recipe's declared applicability.
 
 Freeze `pdf-enrichment/v1` only when:
 

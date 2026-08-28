@@ -20,6 +20,13 @@ The complete books are the acceptance corpus, not automatically ground truth.
 Existing Marker output is a baseline and review aid, not a gold answer. A
 smaller labeled page set and blinded human review provide quality judgments.
 
+The present program targets born-digital illustrated pen-and-paper rulebooks.
+Local compatibility/enrichment recipes may explicitly require usable embedded
+PDF text and need not support image-only scans. OCR-capable engines remain
+valuable comparison candidates for digital layout quality, but scan-heavy
+document support is a separate future recipe class rather than a promotion
+gate for the current program.
+
 ## Boundary
 
 BlobForge has three independent layers:
@@ -212,6 +219,12 @@ Every recipe runs twice on the adjudication set. Stable, affordable recipes are
 promoted to all complete books. API requests use a hard page/spend cap. A
 failure produces a recorded failed attempt and never silently invokes another
 engine under the same recipe.
+
+Provider subscriptions and promotional credits can be consumed in resumable
+bounded batches over time. The experiment ledger records provider usage,
+notional list-price cost, actual billed cost, and credits applied separately.
+This preserves a fair long-term comparison while allowing free quota to fund
+the initial Mistral and Datalab corpus runs.
 
 ## Comparison outputs
 

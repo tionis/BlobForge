@@ -2,8 +2,9 @@
 
 Date: 2026-08-27; corrected candidate reviewed 2026-08-28
 
-Status: first recipe rejected; corrected candidate passes the native-text
-canary but remains gated pending scan/equation coverage and explicit freeze
+Status: first recipe rejected; corrected candidate passes its born-digital
+rulebook scope and remains gated only on operational telemetry and explicit
+freeze
 
 Rejected recipe:
 `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
@@ -14,9 +15,16 @@ Corrected candidate:
 ## Corrected candidate decision
 
 The corrected candidate resolves every failure that rejected the first recipe
-and passes the native-text canary. It is suitable for a final scan/equation
-canary and recipe-freeze decision; it is not yet authorization to run the
-unbounded backfill.
+and passes the born-digital rulebook canary. It is suitable for the final
+recipe-freeze decision; it is not yet authorization to run the unbounded
+backfill.
+
+This recipe is intentionally scoped to digitally generated PDFs, especially
+illustrated pen-and-paper rulebooks with usable embedded text. It has no OCR
+stage and makes no quality claim for image-only or scan-heavy PDFs. Such inputs
+may produce little or no new mapping and should be routed to a future,
+separately identified OCR recipe when BlobForge gains that use case. Scan/OCR
+coverage is therefore an applicability boundary, not an acceptance gate.
 
 The implementation now uses the nearest trusted anchors on both sides,
 enforces monotonic pages, refines defensible regions from disjoint Poppler word
@@ -60,11 +68,12 @@ the 32-GiB deployment target, but the bulk runner should record per-document
 runtime and peak memory and use size-aware concurrency before the complete
 backfill begins.
 
-Remaining freeze gates are a deliberately selected scan/OCR and equation-heavy
-sample, formal acceptance of the publication policy, and a final check that
-runtime/resource recording is sufficient for the bulk audit. Restart safety is
-covered by a regression that recovers a `processing` catalog row and replaces
-an interrupted partial destination atomically.
+Remaining freeze gates are formal acceptance of the publication policy and
+runtime/peak-memory recording sufficient for the bulk audit. Equation handling
+is assessed when it occurs in the born-digital rulebook corpus, but a dedicated
+scientific-document benchmark is outside this recipe's target. Restart safety
+is covered by a regression that recovers a `processing` catalog row and
+replaces an interrupted partial destination atomically.
 
 ## First-candidate decision
 
@@ -168,8 +177,8 @@ precision among mappings that were published.
 5. Add invariant tests for future-anchor jumps, repeated labels, coarse
    split-blocks, and page-only fallback.
 6. Produce a new recipe digest, rerun the same ten documents, repeat this audit,
-   then extend the canary to scans, tables, equations, sidebars, and image-heavy
-   pages before considering the full backfill.
+   then extend the canary to difficult born-digital tables, columns, sidebars,
+   forms, and image-heavy pages before considering the full backfill.
 
 The current ten outputs remain immutable local experiments. No production
 object, conservative base MDAF, coordinator row, or source PDF was changed.

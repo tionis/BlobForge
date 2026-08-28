@@ -1,5 +1,33 @@
 # Work Log
 
+## 2026-08-28 (Born-Digital Recipe Scope and API-Credit Policy)
+
+- **Decision:** Declared the current legacy enrichment, Poppler, Marker 1,
+  Marker 2 no-OCR, and Docling standard profiles to target born-digital
+  illustrated pen-and-paper rulebooks with usable embedded text. Scan-heavy and
+  image-only PDF support is not an acceptance gate. If BlobForge later needs
+  it, OCR behavior must use a separate recipe identity with explicit models,
+  provenance, cost, and evaluation rather than a hidden fallback.
+- **Hosted evaluation:** Recorded that the operator has a low-cost Mistral
+  subscription with promotional API credits. Mistral and future Datalab runs
+  may proceed as resumable, quota-aware batches over successive months. Credits
+  affect cash timing but not normalized comparison: retain list-price estimate,
+  billed amount, credits applied, provider usage, page count, and run budget as
+  separate data. Production adapters must persist successful responses by
+  `(source_digest, recipe_digest)` before packaging to prevent duplicate
+  billable calls; that checkpoint remains implementation work.
+- **Security and limits:** API keys, private balance/expiry data, and account
+  details remain worker secrets. Rights checks and hard page/spend ceilings
+  remain mandatory even for fully credited runs.
+- **Documentation:** Updated the enrichment decision/canary, conversion roadmap,
+  adapter architecture, evaluation/cost model, evaluator operator READMEs,
+  canonical TODO, and repository findings. This is applicability metadata, not
+  an output-affecting algorithm change, so the validated enrichment recipe
+  digest and existing canary artifacts remain unchanged.
+- **Tooling:** Used `rg`, `sed`, `git`, and `apply_patch`. No API call,
+  credential access, artifact conversion, production mutation, or dependency
+  change occurred.
+
 ## 2026-08-28 (Corrected PDF Enrichment Candidate and Expanded Canary)
 
 - **Objective:** Repair the mapping-accuracy failures that rejected the first

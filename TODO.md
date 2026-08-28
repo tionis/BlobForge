@@ -51,8 +51,9 @@ view; detailed research tasks remain in the sections below.
 - [x] Expand the corrected canary by five difficult whole books; verify columns,
   tables, rotated layouts, sidebars, forms, unusual fonts, German text, and
   image-heavy pages across 1,957 total pages.
-- [ ] Add deliberately selected scan/OCR and equation-heavy inputs to the
-  enrichment canary and record expected omission/fallback behavior.
+- [x] Declare legacy enrichment and current local compatibility recipes as
+  born-digital PDF recipes focused on illustrated PnP rulebooks; scan-heavy OCR
+  support is a separate future recipe and does not block their acceptance.
 - [ ] Add per-document duration and peak-memory recording, then define
   size-aware concurrency for the complete CPU backfill.
 - [ ] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
@@ -66,7 +67,8 @@ view; detailed research tasks remain in the sections below.
   verifiable model revision or manifest checksum and declared inference backend.
 - [ ] Add Datalab and promote the Mistral OCR evaluator into production-ready
   API adapters that preserve sanitized native evidence, exact returned
-  identity, geometry, usage, and spend data.
+  identity, geometry, usage, and spend data; persist successful provider
+  responses before packaging so retries cannot consume quota twice.
 - [ ] Promote Docling from the current evaluation path into the principal local
   structured recipe, preserving its lossless document representation rather
   than only Markdown.
@@ -186,9 +188,11 @@ view; detailed research tasks remain in the sections below.
 - [ ] Only if first-round results justify it, rent a 48-80 GiB NVIDIA evaluation
   host for Marker 2 vLLM, MinerU hybrid, PaddleOCR-VL, olmOCR, and gated
   Chandra/DeepSeek/dots.ocr comparisons.
-- [ ] Add hosted evaluation adapters with hard spend caps for Mistral OCR 4.1 and
-  Datalab, followed by Google Layout/AWS Textract structured controls if their
-  hard-page results justify full-corpus runs.
+- [ ] Add hosted evaluation adapters with hard spend/page caps and resumable
+  quota-aware batches for Mistral OCR 4.1 and Datalab; consume promotional
+  credits over successive quota periods while recording list cost, billed
+  usage, and credits separately. Add Google Layout/AWS Textract controls only
+  if hard-page results justify them.
 - [ ] Resolve whether to restore the two absent Trinity Continuum PDFs before
   paid runs; the bookmarked Rigger 5.0 PDF is the current canonical candidate.
 - [x] Re-inventory the expanded priority corpus, detect exact duplicates, and

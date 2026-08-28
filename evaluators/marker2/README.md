@@ -13,3 +13,7 @@ CPU `fast` mode with OCR may start Marker/Surya's lightweight services and is a
 separate recipe. Balanced mode is not provisioned on this host: it requires a
 GPU or an explicitly configured remote Surya backend. Every variant retains
 page mappings and native Marker metadata.
+
+The current no-OCR recipe targets born-digital illustrated PnP rulebooks with a
+usable text layer. OCR-capable Marker variants remain separate recipes and are
+not required to promote this digital-PDF profile.

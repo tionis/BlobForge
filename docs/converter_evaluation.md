@@ -19,14 +19,19 @@ Layout is a useful commercial control if time permits, but its $10/1,000-page
 layout tier and different output contract make it a secondary candidate rather
 than the first API choice.
 
-The initial architectural preference is:
+The initial architectural preference for BlobForge's born-digital rulebook
+scope is:
 
 - best overall validated recipe as the default;
 - a cheap fast recipe for born-digital bulk conversion;
-- an expensive fallback recipe for scans, complex tables, and failed quality
-  gates;
+- a higher-quality fallback recipe for complex layouts, tables, and failed
+  quality gates;
 - no automatic engine cascade until a deterministic classifier and maximum
   spend policy are evaluated.
+
+Image-only and scan-heavy PDFs are not a current BlobForge acceptance target.
+An OCR-focused fallback can be introduced later as a distinct recipe if that
+use case moves into this system.
 
 ## Current candidate facts
 
@@ -119,6 +124,25 @@ Sources:
 Datalab's public pricing page was not machine-readable during this review.
 Obtain an exact page/batch quote and data-processing terms before cost ranking
 the managed service.
+
+### Subscription and promotional-credit execution
+
+The operator currently has a low-cost Mistral subscription with promotional API
+credits. Use those credits for bounded adjudication batches as soon as the
+Mistral adapter is production-ready, then extend to whole books and the corpus
+over subsequent quota periods. Apply the same process to Datalab when its
+adapter and account quota are available.
+
+Free credit changes cash timing, not comparative economics. Every API attempt
+records pages, provider request/usage IDs, normalized list-price estimate,
+actual billed amount when available, credits applied, and remaining run budget.
+Cache successful provider responses by `(source_digest, recipe_digest)` so
+packaging retries and renamed duplicates never consume quota twice. Hard page
+and spend caps remain mandatory even while the expected invoice is zero.
+
+Store API keys and account-specific balances only in worker secrets. Recipe
+documents and MDAFs may record public billing assumptions and sanitized usage,
+but never credentials or private account details.
 
 ### Google Document AI control
 
