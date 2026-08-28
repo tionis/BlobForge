@@ -1,0 +1,53 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 1,
+    "name": "blobforge-mistral-adapter",
+    "version": "0.2.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "engine": "mistral-ocr",
+  "generation": 1,
+  "markdown": {
+    "allowed_asset_media_types": [
+      "image/gif",
+      "image/jpeg",
+      "image/png",
+      "image/webp"
+    ],
+    "asset_links": "page-prefixed-sanitized-local-path-v1",
+    "page_join": "two-line-feeds",
+    "provider_markdown": "otherwise-unchanged"
+  },
+  "model": {
+    "identifier": "mistral-ocr-4-1",
+    "provider": "mistral-ai",
+    "resolution": "mutable-alias"
+  },
+  "native_evidence": {
+    "include_blocks": true,
+    "include_image_base64": true,
+    "preserve_response": true,
+    "sdk": {
+      "name": "mistralai",
+      "version": "2.9.4"
+    }
+  },
+  "ocr": {
+    "confidence_scores_granularity": "block"
+  },
+  "publication": {
+    "mapping": "provider-page-boundaries-v1",
+    "page_confidence": "average_page_confidence_score",
+    "unsupported_precision": "retain-native-only"
+  },
+  "response_validation": {
+    "page_indices": "exact-complete-zero-based-sequence",
+    "returned_model_required": true,
+    "usage_pages": "must-equal-source-pages"
+  },
+  "schema": "dev.tionis.blobforge.recipe/v2"
+}

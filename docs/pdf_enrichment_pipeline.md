@@ -14,6 +14,10 @@ historical Markdown or new converter output. It returns structured evidence to
 the shared MDAF builder; it does not own packaging or silently rewrite the
 converter's Markdown.
 
+Poppler layout XHTML is normalized only enough to be legal XML 1.0: forbidden
+C0 control bytes are removed and counted in retained native evidence. This is
+a no-op for parseable output; it neither repairs text nor introduces OCR.
+
 Its first production use is a derived-artifact backfill over the 1,377 legacy
 Marker results. The same modules then become Marker 1 and Marker 2 recipe stages
 and a fallback for converters without reliable native mappings.

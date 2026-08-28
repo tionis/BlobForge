@@ -36,6 +36,15 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync blobforge migrate enrich \
 Page classification uses `pdfinfo` once and caches the count in
 `legacy_pdf_metadata`; source objects are immutable, so no TTL is needed.
 
+Poppler can copy raw C0 control glyphs from a PDF into its otherwise valid
+XHTML. XML 1.0 forbids those bytes, so BlobForge removes only
+`00-08`, `0B`, `0C`, and `0E-1F` before parsing while retaining TAB, LF, CR,
+and every other byte. The removed count is included in native PDF evidence as
+`normalization.xhtml_forbidden_c0_bytes_removed`; the field is absent on the
+ordinary zero-removal path. This is a compatibility correction under the same
+frozen recipe: it is byte-for-byte inert for every previously successful
+input, and formerly invalid inputs had no artifact identity to conflict with.
+
 ## Attempt telemetry
 
 `legacy_enrichment_attempts` is append-only and records each attempt's status,
@@ -75,3 +84,8 @@ non-converted row, creates a new attempt, and atomically replaces the partial
 file. Do not delete prior recipe rows or conservative artifacts during
 recovery. After the run, require zero processing/failed rows and a completely
 valid read-only verification before publication is considered.
+
+The first complete-corpus pass exposed this Poppler control-glyph condition.
+Failures remain append-only evidence. Restart the runner after deploying the
+normalizer: it selects failed and interrupted rows, preserves completed
+artifacts, and appends a successful retry attempt rather than erasing history.

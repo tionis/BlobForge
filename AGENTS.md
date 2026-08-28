@@ -38,6 +38,33 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-28:** The full enrichment backfill found that Poppler 25.03.0 can
+  emit raw XML-forbidden C0 glyph bytes (observed `0x18`) inside bbox XHTML;
+  ElementTree then rejects an otherwise usable PDF. Before parsing, BlobForge
+  now removes only `00-08`, `0B`, `0C`, and `0E-1F`, retaining XML whitespace
+  and all other bytes, and records a nonzero removal count in native evidence.
+  A real 227-page failure then extracted 1,757 blocks after removing 9 bytes.
+  This compatibility fix retains the frozen recipe digest because it is a
+  byte-for-byte no-op for every previously successful input and no artifact
+  existed for the formerly undefined failure path. Failed attempts remain in
+  the append-only ledger; restarting `enrich --all` retries only non-converted
+  rows.
+
+- **2026-08-28:** The Mistral OCR 4.1 evaluator is quota-safe for bounded
+  trials. Frozen recipe
+  `blake3:982a97ca1d45f5a0ac30dd8c7507efb594688d1b949f406ef4620f3352e723c7`
+  selects SDK 2.9.4, `mistral-ocr-4-1`, blocks, block confidence, images,
+  deterministic asset rewriting, and page mappings. Before any local
+  validation or packaging, a successful response is atomically cached by
+  exact source SHA-256 plus recipe/request identity; a per-key Linux kernel
+  lock prevents concurrent duplicate purchases, cache hits need no API key,
+  and corrupt/incomplete entries fail without repurchase. The native rendition
+  retains blocks, geometry, usage, and returned model, but published mappings
+  remain page-only until exact block-to-final-Markdown spans are proven.
+  Actual billing/credits require a separate ledger, and Mistral exposes no
+  immutable checkpoint digest, so this is evaluation-ready rather than fully
+  production-promoted.
+
 - **2026-08-28:** `pdf-enrichment/v1` is frozen for born-digital legacy
   backfill at
   `blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`.

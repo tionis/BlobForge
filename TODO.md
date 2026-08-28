@@ -69,6 +69,12 @@ view; detailed research tasks remain in the sections below.
   API adapters that preserve sanitized native evidence, exact returned
   identity, geometry, usage, and spend data; persist successful provider
   responses before packaging so retries cannot consume quota twice.
+- [x] Freeze the Mistral OCR 4.1 evaluation recipe and add a locked, atomic,
+  source/recipe-keyed provider-response checkpoint with strict page/usage
+  validation, deterministic assets, usage diagnostics, and offline replay.
+- [ ] Promote Mistral beyond evaluation by adding shared worker checkpoint
+  storage, an actual-billing/credits attempt ledger, and validated block-to-byte
+  region mappings; the provider still exposes no immutable checkpoint digest.
 - [ ] Promote Docling from the current evaluation path into the principal local
   structured recipe, preserving its lossless document representation rather
   than only Markdown.
@@ -193,6 +199,9 @@ view; detailed research tasks remain in the sections below.
   credits over successive quota periods while recording list cost, billed
   usage, and credits separately. Add Google Layout/AWS Textract controls only
   if hard-page results justify them.
+- [x] Make the Mistral evaluator safe for bounded paid trials: cache successful
+  responses before packaging, serialize identical requests, reject corrupt
+  cache entries without repurchase, and preserve exact native usage/evidence.
 - [ ] Resolve whether to restore the two absent Trinity Continuum PDFs before
   paid runs; the bookmarked Rigger 5.0 PDF is the current canonical candidate.
 - [x] Re-inventory the expanded priority corpus, detect exact duplicates, and

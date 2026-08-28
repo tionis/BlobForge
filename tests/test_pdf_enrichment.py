@@ -13,6 +13,7 @@ from blobforge.enrichment import (
     PdfWord,
     align_markdown_to_pdf,
     extract_pdf_evidence,
+    sanitize_poppler_xhtml,
     segment_markdown,
     validate_alignment_publication,
 )
@@ -34,6 +35,15 @@ from blobforge.legacy_migration import (
 )
 from blobforge.mdaf import MdafSource, blake3_file, build_mdaf, validate_mdaf
 from blobforge.mdaf.builder import activity
+
+
+def test_poppler_xhtml_removes_only_xml_forbidden_c0_controls():
+    valid = b"<word>tab\t line\n carriage\r &amp; unicode \xc3\xa9</word>"
+    assert sanitize_poppler_xhtml(valid) == (valid, 0)
+    dirty = b"<word>before\x00\x08\x0b\x0c\x0e\x18\x1fafter</word>"
+    cleaned, removed = sanitize_poppler_xhtml(dirty)
+    assert cleaned == b"<word>beforeafter</word>"
+    assert removed == 7
 
 
 def _evidence(*blocks):

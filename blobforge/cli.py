@@ -40,6 +40,8 @@ from .converters import run_converter
 from .corpus import build_manifest
 from .evaluation import compare as compare_artifacts
 from .local_import import import_legacy_sources, import_stage
+from .mdaf import blake3_bytes
+from .mdaf.digest import canonical_json_bytes
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
 
@@ -698,12 +700,27 @@ def cmd_evaluate_converter(args):
         "max_cost_usd": args.max_cost_usd,
         "model": args.model,
     }
+    environment = None
+    if args.engine == "mistral":
+        recipe = json.loads(
+            (repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
+        response_cache = Path(
+            args.response_cache
+            or os.environ.get("BLOBFORGE_MISTRAL_RESPONSE_CACHE")
+            or Path.home() / ".cache" / "blobforge" / "mistral-responses"
+        ).expanduser()
+        environment = {"BLOBFORGE_MISTRAL_RESPONSE_CACHE": str(response_cache)}
     result = run_converter(
         ["uv", "run", "--project", str(project), "python", str(adapter)],
         args.path,
         output,
         parameters=parameters,
         timeout_seconds=args.timeout,
+        environment=environment,
     )
     print(f"Artifact: {result.artifact_path}")
     print(f"Identity: {result.identity}")
@@ -1689,6 +1706,10 @@ def main():
     p_evaluate.add_argument("--max-pages", type=int, help="Hard API page ceiling")
     p_evaluate.add_argument("--max-cost-usd", type=float, help="Hard API list-price ceiling")
     p_evaluate.add_argument("--model", help="Explicit provider model identifier")
+    p_evaluate.add_argument(
+        "--response-cache",
+        help="Durable Mistral response cache (default: ~/.cache/blobforge/mistral-responses)",
+    )
     p_evaluate.set_defaults(func=cmd_evaluate_converter)
 
     p_corpus = subparsers.add_parser(

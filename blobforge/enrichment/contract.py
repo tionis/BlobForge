@@ -84,13 +84,14 @@ class PdfEvidence:
     extractor: str
     extractor_version: str
     pages: tuple[PdfPage, ...]
+    normalization: dict[str, Any] | None = None
 
     @property
     def blocks(self) -> tuple[PdfBlock, ...]:
         return tuple(block for page in self.pages for block in page.blocks)
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        value = {
             "contract": EVIDENCE_CONTRACT,
             "source_media_type": "application/pdf",
             "extractor": {
@@ -99,6 +100,9 @@ class PdfEvidence:
             },
             "pages": [page.as_json() for page in self.pages],
         }
+        if self.normalization:
+            value["normalization"] = dict(self.normalization)
+        return value
 
 
 @dataclass(frozen=True)

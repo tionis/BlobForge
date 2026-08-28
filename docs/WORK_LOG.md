@@ -1,5 +1,66 @@
 # Work Log
 
+## 2026-08-28 (Backfill Launch and Quota-Safe Mistral Evaluation)
+
+- **Backfill:** Launched the frozen all-artifact enrichment as collected user
+  service `blobforge-enrichment-backfill.service` with two size-aware worker
+  processes. Its one-time inventory cached all 1,365 available source page
+  counts and classified 100 large / 1,262 ordinary pending documents. The
+  first-pass audit reached 62 recipe artifacts (50 instrumented in this run),
+  4 control-glyph failures, 2 interrupted rows, and a 1.58-GiB service memory
+  peak. The transient service was then stopped cleanly so replacement process
+  workers can load the proven parser repair; completed artifacts were retained.
+- **Corpus failure repair:** The running pass exposed Poppler bbox XHTML with
+  illegal raw C0 glyphs: one inspected failing line contained `0x18`. Added a
+  narrow XML 1.0 pre-parser that removes only forbidden C0 bytes and records a
+  nonzero count in native evidence. A real 227-page failed source then
+  extracted 1,757 blocks after removing 9 bytes. Valid XHTML is byte-identical,
+  so the frozen recipe identity is retained; failed attempts stay append-only
+  and will be retried after restarting the process workers on the repaired
+  checkout.
+- **Mistral adapter:** Added durable response capture keyed by exact source
+  SHA-256, frozen recipe digest, model, and API flags. A per-request `flock`
+  spans lookup and the paid call; successful native JSON is fsynced and
+  atomically renamed at mode `0600` before validation or packaging. Cache hits
+  work without credentials, while malformed entries and incomplete page/usage
+  coverage fail closed without silently buying a replacement response.
+- **Output correctness:** Fixed confidence extraction to use Mistral's actual
+  `average_page_confidence_score`. Added deterministic page-prefixed asset
+  names, traversal/collision resistance, data-URL media types, rewritten links
+  before UTF-8 mapping offsets, exact page-index coverage, usage-page checks,
+  and consistent diagnostic severity. Native blocks, rectangles, dimensions,
+  tables, model, confidence, and usage remain intact in the rendition; region
+  precision is not claimed without validated block-to-byte correspondence.
+- **Recipe and operation:** Packaged Mistral evaluation recipe
+  `blake3:982a97ca1d45f5a0ac30dd8c7507efb594688d1b949f406ef4620f3352e723c7`
+  and added `--response-cache`, defaulting to the operator cache directory.
+  Documented sensitive-cache backup, replay, explicit repurchase, list-price
+  versus billed/credited spend, and remaining production gates in
+  `docs/mistral_api_adapter.md`.
+- **Verification:** Added seven offline adapter tests (nine cases) covering capture/replay,
+  secret exclusion, file modes, UTF-8 offsets, assets/media, page confidence,
+  preflight ceilings, malformed cache handling, and response completeness.
+  The focused converter/MDAF suite passes 16 tests; the final isolated full
+  suite passes 235 tests plus 5 subtests; bytecode compilation and CLI help smoke
+  checks pass. An initial full-suite invocation inherited the operator's real
+  coordinator URL/token and made 16 old worker-unit tests attempt a blocked
+  Bunny identity lookup (213 passed); explicitly removing those two variables
+  restored the correct hermetic result. Ruff is not installed in the root
+  development environment, so that optional command could not run. No Mistral
+  API request, credential read, provider upload, or paid conversion occurred.
+- **Packaging:** Refreshed the isolated Mistral lock after raising the adapter
+  package to 0.2.0. The first offline lock attempt correctly failed because its
+  registry metadata was absent; the approved networked lock resolved the same
+  21 packages and changed only the local project version. An isolated wheel
+  build initially hit the same restricted build-backend lookup, then succeeded
+  with approved network access. The final wheel contains both frozen recipe
+  JSON files.
+- **Tooling:** Used `systemd-run`/`systemctl`/`journalctl`, `sqlite3`, `ps`,
+  `find`, `rg`, `sed`, `apply_patch`, `uv`, pytest, bytecode compilation,
+  package/SDK schema inspection, canonical BLAKE3 calculation, and an official
+  documentation search. The search returned no usable page content, so the
+  pinned SDK's generated response models were used as the exact schema source.
+
 ## 2026-08-28 (Enrichment Telemetry, Scheduler, and Recipe Freeze)
 
 - **Implementation:** Added append-only `legacy_enrichment_attempts` telemetry

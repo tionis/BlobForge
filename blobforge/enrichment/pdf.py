@@ -10,6 +10,19 @@ from pathlib import Path
 
 from .contract import PdfBlock, PdfEvidence, PdfLine, PdfPage, PdfWord
 
+XML_FORBIDDEN_C0_RE = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def sanitize_poppler_xhtml(value: bytes) -> tuple[bytes, int]:
+    """Remove bytes XML 1.0 forbids while retaining TAB, LF, and CR.
+
+    Poppler can emit raw PDF control glyphs inside otherwise valid UTF-8 XHTML.
+    ElementTree correctly rejects those bytes. Removing only the forbidden C0
+    range is a no-op for every previously parseable document and turns such a
+    glyph into the same empty word that the evidence extractor already skips.
+    """
+    return XML_FORBIDDEN_C0_RE.subn(b"", value)
+
 
 def poppler_version() -> str:
     completed = subprocess.run(
@@ -44,8 +57,9 @@ def extract_pdf_evidence(path: str | Path) -> PdfEvidence:
     if completed.returncode:
         message = completed.stderr.decode("utf-8", errors="replace")[-4000:]
         raise RuntimeError(f"pdftotext layout extraction failed: {message}")
+    xhtml, forbidden_controls = sanitize_poppler_xhtml(completed.stdout)
     try:
-        root = ET.fromstring(completed.stdout)
+        root = ET.fromstring(xhtml)
     except ET.ParseError as exc:
         raise ValueError(f"pdftotext returned invalid XHTML: {exc}") from exc
 
@@ -125,4 +139,14 @@ def extract_pdf_evidence(path: str | Path) -> PdfEvidence:
         )
     if not pages:
         raise ValueError("PDF layout extraction returned no pages")
-    return PdfEvidence("poppler-pdftotext-bbox-layout", poppler_version(), tuple(pages))
+    normalization = (
+        {"xhtml_forbidden_c0_bytes_removed": forbidden_controls}
+        if forbidden_controls
+        else None
+    )
+    return PdfEvidence(
+        "poppler-pdftotext-bbox-layout",
+        poppler_version(),
+        tuple(pages),
+        normalization,
+    )
