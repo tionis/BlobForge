@@ -37,11 +37,12 @@ from . import hydrator as hydrator_module
 from . import hydrated_outputs
 from . import legacy_migration
 from .converters import run_converter
-from .corpus import build_manifest
+from .corpus import build_manifest, pdf_pages
 from .evaluation import compare as compare_artifacts
 from .local_import import import_legacy_sources, import_stage
 from .mdaf import blake3_bytes
 from .mdaf.digest import canonical_json_bytes
+from .review import build_review_bundle
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
 
@@ -714,12 +715,58 @@ def cmd_evaluate_converter(args):
             )
         )
         parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
+        parameters["api_rights_confirmed"] = args.confirm_api_rights
         response_cache = Path(
             args.response_cache
             or os.environ.get("BLOBFORGE_MISTRAL_RESPONSE_CACHE")
             or Path.home() / ".cache" / "blobforge" / "mistral-responses"
         ).expanduser()
         environment = {"BLOBFORGE_MISTRAL_RESPONSE_CACHE": str(response_cache)}
+        if args.plan:
+            pages = pdf_pages(args.path)
+            estimated_cost = pages * 0.004
+            page_limit_ok = args.max_pages is not None and args.max_pages >= pages
+            cost_limit_ok = (
+                args.max_cost_usd is not None
+                and args.max_cost_usd >= estimated_cost
+            )
+            credential_configured = bool(os.environ.get("MISTRAL_API_KEY"))
+            print(f"Source:       {Path(args.path).resolve()}")
+            print(f"Pages:        {pages:,}")
+            print(f"Recipe:       {parameters['recipe_digest']}")
+            print(f"List price:   ${estimated_cost:.3f}")
+            print(f"Page ceiling: {args.max_pages if args.max_pages is not None else 'missing'}")
+            print(
+                f"Cost ceiling: "
+                f"{f'${args.max_cost_usd:.3f}' if args.max_cost_usd is not None else 'missing'}"
+            )
+            print(f"Cache:        {response_cache}")
+            print(
+                "Credential:   "
+                + ("configured" if credential_configured else "not configured")
+            )
+            print(
+                "API rights:   "
+                + ("confirmed" if args.confirm_api_rights else "not confirmed")
+            )
+            ready = (
+                page_limit_ok
+                and cost_limit_ok
+                and credential_configured
+                and args.confirm_api_rights
+            )
+            print(f"Ready:        {'yes' if ready else 'no'}")
+            print("No provider request was made.")
+            return 0
+        if not args.confirm_api_rights:
+            print(
+                "Refusing Mistral upload without --confirm-api-rights.",
+                file=sys.stderr,
+            )
+            return 2
+    elif args.plan:
+        print("--plan is currently supported only for Mistral.", file=sys.stderr)
+        return 2
     result = run_converter(
         ["uv", "run", "--project", str(project), "python", str(adapter)],
         args.path,
@@ -755,6 +802,24 @@ def cmd_compare_mdaf(args):
         print(Path(item.path).name + "\t" + "\t".join(str(getattr(item, column)) for column in columns))
     if args.output:
         print(f"JSON: {args.output}")
+    return 0
+
+
+def cmd_review_bundle(args):
+    """Build a blinded, source-backed browser review from comparable MDAFs."""
+    result = build_review_bundle(
+        args.source,
+        args.artifacts,
+        args.output,
+        pages=args.pages,
+        seed=args.seed,
+        key_output=args.key_output,
+    )
+    print(f"Review:     {result.root / 'index.html'}")
+    print(f"Key:        {result.key_path}")
+    print(f"Campaign:   {result.campaign_digest}")
+    print(f"Candidates: {result.artifacts}")
+    print(f"Pages:      {result.pages}")
     return 0
 
 
@@ -1716,6 +1781,16 @@ def main():
         "--response-cache",
         help="Durable Mistral response cache (default: ~/.cache/blobforge/mistral-responses)",
     )
+    p_evaluate.add_argument(
+        "--plan",
+        action="store_true",
+        help="Print Mistral pages, limits, recipe, and cost without an API call",
+    )
+    p_evaluate.add_argument(
+        "--confirm-api-rights",
+        action="store_true",
+        help="Confirm the source may be submitted to the selected hosted API",
+    )
     p_evaluate.set_defaults(func=cmd_evaluate_converter)
 
     p_corpus = subparsers.add_parser(
@@ -1735,6 +1810,23 @@ def main():
     p_compare.add_argument("artifacts", nargs="+")
     p_compare.add_argument("--output", "-o")
     p_compare.set_defaults(func=cmd_compare_mdaf)
+
+    p_review = subparsers.add_parser(
+        "review-bundle", help="Build a blinded page-by-page MDAF review bundle"
+    )
+    p_review.add_argument("source", help="Source PDF shared by every artifact")
+    p_review.add_argument("artifacts", nargs="+", help="Two or more comparable MDAFs")
+    p_review.add_argument("--output", "-o", required=True, help="New review directory")
+    p_review.add_argument(
+        "--pages", help="One-based pages/ranges to review, for example 1,3-5"
+    )
+    p_review.add_argument(
+        "--seed", default="blobforge-review-v1", help="Private label-shuffle seed"
+    )
+    p_review.add_argument(
+        "--key-output", help="Private candidate-to-engine key JSON destination"
+    )
+    p_review.set_defaults(func=cmd_review_bundle)
     
     # Status (single job)
     p_status = subparsers.add_parser("status", help="Check status of a specific job")

@@ -21,6 +21,9 @@ view; detailed research tasks remain in the sections below.
 - [ ] Select and label the hard-page adjudication set from the frozen
   43-rulebook corpus; record API rights and retain a hidden holdout.
 - [ ] Freeze the scoring rubric before examining candidate outputs.
+- [x] Implement deterministic blinded page-review bundles with a source-PDF
+  view, nine stable scoring dimensions, local notes/scores, JSON export, and a
+  separate private unblinding key.
 
 ### Phase 1: Legacy PDF enrichment
 
@@ -89,6 +92,9 @@ view; detailed research tasks remain in the sections below.
   retain outputs, native evidence, logs, timings, resources, and cost.
 - [ ] Generate blinded review bundles and separately score text, reading order,
   hierarchy, lists, tables, equations, assets, references, and source maps.
+- [x] Generate the first real eight-page three-candidate review for Poppler,
+  Marker 1, and Docling; add Mistral as a new campaign after its guarded $0.032
+  request rather than changing the existing campaign.
 - [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,
   unsupported precision, and manual correction time.
 - [ ] Compare failures, retries, determinism, throughput, RAM/VRAM, artifact

@@ -46,6 +46,7 @@ def _request(tmp_path, output, **parameters):
                     "max_pages": 2,
                     "max_cost_usd": 1,
                     "recipe_digest": "blake3:" + "a" * 64,
+                    "api_rights_confirmed": True,
                     **parameters,
                 },
             }
@@ -204,6 +205,26 @@ def test_corrupt_cache_fails_closed_without_repurchase(tmp_path, monkeypatch):
     path.write_text("not json", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["adapter", str(request)])
     with pytest.raises(ValueError, match="invalid Mistral response cache"):
+        adapter.main()
+
+
+def test_cache_miss_requires_explicit_api_rights(tmp_path, monkeypatch):
+    adapter = _load_adapter()
+    monkeypatch.setenv("BLOBFORGE_MISTRAL_RESPONSE_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setenv("MISTRAL_API_KEY", "must-not-be-used")
+    monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
+    monkeypatch.setattr(
+        adapter,
+        "_perform_request",
+        lambda *_args: pytest.fail("rights rejection must precede provider call"),
+    )
+    request = _request(
+        tmp_path,
+        tmp_path / "output",
+        api_rights_confirmed=False,
+    )
+    monkeypatch.setattr(sys, "argv", ["adapter", str(request)])
+    with pytest.raises(ValueError, match="api_rights_confirmed"):
         adapter.main()
 
 

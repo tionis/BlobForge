@@ -21,7 +21,8 @@ class CorpusManifestResult:
     bytes: int
 
 
-def _pdf_pages(path: Path) -> int:
+def pdf_pages(path: str | Path) -> int:
+    path = Path(path)
     completed = subprocess.run(
         ["pdfinfo", str(path)], capture_output=True, text=True, check=True
     )
@@ -46,7 +47,7 @@ def build_manifest(root: str | Path, output: str | Path) -> CorpusManifestResult
                 "path": path.relative_to(corpus_root).as_posix(),
                 "media_type": "application/pdf",
                 "size_bytes": stat.st_size,
-                "pages": _pdf_pages(path),
+                "pages": pdf_pages(path),
                 "digest": f"blake3:{hashes['blake3']}",
                 "alternate_digests": [f"sha256:{hashes['sha256']}"],
             }

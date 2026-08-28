@@ -1,5 +1,64 @@
 # Work Log
 
+## 2026-08-28 (Runnable Blinded Rulebook Review)
+
+- **Objective:** Continue from converter infrastructure to an artifact a human
+  can test without waiting for hosted credentials or the complete legacy
+  backfill.
+- **Implementation:** Added `blobforge review-bundle`. It independently
+  validates every MDAF, requires one common supplied source digest, extracts
+  page text from final UTF-8 source-map spans without duplicating overlapping
+  regions, rejects ambiguous multi-page intervals, parses explicit one-based
+  page/range selections, and creates a new atomic review directory. Candidate
+  order is a deterministic hash shuffle and cannot change with CLI argument
+  order.
+- **Review UI:** The browser-local bundle shows the original PDF beside raw
+  candidate Markdown and provides 1-5 controls for text, reading order,
+  hierarchy, lists, tables, assets, references, source mapping, and wiki
+  utility, plus per-page notes and blinded JSON export. Markdown enters the DOM
+  only through `textContent`; embedded JSON escapes `<`. Local-storage denial
+  degrades to export-only operation. Public files contain no engine/path/
+  artifact/tool/model identifiers; the separate key is written mode `0600`.
+- **Real test:** Generated the complete eight-page Poppler/Marker 1/Docling
+  review at
+  `.blobforge-migration/evaluations/reviews/storypath-ultra-tasty-bit-03-local-v3/`
+  with campaign identity
+  `blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468`.
+  Its private key is the sibling `.key.json`. A jsdom runtime check found 8
+  pages, 3 candidate columns, 27 score selectors, and `source.pdf#page=1`.
+- **UI debugging:** The first headless Firefox image showed an empty interface.
+  Investigation found both an unescaped JavaScript newline and one missing
+  closing brace; both were corrected. Firefox's headless PDF plugin then hung
+  while taking a second screenshot, so that process was interrupted and the
+  generated JavaScript was instead executed directly under the repository's
+  jsdom dependency. Earlier local-v1/v2 directories remain ignored diagnostic
+  output; local-v3 is the usable bundle.
+- **Hosted trial:** Added a no-request `blobforge evaluate mistral --plan` mode
+  and mandatory `--confirm-api-rights` for a cache miss. The selected whole-book
+  test is exactly 8 pages, $0.032 list price, with page ceiling 8 and cost
+  ceiling $0.04. The plan reports the frozen recipe, cache, credential, rights,
+  and readiness. It reports not ready solely because `MISTRAL_API_KEY` is
+  unset; no provider call or upload occurred.
+- **Verification:** Offline review tests cover stable blinding, source binding,
+  one-based bounds, Unicode byte spans, hostile Markdown, private-key mode,
+  mismatched sources, and overwrite refusal. Mistral tests additionally prove
+  that rights rejection precedes provider access. Focused review/Mistral/corpus
+  checks pass 15 tests. The final hermetic suite passes 241 tests plus 5
+  subtests. All three real input artifacts pass independent Vulcan validation;
+  generated public files pass an engine/path leakage scan; executing the
+  generated JavaScript produces 8 page choices, 3 candidates, and 27 score
+  controls. `git diff --check` passes.
+- **Packaging:** The first sandboxed wheel build could not resolve Hatchling
+  because network access was restricted; its following archive listing was
+  therefore of the prior wheel and was not accepted as evidence. The approved
+  rerun built fresh sdist/wheel artifacts and confirmed both `blobforge/review.py`
+  and the frozen Mistral recipe are included.
+- **Tooling:** Used `apply_patch`, `rg`, `find`, `sed`, `stat`, `sqlite3`,
+  `systemctl`, `uv`, pytest, bytecode compilation, the BlobForge and Vulcan
+  CLIs, Node/jsdom, headless Firefox, local image inspection, and process
+  interruption. No rulebook source, existing MDAF, API cache, credential,
+  provider account, or production coordinator state was modified.
+
 ## 2026-08-28 (Backfill Launch and Quota-Safe Mistral Evaluation)
 
 - **Backfill:** Launched the frozen all-artifact enrichment as collected user

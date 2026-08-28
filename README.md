@@ -461,7 +461,14 @@ uv sync --project evaluators/marker1
 uv sync --project evaluators/docling
 uv run blobforge evaluate marker1 ./book.pdf -o ./book.marker1.mdaf
 uv run blobforge evaluate docling ./book.pdf -o ./book.docling.mdaf
+uv run blobforge review-bundle ./book.pdf ./book.marker1.mdaf ./book.docling.mdaf \
+  --pages 1-8 --output ./book-review
 ```
+
+Hosted Mistral trials support a no-request `--plan` mode and require explicit
+`--confirm-api-rights` plus page and spend ceilings before upload. Review
+bundles keep the candidate mapping in a separate private key and can export
+blinded page scores directly from a local browser.
 
 The local legacy migration is resumable and does not write to S3:
 
@@ -477,7 +484,8 @@ uv run blobforge migrate stage   # local v2 object-key tree; no upload
 See [the migration runbook](docs/local_mdaf_migration.md),
 [the MDAF redesign](docs/mdaf_redesign.md), and
 [the benchmark canary](docs/converter_benchmark_results.md), and
-[the adapter architecture](docs/converter_adapter_architecture.md) for safety,
+[the adapter architecture](docs/converter_adapter_architecture.md), and
+[the review workflow](docs/conversion_review.md) for safety,
 provenance, object-layout, and evaluation details.
 
 ## 🏗 Project Structure

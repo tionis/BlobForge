@@ -297,6 +297,8 @@ def main() -> int:
         native = _read_cached_response(response_path, request_id, request_value)
         cache_status = "hit"
         if native is None:
+            if parameters.get("api_rights_confirmed") is not True:
+                raise ValueError("api_rights_confirmed=true is required for a cache miss")
             api_key = os.environ.get("MISTRAL_API_KEY")
             if not api_key:
                 raise ValueError("MISTRAL_API_KEY is required for a cache miss")

@@ -38,6 +38,23 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-28:** BlobForge has a runnable blinded review vertical slice.
+  `blobforge review-bundle` validates that two or more MDAFs share the supplied
+  source digest, derives exact page text from final UTF-8 source-map spans,
+  rejects ambiguous mappings that cover multiple pages, deterministically
+  shuffles labels, copies the source PDF, and emits a local
+  browser UI with nine scoring dimensions, notes, autosave when available, and
+  JSON export. Public files omit engine names, paths, artifact identities,
+  tools, and models; the separate unblinding key is mode `0600`. The first real
+  8-page Poppler/Marker 1/Docling campaign is
+  `blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468`
+  under `.blobforge-migration/evaluations/reviews/...local-v3/`. Generated JS
+  was executed with jsdom: 8 page choices, 3 columns, 27 score controls, and a
+  page-1 PDF target. The matching Mistral plan is 8 pages / $0.032 list price
+  with an explicit $0.04 ceiling; it remains blocked only because
+  `MISTRAL_API_KEY` is not configured. Hosted execution now requires
+  `--confirm-api-rights`; `--plan` never contacts the provider.
+
 - **2026-08-28:** The full enrichment backfill found that Poppler 25.03.0 can
   emit raw XML-forbidden C0 glyph bytes (observed `0x18`) inside bbox XHTML;
   ElementTree then rejects an otherwise usable PDF. Before parsing, BlobForge
