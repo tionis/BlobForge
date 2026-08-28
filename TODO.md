@@ -95,6 +95,11 @@ view; detailed research tasks remain in the sections below.
 - [x] Generate the first real eight-page three-candidate review for Poppler,
   Marker 1, and Docling; add Mistral as a new campaign after its guarded $0.032
   request rather than changing the existing campaign.
+- [x] Improve review bundles with an inline anchored rubric, explicit N/A,
+  blinded archived-asset inspection, partial-score resume, and strict result
+  import/coverage summaries.
+- [ ] Add a font/layout-evidenced normalization test for dingbat list glyphs;
+  never globally replace ordinary `Y` text.
 - [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,
   unsupported precision, and manual correction time.
 - [ ] Compare failures, retries, determinism, throughput, RAM/VRAM, artifact

@@ -1,6 +1,6 @@
 # Converter benchmark results
 
-Date: 2026-08-27  
+Date: 2026-08-29
 Host tier: 32 GiB RAM, CPU-only  
 Status: engineering canary; not a scored quality verdict
 
@@ -44,6 +44,36 @@ corrected Docling book as one root plus 18 heading-derived notes and two assets
 in a disposable vault. This exercises the intended MDAF-to-wiki consumer path,
 not only archive validation.
 
+## Preliminary blinded human review
+
+The first submitted review covers page 1 only. The exact blinded export is
+retained in
+`docs/evaluation_results/storypath-ultra-tasty-bit-03-page-1.review.json` and
+matches campaign
+`blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468`.
+After submission, the private campaign key unblinded A as Poppler, B as Docling
+2.122.0 standard, and C as Marker 1.10.2.
+
+| Dimension | Poppler | Docling | Marker 1 |
+| --- | ---: | ---: | ---: |
+| Text | 1 | 4 | 3 |
+| Reading order | 1 | 4 | 3 |
+| Hierarchy | 1 | 4 | 4 |
+| Lists | 1 | 4 | 4 |
+| Assets | 1 | 4 | 4 |
+| Source mapping | 5 | 5 | 5 |
+| Wiki utility | 1 | 4 | 4 |
+
+This is evidence for one page, not a recipe verdict. It strongly rejects raw
+Poppler as wiki-ready output on a two-column illustrated layout and gives
+Docling a small page-level advantage over Marker 1 in text and reading order.
+The asset scores measure Markdown embedding only: the review bundle did not
+expose the actual archived images. Table and reference scores were left blank.
+The common `Y` prefix on list entries is a real shared extraction defect rather
+than a Docling/Marker discriminator. The PDF embeds `FantasyRPGDings`, making a
+misdecoded dingbat list glyph the leading explanation; normalization must use
+font/layout evidence and must not blindly replace ordinary letter `Y` content.
+
 ## Interpretation
 
 Poppler is the speed and text-layer recall control. It is roughly three orders
@@ -51,7 +81,8 @@ of magnitude faster than Marker 1 on the rulebook canary, but it supplies no
 useful hierarchy or extracted images. Docling and Marker 1 are nearly identical
 in coarse word, heading, and asset counts on this book; Docling took about half
 as long. These counts do not establish reading-order, table, equation, caption,
-or wiki quality. A blinded review of labeled hard pages remains mandatory.
+or wiki quality. The preliminary page-one result is directionally useful, but a
+blinded review of labeled hard pages remains mandatory.
 
 Marker 2 no-OCR is runnable on this host. Marker 2 balanced still needs a pinned
 Surya endpoint (`llama-server` for a CPU feasibility probe or a suitable GPU

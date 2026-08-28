@@ -42,7 +42,7 @@ from .evaluation import compare as compare_artifacts
 from .local_import import import_legacy_sources, import_stage
 from .mdaf import blake3_bytes
 from .mdaf.digest import canonical_json_bytes
-from .review import build_review_bundle
+from .review import build_review_bundle, summarize_review_result
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
 
@@ -820,6 +820,21 @@ def cmd_review_bundle(args):
     print(f"Campaign:   {result.campaign_digest}")
     print(f"Candidates: {result.artifacts}")
     print(f"Pages:      {result.pages}")
+    return 0
+
+
+def cmd_review_summarize(args):
+    """Validate, unblind, and summarize a browser-exported review result."""
+    summary = summarize_review_result(args.result, args.key)
+    serialized = json.dumps(summary, ensure_ascii=False, indent=2) + "\n"
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.open("x", encoding="utf-8") as destination:
+            destination.write(serialized)
+        print(f"Summary: {output.resolve()}")
+    else:
+        print(serialized, end="")
     return 0
 
 
@@ -1827,6 +1842,15 @@ def main():
         "--key-output", help="Private candidate-to-engine key JSON destination"
     )
     p_review.set_defaults(func=cmd_review_bundle)
+
+    p_review_summary = subparsers.add_parser(
+        "review-summarize",
+        help="Validate and unblind an exported review result",
+    )
+    p_review_summary.add_argument("result", help="Browser-exported review JSON")
+    p_review_summary.add_argument("--key", required=True, help="Private campaign key")
+    p_review_summary.add_argument("--output", "-o", help="New summary JSON destination")
+    p_review_summary.set_defaults(func=cmd_review_summarize)
     
     # Status (single job)
     p_status = subparsers.add_parser("status", help="Check status of a specific job")

@@ -1,7 +1,7 @@
 # Blinded Conversion Review
 
 Status: runnable local canary  
-Date: 2026-08-28  
+Date: 2026-08-29
 Related: `converter_evaluation.md`, `mistral_api_adapter.md`
 
 ## Purpose
@@ -17,10 +17,23 @@ Only exact single-page mapping intervals are accepted; a span covering multiple
 pages is rejected instead of being duplicated into misleading page evidence.
 Reviewers score text, reading order, hierarchy, lists, tables, assets,
 references, source mapping, and wiki utility from 1-5 and can write page notes.
+An inline guide anchors 1 as unusable, 3 as acceptable, and 5 as
+publication-ready. Explicit N/A distinguishes an absent or unassessable feature
+from a missing score.
+
+For selected pages, linked archive assets are copied to neutral candidate paths
+such as `assets/B/001.png`; original filenames never enter the public bundle.
+Only PNG, JPEG, GIF, and WebP files whose leading bytes match their declared
+MIME type are loaded as browser previews. Unsupported or signature-mismatched
+assets are reported but not loaded. The raw Markdown target is neutralized too,
+preserving placement and syntax without leaking converter-specific names.
+
 Scores autosave in browser local storage when available; direct `file://`
 browsing still works when storage is blocked and can always export a JSON
-result. The exported result contains the campaign digest and blinded scores,
-not the unblinding key.
+result. A prior partial export from the exact campaign can be imported to resume
+in a new bundle or browser session; a mismatched campaign is refused. The
+exported result contains the campaign digest and blinded scores, not the
+unblinding key.
 
 ## Existing eight-page test
 
@@ -29,10 +42,11 @@ pages of `Storypath_Ultra_Tasty_Bit_03_Shadows_and_Mirrors.pdf`:
 
 ```text
 .blobforge-migration/evaluations/reviews/
-  storypath-ultra-tasty-bit-03-local-v3/index.html
-  storypath-ultra-tasty-bit-03-local-v3/review.json
-  storypath-ultra-tasty-bit-03-local-v3/source.pdf
-  storypath-ultra-tasty-bit-03-local-v3.key.json
+  storypath-ultra-tasty-bit-03-local-v6/index.html
+  storypath-ultra-tasty-bit-03-local-v6/review.json
+  storypath-ultra-tasty-bit-03-local-v6/source.pdf
+  storypath-ultra-tasty-bit-03-local-v6/assets/{B,C}/...
+  storypath-ultra-tasty-bit-03-local-v6.key.json
 ```
 
 Campaign identity:
@@ -42,8 +56,11 @@ blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468
 ```
 
 The generated JavaScript smoke test found 8 pages, 3 candidate columns, 27
-scoring controls, and `source.pdf#page=1`. All three input MDAFs already pass
-BlobForge and Vulcan validation. Open `index.html` in Firefox to review it.
+scoring controls with 27 N/A choices, two page-one asset previews, the inline
+guide, and `source.pdf#page=1`. Both previews were visually opened after
+generation. All three input MDAFs already pass BlobForge and Vulcan validation.
+Open `index.html` in Firefox to review it. The v6 campaign digest matches v3,
+so the already submitted page-one export remains valid.
 
 ## Regeneration
 
@@ -59,7 +76,7 @@ uv run blobforge review-bundle \
   .blobforge-migration/evaluations/rulebooks/storypath-ultra-tasty-bit-03.docling.mdaf \
   --pages 1-8 \
   --seed storypath-ultra-tasty-bit-03-local-v1 \
-  --output .blobforge-migration/evaluations/reviews/storypath-ultra-tasty-bit-03-local-v4
+  --output .blobforge-migration/evaluations/reviews/storypath-ultra-tasty-bit-03-local-v7
 ```
 
 The campaign identity is independent of artifact argument order. It binds the
@@ -103,3 +120,23 @@ uv run blobforge review-bundle SOURCE.pdf \
 
 Keep the key outside any bundle sent to a reviewer. Unblind only after scores
 are exported.
+
+## Importing a result
+
+The summarizer validates the result format, campaign digest, selected pages,
+dimensions, candidate labels, scores, and N/A values against the private key.
+It then reports page/slot coverage and per-converter dimension counts, N/A
+counts, and means. Unknown or cross-campaign data fails closed.
+
+```bash
+uv run blobforge review-summarize review-export.json \
+  --key storypath-ultra-tasty-bit-03-local-v6.key.json \
+  --output storypath-ultra-tasty-bit-03.summary.json
+```
+
+The summary is unblinded and therefore private evaluation evidence. Output
+creation refuses to overwrite an existing file. A blank score remains
+incomplete; N/A counts as a completed review slot but never enters a mean.
+The private key retains the label seed so the summarizer can recompute both the
+campaign digest and deterministic label assignments before attributing scores;
+a modified or older unverifiable key fails closed.

@@ -1,5 +1,70 @@
 # Work Log
 
+## 2026-08-29 (Review Evidence and Resumable Scoring)
+
+- **Objective:** Correct the review limitations exposed by the first human
+  score before asking for the remaining pages.
+- **Review UI:** Embedded the dimension guidance and common 1-5 anchors, added
+  explicit N/A, and added partial-result import. An exact-campaign export now
+  resumes in a fresh bundle/browser session; a mismatched campaign is refused.
+- **Asset evidence:** The builder finds archive assets linked from selected-page
+  Markdown, rewrites converter-specific targets to neutral candidate paths, and
+  displays a per-candidate gallery. Only declared PNG/JPEG/GIF/WebP members
+  whose magic bytes match are copied; unsupported or mismatched members remain
+  described but are not browser-loaded. A hostile SVG payload declared as PNG
+  is covered by a regression test and neither copied nor named publicly.
+- **Result ingestion:** Added `blobforge review-summarize`. It bounds/parses both
+  JSON inputs, recomputes the campaign digest and seed hash, derives the label
+  assignment from the retained private seed, rejects unknown pages/dimensions/
+  candidates/scores and tampered assignments, then reports reviewed-page and
+  slot coverage plus per-converter dimension counts, N/A counts, and means.
+  Output uses exclusive creation and cannot overwrite prior evidence.
+- **Real canary:** Generated
+  `.blobforge-migration/evaluations/reviews/storypath-ultra-tasty-bit-03-local-v6/`
+  with the unchanged campaign identity
+  `blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468`.
+  The private key is mode `0600`. Public leakage scanning passed. Page 1 exposes
+  a neutral 611x470 Docling PNG and 1632x1275 Marker JPEG; both were visually
+  inspected. The submitted page-one export imports into the browser with text
+  scores 1/4/3 and summarizes as 1/8 pages, 21/216 rating slots.
+- **Verification:** Six focused reviewer tests pass, including MIME mismatch,
+  N/A accounting, stable blinding, and key-tampering rejection. The hermetic
+  full suite passes 243 tests plus 5 subtests. The generated JavaScript executed
+  under jsdom with 8 pages, 3 candidates, 27 selectors/N/A choices, 2 page-one
+  images, and successful prior-score persistence. Bytecode compilation, CLI
+  help, `git diff --check`, public leakage checks, and a fresh wheel inspection
+  pass. The sandboxed build could not resolve Hatchling due blocked DNS; the
+  approved networked retry built both sdist and wheel successfully.
+- **Tooling:** Used `apply_patch`, `rg`, `sed`, `jq`, `find`, `file`, `stat`,
+  `unzip`, `uv`, pytest, Node/jsdom, and local image inspection. No source PDF,
+  MDAF, provider account, API, coordinator, or production state was modified.
+
+## 2026-08-29 (First Blinded Human Score)
+
+- **Input:** Received and retained the exact page-one score export for campaign
+  `blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468`.
+  The result intentionally contains no reviewer identity.
+- **Unblinding:** Verified the campaign digest against the private key. Candidate
+  A is Poppler, B is Docling 2.122.0 standard, and C is Marker 1.10.2.
+- **Finding:** Docling leads Marker on this page for text and reading order
+  (4 versus 3) and ties it at 4 for hierarchy, lists, displayed asset links, and
+  wiki utility. Poppler is 1 on content/structure/wiki dimensions and 5 only on
+  page mapping. All three page mappings scored 5. Tables and references were
+  not rated, and image fidelity was not observable, so no aggregate recipe
+  score was calculated.
+- **Defect evidence:** Candidate text confirms the shared `Y` list marker.
+  `pdffonts` reports an embedded `FantasyRPGDings` TrueType font, supporting the
+  reviewer's dingbat-decoding hypothesis without yet proving the exact glyph
+  mapping. Recorded a font/layout-aware normalization task and explicitly
+  rejected global `Y` replacement.
+- **Review-system gap:** Recorded inline rubric anchors, explicit N/A, blinded
+  archive-asset inspection, and result import/coverage reporting as the next UI
+  improvements. Updated the benchmark report while preserving the one-page
+  limitation; no converter was selected or promoted.
+- **Tooling:** Used `jq`, `pdffonts`, `rg`, `sed`, and `apply_patch`. No source
+  PDF, MDAF, private key, conversion output, provider account, or production
+  state was modified.
+
 ## 2026-08-28 (Runnable Blinded Rulebook Review)
 
 - **Objective:** Continue from converter infrastructure to an artifact a human

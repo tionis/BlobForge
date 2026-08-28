@@ -38,6 +38,25 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-29:** The first submitted blinded human score covers page 1 of the
+  eight-page Storypath canary. Unblinding maps A to Poppler, B to Docling
+  2.122.0, and C to Marker 1.10.2. Docling scored 4 for text/reading order while
+  Marker scored 3; both scored 4 for hierarchy, lists, asset-link presentation,
+  and wiki utility. Poppler scored 1 on every rated content/structure dimension
+  but 5 for page mapping; every candidate scored 5 for page mapping. This is a
+  single-page directional result, not a recipe verdict. Asset fidelity was not
+  actually observable in the current raw-Markdown UI, so those scores describe
+  embedding syntax only. All candidates expose a `Y` list prefix and the PDF
+  embeds `FantasyRPGDings`; treat this as a font/layout-aware normalization
+  target, never a global character substitution. The next reviewer revision
+  added inline anchors, explicit N/A, blinded magic-checked raster inspection,
+  partial-score resume, and strict result ingestion. Its `local-v6` bundle
+  retains the same campaign digest, so the first export remains compatible.
+  New private keys retain the raw label seed: result summarization recomputes
+  the seed hash, campaign digest, deterministic label assignment, allowed
+  pages/dimensions/candidates, score values, and N/A coverage before unblinding.
+  Older keys that cannot prove their assignment fail closed.
+
 - **2026-08-28:** BlobForge has a runnable blinded review vertical slice.
   `blobforge review-bundle` validates that two or more MDAFs share the supplied
   source digest, derives exact page text from final UTF-8 source-map spans,

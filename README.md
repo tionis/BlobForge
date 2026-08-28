@@ -467,8 +467,10 @@ uv run blobforge review-bundle ./book.pdf ./book.marker1.mdaf ./book.docling.mda
 
 Hosted Mistral trials support a no-request `--plan` mode and require explicit
 `--confirm-api-rights` plus page and spend ceilings before upload. Review
-bundles keep the candidate mapping in a separate private key and can export
-blinded page scores directly from a local browser.
+bundles keep the candidate mapping in a separate private key, expose linked
+assets under neutral magic-checked raster paths, and export blinded page scores
+directly from a local browser. Validate, unblind, and summarize an export with
+`blobforge review-summarize RESULT.json --key CAMPAIGN.key.json`.
 
 The local legacy migration is resumable and does not write to S3:
 

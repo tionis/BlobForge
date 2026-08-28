@@ -4,12 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from blobforge.mdaf import MdafSource, blake3_file, build_mdaf
+from blobforge.mdaf import MdafMemberInput, MdafSource, blake3_file, build_mdaf
 from blobforge.mdaf.builder import activity
-from blobforge.review import _page_text, build_review_bundle, parse_page_selection
+from blobforge.review import (
+    _page_text,
+    build_review_bundle,
+    parse_page_selection,
+    summarize_review_result,
+)
 
 
-def _artifact(tmp_path, source, name, text):
+def _artifact(tmp_path, source, name, text, asset_name=None, asset_data=None):
     split = text.index("PAGE TWO")
     mappings = [
         {
@@ -34,6 +39,20 @@ def _artifact(tmp_path, source, name, text):
             },
         },
     ]
+    outputs = ["text.md", "source-map.json", "provenance.json"]
+    extras = []
+    if asset_name:
+        asset_path = f"assets/{asset_name}"
+        outputs.append(asset_path)
+        extras.append(
+            MdafMemberInput(
+                asset_path,
+                asset_data or b"\x89PNG\r\n\x1a\nsynthetic",
+                "asset",
+                "activity:convert",
+                "image/png",
+            )
+        )
     return build_mdaf(
         tmp_path / f"{name}.mdaf",
         text=text,
@@ -44,11 +63,12 @@ def _artifact(tmp_path, source, name, text):
                 kind="document-extraction",
                 tools=[{"name": name, "version": "1"}],
                 inputs=["source:document"],
-                outputs=["text.md", "source-map.json", "provenance.json"],
+                outputs=outputs,
                 parameters={},
             )
         ],
         producer={"name": name, "version": "1"},
+        extra_members=extras,
         source_map={"mappings": mappings, "references": []},
     )
 
@@ -86,13 +106,16 @@ def test_review_bundle_is_blinded_source_backed_and_deterministic(tmp_path):
         tmp_path,
         source,
         "engine-one",
-        "# Caf\N{LATIN SMALL LETTER E WITH ACUTE}\n<script>alert(1)</script>\nPAGE TWO alpha",
+        "# Caf\N{LATIN SMALL LETTER E WITH ACUTE}\n<script>alert(1)</script>\n"
+        "![cover](assets/engine-one-secret.png)\nPAGE TWO alpha",
+        asset_name="engine-one-secret.png",
     )
     second = _artifact(
         tmp_path,
         source,
         "engine-two",
-        "# Cafe\nordinary\nPAGE TWO beta",
+        "# Cafe\nordinary\n![cover](assets/engine-two-secret.png)\nPAGE TWO beta",
+        asset_name="engine-two-secret.png",
     )
     output = tmp_path / "review"
     key_path = tmp_path / "private-key.json"
@@ -113,6 +136,14 @@ def test_review_bundle_is_blinded_source_backed_and_deterministic(tmp_path):
     assert [item["label"] for item in public["candidates"]] == ["A", "B"]
     assert "identity" not in json.dumps(public)
     assert "producer" not in json.dumps(public)
+    assert "engine-one-secret" not in json.dumps(public)
+    assert "engine-two-secret" not in json.dumps(public)
+    assert (output / "assets" / "A" / "001.png").is_file()
+    assert (output / "assets" / "B" / "001.png").is_file()
+    assert all(
+        candidate["assets"]["0"][0]["previewable"]
+        for candidate in public["candidates"]
+    )
     assert {item["producer"]["name"] for item in key["candidates"]} == {
         "engine-one",
         "engine-two",
@@ -124,6 +155,11 @@ def test_review_bundle_is_blinded_source_backed_and_deterministic(tmp_path):
     assert "\\u003cscript>alert(1)\\u003c/script>" in html
     assert "autosave unavailable; use Export scores" in html
     assert "JSON.stringify(output,null,2)+'\\n'" in html
+    assert "Rating guide" in html
+    assert '<option value="na">N/A</option>' in html
+    assert "Import scores" in html
+    assert "wrong campaign or invalid result" in html
+    assert "engine-one-secret" not in html and "engine-two-secret" not in html
 
     # Input order cannot change the blinded campaign or label assignment.
     repeated = build_review_bundle(
@@ -152,3 +188,90 @@ def test_review_rejects_mismatched_source_and_existing_destination(tmp_path):
     existing.mkdir()
     with pytest.raises(ValueError, match="already exists"):
         build_review_bundle(source, [first.path, second.path], existing)
+
+
+def test_review_does_not_load_mime_signature_mismatch(tmp_path):
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"%PDF one")
+    first = _artifact(
+        tmp_path,
+        source,
+        "one",
+        "![x](assets/converter-clue.png)\nPAGE TWO one",
+        asset_name="converter-clue.png",
+        asset_data=b"<svg onload=alert(1)>",
+    )
+    second = _artifact(tmp_path, source, "two", "PAGE ONE\nPAGE TWO two")
+    output = tmp_path / "review"
+    build_review_bundle(source, [first.path, second.path], output)
+    public_text = (output / "review.json").read_text(encoding="utf-8")
+    public = json.loads(public_text)
+    assert "converter-clue" not in public_text
+    galleries = [
+        asset
+        for candidate in public["candidates"]
+        for asset in candidate["assets"]["0"]
+    ]
+    assert galleries == [{"media_type": "image/png", "previewable": False}]
+    assert not list((output / "assets").rglob("*"))
+
+
+def test_review_summary_validates_unblinds_and_reports_coverage(tmp_path):
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"%PDF one")
+    first = _artifact(tmp_path, source, "one", "PAGE ONE\nPAGE TWO one")
+    second = _artifact(tmp_path, source, "two", "PAGE ONE\nPAGE TWO two")
+    bundle = build_review_bundle(source, [first.path, second.path], tmp_path / "review")
+    key = json.loads(bundle.key_path.read_text(encoding="utf-8"))
+    labels = [candidate["label"] for candidate in key["candidates"]]
+    result = {
+        "format": "dev.tionis.blobforge.review/v1",
+        "campaign_digest": bundle.campaign_digest,
+        "exported_at": "2026-08-29T00:00:00Z",
+        "scores": {
+            "0": {
+                "ratings": {
+                    "text": {labels[0]: "4", labels[1]: "5"},
+                    "assets": {labels[0]: "na", labels[1]: "na"},
+                },
+                "notes": "page note",
+            }
+        },
+    }
+    result_path = tmp_path / "result.json"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    summary = summarize_review_result(result_path, bundle.key_path)
+    assert summary["coverage"] == {
+        "campaign_pages": 2,
+        "reviewed_pages": 1,
+        "ratings": 2,
+        "n_a": 2,
+        "possible_slots": 36,
+        "completed_slots": 4,
+        "fraction": 0.111111,
+    }
+    assert summary["candidates"][0]["dimensions"]["text"]["mean"] == 4
+    assert summary["candidates"][1]["dimensions"]["text"]["mean"] == 5
+    assert {candidate["converter"]["name"] for candidate in summary["candidates"]} == {
+        "one",
+        "two",
+    }
+    assert {candidate["producer"]["name"] for candidate in summary["candidates"]} == {
+        "one",
+        "two",
+    }
+
+    tampered_key = json.loads(bundle.key_path.read_text(encoding="utf-8"))
+    tampered_key["candidates"][0]["identity"], tampered_key["candidates"][1]["identity"] = (
+        tampered_key["candidates"][1]["identity"],
+        tampered_key["candidates"][0]["identity"],
+    )
+    tampered_key_path = tmp_path / "tampered-key.json"
+    tampered_key_path.write_text(json.dumps(tampered_key), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid label assignment"):
+        summarize_review_result(result_path, tampered_key_path)
+
+    result["campaign_digest"] = "blake3:" + "0" * 64
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    with pytest.raises(ValueError, match="does not match"):
+        summarize_review_result(result_path, bundle.key_path)
