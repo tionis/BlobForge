@@ -48,7 +48,8 @@ The virtual environment is located at `.venv/` and should be activated automatic
   byte-for-byte no-op for every previously successful input and no artifact
   existed for the formerly undefined failure path. Failed attempts remain in
   the append-only ledger; restarting `enrich --all` retries only non-converted
-  rows.
+  rows. A workspace `flock` now enforces one enrichment runner, and startup
+  closes abandoned attempt rows as `interrupted` before creating retries.
 
 - **2026-08-28:** The Mistral OCR 4.1 evaluator is quota-safe for bounded
   trials. Frozen recipe

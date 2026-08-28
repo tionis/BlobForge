@@ -33,6 +33,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync blobforge migrate enrich \
 `--large-pages` and `--large-mib` are operational overrides. Increasing
 `--jobs` above two on this host is not approved by the canary evidence.
 
+Only one enrichment command may own a workspace. The CLI holds
+`enrichment-run.lock` for its complete lifetime and refuses a concurrent
+runner. On a later start, pre-existing `processing` attempt rows are closed as
+`interrupted` before new attempts are created. Kernel lock release handles a
+crashed parent, and the append-only ledger retains both interruption and retry.
+
 Page classification uses `pdfinfo` once and caches the count in
 `legacy_pdf_metadata`; source objects are immutable, so no TTL is needed.
 
@@ -79,11 +85,12 @@ uv run --no-sync blobforge migrate enrich-verify
 ```
 
 Stopping the runner does not damage completed outputs. A killed attempt may
-leave a `processing` row and partial destination; the next run selects every
-non-converted row, creates a new attempt, and atomically replaces the partial
-file. Do not delete prior recipe rows or conservative artifacts during
-recovery. After the run, require zero processing/failed rows and a completely
-valid read-only verification before publication is considered.
+leave a `processing` job row and partial destination; the next locked run marks
+the attempt `interrupted`, selects every non-converted job, creates a new
+attempt, and atomically replaces the partial file. Do not delete prior recipe
+rows or conservative artifacts during recovery. After the run, require zero
+processing/failed rows and a completely valid read-only verification before
+publication is considered.
 
 The first complete-corpus pass exposed this Poppler control-glyph condition.
 Failures remain append-only evidence. Restart the runner after deploying the

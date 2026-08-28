@@ -439,6 +439,12 @@ def cmd_migrate_inventory(args):
 def cmd_migrate_legacy(args):
     """Convert paired legacy ZIPs into locally validated MDAF artifacts."""
     legacy_migration.inventory(args.workspace)
+    _run_lock = legacy_migration.acquire_enrichment_run_lock(args.workspace)
+    recovered_attempts = legacy_migration.recover_interrupted_enrichment_attempts(
+        args.workspace
+    )
+    if recovered_attempts:
+        print(f"Recovered {recovered_attempts} interrupted enrichment attempt(s).")
     hashes = [args.hash] if args.hash else legacy_migration.pending_hashes(
         args.workspace, args.limit
     )

@@ -18,6 +18,12 @@
   so the frozen recipe identity is retained; failed attempts stay append-only
   and will be retried after restarting the process workers on the repaired
   checkout.
+- **Restart integrity:** Added a nonblocking workspace `flock` held for the
+  whole CLI run and startup recovery that closes abandoned `processing`
+  attempts as `interrupted` before scheduling. During the controlled upgrade,
+  attempt IDs 55 and 56 were the only rows that predated the replacement
+  service; they were relabeled `interrupted` with an explicit restart reason.
+  No output, successful attempt, job identity, or failure evidence was deleted.
 - **Mistral adapter:** Added durable response capture keyed by exact source
   SHA-256, frozen recipe digest, model, and API flags. A per-request `flock`
   spans lookup and the paid call; successful native JSON is fsynced and
@@ -41,7 +47,7 @@
   secret exclusion, file modes, UTF-8 offsets, assets/media, page confidence,
   preflight ceilings, malformed cache handling, and response completeness.
   The focused converter/MDAF suite passes 16 tests; the final isolated full
-  suite passes 235 tests plus 5 subtests; bytecode compilation and CLI help smoke
+  suite passes 236 tests plus 5 subtests; bytecode compilation and CLI help smoke
   checks pass. An initial full-suite invocation inherited the operator's real
   coordinator URL/token and made 16 old worker-unit tests attempt a blocked
   Bunny identity lookup (213 passed); explicitly removing those two variables

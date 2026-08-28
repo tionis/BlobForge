@@ -5,6 +5,8 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from blobforge.enrichment import (
     PdfBlock,
     PdfEvidence,
@@ -30,6 +32,8 @@ from blobforge.legacy_migration import (
     enrichment_work_items,
     inventory,
     pending_enrichment_hashes,
+    acquire_enrichment_run_lock,
+    recover_interrupted_enrichment_attempts,
     select_enrichment_work_items,
     verify_enrichments,
 )
@@ -44,6 +48,32 @@ def test_poppler_xhtml_removes_only_xml_forbidden_c0_controls():
     cleaned, removed = sanitize_poppler_xhtml(dirty)
     assert cleaned == b"<word>beforeafter</word>"
     assert removed == 7
+
+
+def test_enrichment_runner_lock_and_interrupted_attempt_recovery(tmp_path):
+    inventory(tmp_path)
+    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            """INSERT INTO legacy_enrichment_attempts(
+                   legacy_sha256, recipe_digest, status
+               ) VALUES ('old', 'recipe', 'processing')"""
+        )
+    lock = acquire_enrichment_run_lock(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="another enrichment runner"):
+            acquire_enrichment_run_lock(tmp_path)
+        assert recover_interrupted_enrichment_attempts(tmp_path) == 1
+    finally:
+        lock.close()
+    with sqlite3.connect(tmp_path / "catalog.sqlite3") as connection:
+        status, finished, error = connection.execute(
+            """SELECT status,finished_at,error
+               FROM legacy_enrichment_attempts WHERE legacy_sha256='old'"""
+        ).fetchone()
+    assert status == "interrupted"
+    assert finished
+    assert error == "superseded after interrupted runner"
 
 
 def _evidence(*blocks):

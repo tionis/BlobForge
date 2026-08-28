@@ -615,6 +615,39 @@ def _ensure_enrichment_rows(connection: sqlite3.Connection, recipe_digest: str) 
     )
 
 
+def acquire_enrichment_run_lock(workspace: str | Path = DEFAULT_WORKSPACE):
+    """Hold the single-runner lock until the returned handle is closed."""
+    import fcntl
+
+    root = Path(workspace)
+    root.mkdir(parents=True, exist_ok=True)
+    handle = (root / "enrichment-run.lock").open("a", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise RuntimeError("another enrichment runner holds the workspace lock") from error
+    return handle
+
+
+def recover_interrupted_enrichment_attempts(
+    workspace: str | Path = DEFAULT_WORKSPACE,
+) -> int:
+    """Close attempt rows abandoned before the current locked runner started."""
+    connection = _connect(Path(workspace) / "catalog.sqlite3")
+    try:
+        with connection:
+            result = connection.execute(
+                """UPDATE legacy_enrichment_attempts
+                   SET status='interrupted', finished_at=CURRENT_TIMESTAMP,
+                       error=coalesce(error, 'superseded after interrupted runner')
+                   WHERE status='processing'"""
+            )
+        return result.rowcount
+    finally:
+        connection.close()
+
+
 def enrichment_summary(
     workspace: str | Path = DEFAULT_WORKSPACE,
     recipe_digest: str | None = None,
