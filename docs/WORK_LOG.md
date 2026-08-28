@@ -24,6 +24,8 @@
   attempt IDs 55 and 56 were the only rows that predated the replacement
   service; they were relabeled `interrupted` with an explicit restart reason.
   No output, successful attempt, job identity, or failure evidence was deleted.
+  Final acceptance checks current `legacy_enrichments` state; historical failed
+  and interrupted attempt rows intentionally remain nonzero.
 - **Mistral adapter:** Added durable response capture keyed by exact source
   SHA-256, frozen recipe digest, model, and API flags. A per-request `flock`
   spans lookup and the paid call; successful native JSON is fsynced and

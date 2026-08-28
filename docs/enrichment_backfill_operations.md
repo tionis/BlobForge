@@ -89,8 +89,10 @@ leave a `processing` job row and partial destination; the next locked run marks
 the attempt `interrupted`, selects every non-converted job, creates a new
 attempt, and atomically replaces the partial file. Do not delete prior recipe
 rows or conservative artifacts during recovery. After the run, require zero
-processing/failed rows and a completely valid read-only verification before
-publication is considered.
+current `legacy_enrichments` processing/failed rows and a completely valid
+read-only verification before publication is considered. Historical
+`legacy_enrichment_attempts` failure/interruption rows are evidence and must
+remain.
 
 The first complete-corpus pass exposed this Poppler control-glyph condition.
 Failures remain append-only evidence. Restart the runner after deploying the
