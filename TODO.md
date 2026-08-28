@@ -12,7 +12,7 @@ view; detailed research tasks remain in the sections below.
 
 - [ ] Review and approve the staged program in
   `docs/conversion_program_roadmap.md`.
-- [ ] Review and approve the enrichment evidence, confidence, and publication
+- [x] Review and approve the enrichment evidence, confidence, and publication
   rules in `docs/pdf_enrichment_pipeline.md`.
 - [x] Define a versioned intermediate document/evidence model shared by legacy
   alignment and new converter adapters.
@@ -54,9 +54,9 @@ view; detailed research tasks remain in the sections below.
 - [x] Declare legacy enrichment and current local compatibility recipes as
   born-digital PDF recipes focused on illustrated PnP rulebooks; scan-heavy OCR
   support is a separate future recipe and does not block their acceptance.
-- [ ] Add per-document duration and peak-memory recording, then define
+- [x] Add per-document duration and peak-memory recording, then define
   size-aware concurrency for the complete CPU backfill.
-- [ ] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
+- [x] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
 - [ ] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
   source, base-artifact, recipe, and derived-artifact identities.
 

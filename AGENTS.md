@@ -38,6 +38,20 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-28:** `pdf-enrichment/v1` is frozen for born-digital legacy
+  backfill at
+  `blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`.
+  Canonical JSON is packaged at `blobforge/recipes/pdf-enrichment-v1.json`, and
+  execution fails closed unless Poppler `pdftotext` is exactly 25.03.0.
+  Enrichment attempts append duration, process-tree peak RSS, page count,
+  output size, status, and error to SQLite; immutable PDF page counts are
+  cached. Concurrent work uses isolated processes and schedules at most one
+  large input (300+ pages or 64+ MiB) at once. A real 8/70/256-page canary
+  measured 51.8/138.0/354.2 MiB peak RSS and retained all prior identities;
+  all 15 reviewed artifacts remained valid. The 32-GiB host is approved for
+  `--jobs 2`, not higher concurrency. The append-only `--all` backfill is
+  authorized; verify zero failed/processing rows and all artifacts afterward.
+
 - **2026-08-28:** The current PDF-enrichment and local compatibility program is
   explicitly scoped to born-digital illustrated pen-and-paper rulebooks with
   usable embedded text. Image-only and scan-heavy PDFs are not an acceptance

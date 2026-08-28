@@ -6,6 +6,7 @@ import json
 import zipfile
 from dataclasses import dataclass
 from importlib.metadata import version
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -26,61 +27,25 @@ class LegacyEnrichmentResult:
     identity: str
     recipe_digest: str
     alignment: AlignmentResult
+    source_pages: int
 
 
-def enrichment_recipe(extractor_version: str | None = None) -> dict[str, Any]:
-    return {
-        "schema": "dev.tionis.blobforge.recipe/v2",
-        "pipeline": "legacy-mdaf-pdf-enrichment",
-        "generation": 2,
-        "base_artifact": "exact-mdaf-identity",
-        "pdf_evidence": {
-            "extractor": "poppler-pdftotext-bbox-layout",
-            "version": extractor_version or poppler_version(),
-            "ocr": False,
-            "coordinates": {"unit": "point", "origin": "top-left"},
-            "granularity": ["block", "line", "word"],
-        },
-        "markdown": {
-            "content": "unchanged-from-base-artifact",
-            "segmentation": "dev.tionis.blobforge/markdown-blocks-v1",
-            "offset_unit": "utf-8-byte",
-        },
-        "alignment": {
-            "algorithm": "dev.tionis.blobforge/poppler-anchor-bounded-word-alignment-v2",
-            "minimum_score": "0.82",
-            "ambiguity_margin": "0.08",
-            "maximum_pdf_blocks_per_mapping": 3,
-            "maximum_unseeded_lookahead_blocks": 120,
-            "candidate_index": "eight-rarest-long-tokens-v1",
-            "maximum_candidate_starts": 200,
-            "sequence_refinement": {
-                "maximum_candidates": 20,
-                "minimum_token_score": "0.25",
-                "maximum_characters": 5000,
-                "sequence_weight": "0.70",
-                "token_weight": "0.30",
-            },
-            "trusted_anchor_window": "nearest-preceding-and-following-v1",
-            "page_monotonicity": "reject-regressions",
-            "evidence_reuse": "disjoint-word-ranges",
-        },
-        "publication": {
-            "unsupported_precision": "omit",
-            "geometry": "word-union-clip-to-page-bounds-omit-empty-region",
-            "exact_block_geometry_fallback": True,
-            "page_only_fallback": True,
-            "region_minimum_score": "0.90",
-            "region_minimum_markdown_token_coverage": "0.85",
-            "region_minimum_length_ratio": "0.85",
-            "table_region_minimum_length_ratio": "0.80",
-            "fuzzy_region_maximum_source_blocks": 1,
-            "retain_base_mappings": True,
-            "outline": "complete-markdown-heading-forest",
-            "native_evidence": "sanitized-json",
-        },
-        "artifact": {"format": "mdaf", "version": 1},
-    }
+def enrichment_recipe(
+    extractor_version: str | None = None, *, validate_runtime: bool = True
+) -> dict[str, Any]:
+    recipe = json.loads(
+        files("blobforge.recipes")
+        .joinpath("pdf-enrichment-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    required = str(recipe["pdf_evidence"]["version"])
+    if validate_runtime or extractor_version is not None:
+        actual = extractor_version or poppler_version()
+        if actual != required:
+            raise RuntimeError(
+                f"pdf-enrichment/v1 requires pdftotext {required}, found {actual}"
+            )
+    return recipe
 
 
 def enrichment_recipe_digest(recipe: Mapping[str, Any]) -> str:
@@ -244,4 +209,10 @@ def enrich_legacy_mdaf(
     validated = validate_mdaf(result.path)
     if validated.identity != result.identity:
         raise RuntimeError("enriched MDAF changed during post-build validation")
-    return LegacyEnrichmentResult(result.path, result.identity, recipe_digest, alignment)
+    return LegacyEnrichmentResult(
+        result.path,
+        result.identity,
+        recipe_digest,
+        alignment,
+        len(evidence.pages),
+    )

@@ -1,0 +1,62 @@
+{
+  "alignment": {
+    "algorithm": "dev.tionis.blobforge/poppler-anchor-bounded-word-alignment-v2",
+    "ambiguity_margin": "0.08",
+    "candidate_index": "eight-rarest-long-tokens-v1",
+    "evidence_reuse": "disjoint-word-ranges",
+    "maximum_candidate_starts": 200,
+    "maximum_pdf_blocks_per_mapping": 3,
+    "maximum_unseeded_lookahead_blocks": 120,
+    "minimum_score": "0.82",
+    "page_monotonicity": "reject-regressions",
+    "sequence_refinement": {
+      "maximum_candidates": 20,
+      "maximum_characters": 5000,
+      "minimum_token_score": "0.25",
+      "sequence_weight": "0.70",
+      "token_weight": "0.30"
+    },
+    "trusted_anchor_window": "nearest-preceding-and-following-v1"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "base_artifact": "exact-mdaf-identity",
+  "generation": 2,
+  "markdown": {
+    "content": "unchanged-from-base-artifact",
+    "offset_unit": "utf-8-byte",
+    "segmentation": "dev.tionis.blobforge/markdown-blocks-v1"
+  },
+  "pdf_evidence": {
+    "coordinates": {
+      "origin": "top-left",
+      "unit": "point"
+    },
+    "extractor": "poppler-pdftotext-bbox-layout",
+    "granularity": [
+      "block",
+      "line",
+      "word"
+    ],
+    "ocr": false,
+    "version": "25.03.0"
+  },
+  "pipeline": "legacy-mdaf-pdf-enrichment",
+  "publication": {
+    "exact_block_geometry_fallback": true,
+    "fuzzy_region_maximum_source_blocks": 1,
+    "geometry": "word-union-clip-to-page-bounds-omit-empty-region",
+    "native_evidence": "sanitized-json",
+    "outline": "complete-markdown-heading-forest",
+    "page_only_fallback": true,
+    "region_minimum_length_ratio": "0.85",
+    "region_minimum_markdown_token_coverage": "0.85",
+    "region_minimum_score": "0.90",
+    "retain_base_mappings": true,
+    "table_region_minimum_length_ratio": "0.80",
+    "unsupported_precision": "omit"
+  },
+  "schema": "dev.tionis.blobforge.recipe/v2"
+}

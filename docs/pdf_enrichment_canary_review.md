@@ -2,9 +2,8 @@
 
 Date: 2026-08-27; corrected candidate reviewed 2026-08-28
 
-Status: first recipe rejected; corrected candidate passes its born-digital
-rulebook scope and remains gated only on operational telemetry and explicit
-freeze
+Status: first recipe rejected; corrected candidate frozen as
+`pdf-enrichment/v1` for born-digital rulebooks
 
 Rejected recipe:
 `blake3:cf33db6438b2a2fbe1e44538bf05cb64a40bf9d88e3f211b1276933c580e1598`
@@ -15,9 +14,10 @@ Corrected candidate:
 ## Corrected candidate decision
 
 The corrected candidate resolves every failure that rejected the first recipe
-and passes the born-digital rulebook canary. It is suitable for the final
-recipe-freeze decision; it is not yet authorization to run the unbounded
-backfill.
+and passes the born-digital rulebook canary. The operational telemetry canary
+subsequently closed the final freeze gate, so this exact recipe is authorized
+for the append-only, resumable backfill under the documented two-process
+limits.
 
 This recipe is intentionally scoped to digitally generated PDFs, especially
 illustrated pen-and-paper rulebooks with usable embedded text. It has no OCR
@@ -68,12 +68,15 @@ the 32-GiB deployment target, but the bulk runner should record per-document
 runtime and peak memory and use size-aware concurrency before the complete
 backfill begins.
 
-Remaining freeze gates are formal acceptance of the publication policy and
-runtime/peak-memory recording sufficient for the bulk audit. Equation handling
-is assessed when it occurs in the born-digital rulebook corpus, but a dedicated
-scientific-document benchmark is outside this recipe's target. Restart safety
-is covered by a regression that recovers a `processing` catalog row and
-replaces an interrupted partial destination atomically.
+The publication policy is accepted for the declared scope. A subsequent
+instrumented three-document rerun retained every artifact identity and measured
+51.8, 138.0, and 354.2 MiB peak RSS for 8-, 70-, and 256-page documents. The
+size-aware two-process scheduler never overlapped two large inputs, all 15
+artifacts remained valid, and restart safety is covered by a regression that
+recovers a `processing` row and atomically replaces an interrupted partial
+destination. Recipe JSON is packaged canonically and fails closed unless
+Poppler `pdftotext` is exactly 25.03.0. These results close the freeze gates;
+the append-only backfill is authorized under the documented operating limits.
 
 ## First-candidate decision
 

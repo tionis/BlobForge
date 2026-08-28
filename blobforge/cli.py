@@ -14,7 +14,13 @@ import os
 import sys
 import json
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 from pathlib import Path
 
 from .config import (
@@ -490,10 +496,12 @@ def cmd_migrate_enrich(args):
         print("No pending legacy enrichments for the current recipe.")
         return 0
     failures = 0
+    completed = 0
     if args.jobs == 1:
         for index, digest in enumerate(hashes, 1):
             try:
                 output = legacy_migration.enrich_one(digest, args.workspace)
+                completed += 1
                 print(f"[{index}/{len(hashes)}] {digest} -> {output}")
             except Exception as exc:
                 failures += 1
@@ -501,26 +509,64 @@ def cmd_migrate_enrich(args):
                 if args.fail_fast:
                     break
     else:
-        with ThreadPoolExecutor(max_workers=args.jobs) as executor:
-            futures = {
-                executor.submit(legacy_migration.enrich_one, digest, args.workspace): digest
-                for digest in hashes
-            }
-            for index, future in enumerate(as_completed(futures), 1):
-                digest = futures[future]
-                try:
-                    output = future.result()
-                    print(f"[{index}/{len(hashes)}] {digest} -> {output}")
-                except Exception as exc:
-                    failures += 1
-                    print(f"[{index}/{len(hashes)}] {digest}: ERROR: {exc}", file=sys.stderr)
-                    if args.fail_fast:
-                        for pending in futures:
-                            pending.cancel()
-                        break
+        items = legacy_migration.enrichment_work_items(
+            hashes,
+            args.workspace,
+            large_pages=args.large_pages,
+            large_bytes=int(args.large_mib * 1024 * 1024),
+        )
+        large_count = sum(item.large for item in items)
+        print(
+            f"Size-aware schedule: {large_count} large, {len(items) - large_count} ordinary; "
+            "at most one large document will run at once."
+        )
+        pending_items = items
+        active = {}
+        stopped = False
+        reported = 0
+        with ProcessPoolExecutor(max_workers=args.jobs) as executor:
+            while (pending_items or active) and not stopped:
+                slots = args.jobs - len(active)
+                selected, pending_items = legacy_migration.select_enrichment_work_items(
+                    pending_items,
+                    slots,
+                    large_running=any(item.large for item in active.values()),
+                )
+                for item in selected:
+                    future = executor.submit(
+                        legacy_migration.enrich_one,
+                        item.legacy_sha256,
+                        args.workspace,
+                    )
+                    active[future] = item
+                if not active:
+                    raise RuntimeError("size-aware enrichment scheduler made no progress")
+                finished, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in finished:
+                    item = active.pop(future)
+                    reported += 1
+                    try:
+                        output = future.result()
+                        completed += 1
+                        print(
+                            f"[{reported}/{len(hashes)}] {item.legacy_sha256} -> {output} "
+                            f"({item.pages} pages, {item.source_bytes / 1024**2:.1f} MiB)"
+                        )
+                    except Exception as exc:
+                        failures += 1
+                        print(
+                            f"[{reported}/{len(hashes)}] {item.legacy_sha256}: ERROR: {exc}",
+                            file=sys.stderr,
+                        )
+                        if args.fail_fast:
+                            stopped = True
+                            pending_items.clear()
+                            for running in active:
+                                running.cancel()
+                            break
     summary = legacy_migration.enrichment_summary(args.workspace)
     print(
-        f"Enriched {len(hashes) - failures:,}; failed {failures:,}; "
+        f"Enriched {completed:,}; failed {failures:,}; "
         f"recipe total {summary.converted:,}/{summary.eligible:,}"
     )
     return 1 if failures else 0
@@ -544,6 +590,23 @@ def cmd_migrate_enrich_status(args):
         f"Byte coverage:  {summary.mapped_bytes:,}/{summary.total_bytes:,} "
         f"({byte_coverage:.1%})"
     )
+    if summary.measured_documents:
+        pages_per_hour = (
+            summary.measured_pages * 3600 / summary.elapsed_seconds
+            if summary.elapsed_seconds
+            else 0
+        )
+        print(
+            f"Telemetry:      {summary.measured_documents:,}/{summary.converted:,} documents, "
+            f"{summary.measured_pages:,} pages, {summary.elapsed_seconds:.1f} process-seconds"
+        )
+        print(
+            f"Resources:      {summary.peak_rss_bytes / 1024**2:.1f} MiB max peak RSS, "
+            f"{summary.output_bytes / 1024**2:.1f} MiB outputs, "
+            f"{pages_per_hour:,.1f} pages/process-hour"
+        )
+    else:
+        print("Telemetry:      no instrumented enrichment attempts yet")
     return 0
 
 
@@ -1532,7 +1595,19 @@ def main():
     )
     p_migrate_enrich.add_argument(
         "--jobs", type=int, choices=range(1, 5), default=1,
-        help="Concurrent enrichments (default: 1)",
+        help="Isolated enrichment processes (default: 1)",
+    )
+    p_migrate_enrich.add_argument(
+        "--large-pages",
+        type=int,
+        default=legacy_migration.DEFAULT_LARGE_PDF_PAGES,
+        help="Treat PDFs with at least this many pages as large (default: 300)",
+    )
+    p_migrate_enrich.add_argument(
+        "--large-mib",
+        type=float,
+        default=legacy_migration.DEFAULT_LARGE_PDF_BYTES / 1024**2,
+        help="Treat PDFs at least this large as large (default: 64 MiB)",
     )
     p_migrate_enrich.add_argument("--fail-fast", action="store_true")
     p_migrate_enrich.set_defaults(func=cmd_migrate_enrich)

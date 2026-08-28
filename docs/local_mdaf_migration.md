@@ -92,6 +92,12 @@ uv run blobforge migrate enrich-status
 uv run blobforge migrate enrich-verify
 ```
 
+The frozen enrichment backfill uses isolated, size-aware processes and
+append-only resource telemetry. On the 32-GiB host run `--all --jobs 2
+--fail-fast`; at most one PDF with 300+ pages or 64+ MiB runs at once. See
+`enrichment_backfill_operations.md` for the frozen recipe, monitoring,
+telemetry, and recovery contract.
+
 Every conversion verifies that the raw bytes match the SHA-256 object name,
 calculates canonical BLAKE3, builds the artifact atomically, reads it back, and
 validates schemas, member hashes, UTF-8 byte spans, activity output ownership,

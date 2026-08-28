@@ -1,6 +1,6 @@
 # PDF Markdown Enrichment Pipeline
 
-Status: corrected born-digital candidate passes canary; operational freeze gate remains
+Status: `pdf-enrichment/v1` frozen for born-digital legacy backfill
 
 Date: 2026-08-28
 
@@ -91,10 +91,11 @@ is not expected to enrich image-only or scan-heavy sources. OCR support, if
 later needed in BlobForge, must be a distinct recipe with its own model,
 provenance, cost, and acceptance corpus rather than an invisible fallback.
 
-The candidate remains gated rather than frozen until the publication policy is
-formally accepted and runtime/peak-memory recording is adequate for auditing
-the bulk run. The unbounded `--all` command must not be run before that
-decision.
+The publication policy is accepted for this declared scope. Runtime and
+peak-memory telemetry, append-only attempts, cached page classification, and
+size-aware isolated-process scheduling passed a real three-document canary.
+The recipe is frozen and the explicit `--all` backfill is now authorized. See
+`enrichment_backfill_operations.md` for measurements and recovery procedures.
 
 ## Contract
 

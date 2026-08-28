@@ -1,5 +1,41 @@
 # Work Log
 
+## 2026-08-28 (Enrichment Telemetry, Scheduler, and Recipe Freeze)
+
+- **Implementation:** Added append-only `legacy_enrichment_attempts` telemetry
+  with status, timestamps, elapsed seconds, process-tree peak RSS method/value,
+  source pages, output bytes, and errors. Added immutable cached page counts in
+  `legacy_pdf_metadata`. Status aggregates measured documents/pages,
+  process-seconds, peak RSS, outputs, and process-hour throughput; verification
+  cross-checks output bytes and retained Poppler page evidence.
+- **Scheduling:** Replaced shared-thread enrichment concurrency with isolated
+  worker processes so memory belongs to one document. PDFs at 300+ pages or
+  64+ MiB are large; at most one large input runs concurrently, while an
+  ordinary input may use the second slot. Thresholds are explicit
+  performance-only CLI controls. The approved 32-GiB-host setting is two jobs.
+- **Canary:** Reran the existing 8-page Shadows and Mirrors, 70-page Curseborne
+  omnibus, and 256-page/104.7-MiB Cortex book with two processes. They completed
+  in 6.2/45.9/138.5 seconds at 51.8/138.0/354.2 MiB peak RSS and produced
+  0.4/3.5/34.8 MiB artifacts. The scheduler kept the large book from
+  overlapping another large input. All three logical MDAF identities were
+  unchanged; the complete 15-artifact verifier remained 15 valid / 0 invalid.
+- **Freeze:** Moved the reviewed recipe into packaged canonical JSON at
+  `blobforge/recipes/pdf-enrichment-v1.json`. It retains digest
+  `blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569`
+  and fails closed on any Poppler version other than 25.03.0. The built wheel
+  contains the recipe. The born-digital publication policy, deterministic
+  canary, restart behavior, validation, and operational telemetry gates now
+  pass, so `pdf-enrichment/v1` is frozen and the append-only backfill is
+  authorized.
+- **Verification:** The focused suite passes 13 tests. The full suite passes
+  225 tests plus 5 subtests. `git diff --check` passes. An initial isolated
+  wheel build could not resolve Hatchling under restricted networking; the
+  approved rerun built both wheel and sdist and confirmed the recipe member.
+- **Tooling:** Used `apply_patch`, `rg`, `sed`, `sqlite3`, `uv`, `pytest`,
+  `pdfinfo`, package inspection, the migration CLI, and read-only enrichment
+  verification. No source PDF, base MDAF, production coordinator row, or prior
+  recipe artifact identity changed.
+
 ## 2026-08-28 (Born-Digital Recipe Scope and API-Credit Policy)
 
 - **Decision:** Declared the current legacy enrichment, Poppler, Marker 1,

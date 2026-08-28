@@ -16,13 +16,20 @@ from blobforge.enrichment import (
     segment_markdown,
     validate_alignment_publication,
 )
-from blobforge.enrichment.legacy import enrich_legacy_mdaf
+from blobforge.enrichment.legacy import (
+    enrich_legacy_mdaf,
+    enrichment_recipe,
+    enrichment_recipe_digest,
+)
 from blobforge.legacy_migration import (
+    EnrichmentWorkItem,
     convert_one,
     enrich_one,
     enrichment_summary,
+    enrichment_work_items,
     inventory,
     pending_enrichment_hashes,
+    select_enrichment_work_items,
     verify_enrichments,
 )
 from blobforge.mdaf import MdafSource, blake3_file, build_mdaf, validate_mdaf
@@ -77,6 +84,20 @@ def test_markdown_segmentation_uses_final_utf8_bytes():
     encoded = markdown.encode("utf-8")
     assert encoded[blocks[0].start : blocks[0].end].decode("utf-8") == "# Café"
     assert blocks[1].start == len("# Café\n\n".encode("utf-8"))
+
+
+def test_frozen_enrichment_recipe_has_reviewed_identity_and_poppler_version():
+    recipe = enrichment_recipe("25.03.0")
+    assert enrichment_recipe(validate_runtime=False) == recipe
+    assert enrichment_recipe_digest(recipe) == (
+        "blake3:0e7e6c1ba4bb6a8920a58cd08fe3c957bd48b729cbccc5733ffec3d47876a569"
+    )
+    try:
+        enrichment_recipe("99.0.0")
+    except RuntimeError as exc:
+        assert "requires pdftotext 25.03.0" in str(exc)
+    else:
+        raise AssertionError("a mismatched Poppler version must fail closed")
 
 
 def test_alignment_rejects_duplicate_location_without_seed_and_uses_page_seed():
@@ -273,6 +294,30 @@ def test_alignment_publication_audit_rejects_regressions_and_rectangle_reuse():
     assert any("reuses published rectangle" in error for error in errors)
 
 
+def test_size_aware_scheduler_never_selects_two_large_documents():
+    items = [
+        EnrichmentWorkItem("large-a", 100, 400, True),
+        EnrichmentWorkItem("large-b", 100, 350, True),
+        EnrichmentWorkItem("small-a", 10, 20, False),
+        EnrichmentWorkItem("small-b", 10, 30, False),
+    ]
+    selected, remaining = select_enrichment_work_items(
+        items, 3, large_running=False
+    )
+    assert [item.legacy_sha256 for item in selected] == [
+        "large-a",
+        "small-a",
+        "small-b",
+    ]
+    assert [item.legacy_sha256 for item in remaining] == ["large-b"]
+
+    selected, remaining = select_enrichment_work_items(
+        items, 2, large_running=True
+    )
+    assert [item.legacy_sha256 for item in selected] == ["small-a", "small-b"]
+    assert [item.legacy_sha256 for item in remaining] == ["large-a", "large-b"]
+
+
 def test_poppler_evidence_and_legacy_derived_mdaf(tmp_path):
     repository = Path(__file__).resolve().parent.parent
     source = repository / "assets/lorem.pdf"
@@ -320,6 +365,7 @@ def test_poppler_evidence_and_legacy_derived_mdaf(tmp_path):
     validated = validate_mdaf(result.path)
     assert validated.manifest["derived_from"] == [base.identity]
     assert result.alignment.mapped_blocks > 0
+    assert result.source_pages == 2
     with zipfile.ZipFile(result.path) as archive:
         assert archive.read("text.md").decode("utf-8") == markdown
         source_map = json.loads(archive.read("source-map.json"))
@@ -361,6 +407,12 @@ def test_resumable_legacy_enrichment_catalog(tmp_path):
     assert inventory(workspace).paired == 1
     base_path = convert_one(sha256, workspace)
     base_digest = hashlib.sha256(base_path.read_bytes()).hexdigest()
+    work = enrichment_work_items([sha256], workspace, large_pages=2)
+    assert [(item.pages, item.large) for item in work] == [(2, True)]
+    with sqlite3.connect(workspace / "catalog.sqlite3") as connection:
+        assert connection.execute(
+            "SELECT pages FROM legacy_pdf_metadata WHERE legacy_sha256=?", (sha256,)
+        ).fetchone() == (2,)
     recipe_digest, pending = pending_enrichment_hashes(workspace, 20)
     assert pending == [sha256]
 
@@ -391,6 +443,25 @@ def test_resumable_legacy_enrichment_catalog(tmp_path):
     summary = enrichment_summary(workspace)
     assert (summary.eligible, summary.converted, summary.failed) == (1, 1, 0)
     assert summary.mapped_blocks > 0
+    assert summary.measured_documents == 1
+    assert summary.measured_pages == 2
+    assert summary.elapsed_seconds > 0
+    assert summary.peak_rss_bytes > 0
+    assert summary.output_bytes == first.stat().st_size
+    with sqlite3.connect(workspace / "catalog.sqlite3") as connection:
+        attempt = connection.execute(
+            """SELECT status, elapsed_seconds, peak_rss_bytes, peak_rss_method,
+                      source_pages, output_size_bytes
+               FROM legacy_enrichment_attempts"""
+        ).fetchone()
+    assert attempt[0] == "converted"
+    assert attempt[1] > 0
+    assert attempt[2] > 0
+    assert attempt[3] in {
+        "process-tree-rss-sampled-50ms",
+        "process-high-water-rss",
+    }
+    assert attempt[4:] == (2, first.stat().st_size)
     assert hashlib.sha256(base_path.read_bytes()).hexdigest() == base_digest
     verification = verify_enrichments(workspace)
     assert (verification.checked, verification.valid, verification.errors) == (1, 1, ())

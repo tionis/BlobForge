@@ -13,6 +13,9 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
+import threading
+import time
 import unicodedata
 import zipfile
 from dataclasses import dataclass
@@ -41,6 +44,9 @@ SECRET_KEY_RE = re.compile(
     r"(?:^|[_-])(?:access[_-]?token|api[_-]?key|secret|password|authorization|credential|signed[_-]?url)(?:$|[_-])",
     re.I,
 )
+PDFINFO_PAGES_RE = re.compile(r"^Pages:\s+(\d+)\s*$", re.MULTILINE)
+DEFAULT_LARGE_PDF_PAGES = 300
+DEFAULT_LARGE_PDF_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -79,6 +85,80 @@ class EnrichmentSummary:
     total_blocks: int
     mapped_bytes: int
     total_bytes: int
+    measured_documents: int
+    measured_pages: int
+    elapsed_seconds: float
+    peak_rss_bytes: int
+    output_bytes: int
+
+
+@dataclass(frozen=True)
+class EnrichmentWorkItem:
+    legacy_sha256: str
+    source_bytes: int
+    pages: int
+    large: bool
+
+
+class _PeakRssSampler:
+    """Sample this process and its children without making psutil mandatory."""
+
+    def __init__(self, interval_seconds: float = 0.05):
+        self.interval_seconds = interval_seconds
+        self.peak_bytes = 0
+        self.method = "unavailable"
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._process: Any = None
+
+    def _sample(self) -> None:
+        try:
+            processes = [self._process, *self._process.children(recursive=True)]
+            rss = sum(process.memory_info().rss for process in processes if process.is_running())
+            self.peak_bytes = max(self.peak_bytes, rss)
+        except Exception:
+            return
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            self._sample()
+
+    def __enter__(self) -> "_PeakRssSampler":
+        try:
+            import psutil
+
+            self._process = psutil.Process(os.getpid())
+            self.method = "process-tree-rss-sampled-50ms"
+            self._sample()
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+        except ImportError:
+            try:
+                import resource
+
+                usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                self.peak_bytes = int(usage * (1 if os.uname().sysname == "Darwin" else 1024))
+                self.method = "process-high-water-rss"
+            except (ImportError, AttributeError):
+                pass
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.interval_seconds * 4))
+            self._sample()
+        elif self.method == "process-high-water-rss":
+            try:
+                import resource
+
+                usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                self.peak_bytes = max(
+                    self.peak_bytes,
+                    int(usage * (1 if os.uname().sysname == "Darwin" else 1024)),
+                )
+            except (ImportError, AttributeError):
+                pass
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -124,6 +204,30 @@ def _connect(path: Path) -> sqlite3.Connection:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (legacy_sha256, recipe_digest),
             FOREIGN KEY (legacy_sha256) REFERENCES legacy_artifacts(legacy_sha256)
+        );
+        CREATE TABLE IF NOT EXISTS legacy_enrichment_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            legacy_sha256 TEXT NOT NULL,
+            recipe_digest TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            finished_at TEXT,
+            elapsed_seconds REAL,
+            peak_rss_bytes INTEGER,
+            peak_rss_method TEXT,
+            source_pages INTEGER,
+            output_size_bytes INTEGER,
+            error TEXT,
+            FOREIGN KEY (legacy_sha256, recipe_digest)
+              REFERENCES legacy_enrichments(legacy_sha256, recipe_digest)
+        );
+        CREATE INDEX IF NOT EXISTS legacy_enrichment_attempt_lookup_idx
+          ON legacy_enrichment_attempts(recipe_digest, legacy_sha256, id);
+        CREATE TABLE IF NOT EXISTS legacy_pdf_metadata (
+            legacy_sha256 TEXT PRIMARY KEY,
+            pages INTEGER NOT NULL CHECK(pages > 0),
+            inspected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (legacy_sha256) REFERENCES sources(legacy_sha256)
         );
         """
     )
@@ -515,7 +619,9 @@ def enrichment_summary(
     workspace: str | Path = DEFAULT_WORKSPACE,
     recipe_digest: str | None = None,
 ) -> EnrichmentSummary:
-    digest = recipe_digest or enrichment_recipe_digest(enrichment_recipe())
+    digest = recipe_digest or enrichment_recipe_digest(
+        enrichment_recipe(validate_runtime=False)
+    )
     connection = _connect(Path(workspace) / "catalog.sqlite3")
     try:
         with connection:
@@ -540,6 +646,22 @@ def enrichment_summary(
             summary = json.loads(row["report_json"])["summary"]
             for key in totals:
                 totals[key] += int(summary[key])
+        telemetry = connection.execute(
+            """SELECT count(*) AS documents,
+                      coalesce(sum(source_pages), 0) AS pages,
+                      coalesce(sum(elapsed_seconds), 0) AS elapsed,
+                      coalesce(max(peak_rss_bytes), 0) AS peak_rss,
+                      coalesce(sum(output_size_bytes), 0) AS output_bytes
+               FROM legacy_enrichment_attempts attempts
+               WHERE recipe_digest=? AND status='converted'
+                 AND id=(
+                   SELECT max(latest.id) FROM legacy_enrichment_attempts latest
+                   WHERE latest.recipe_digest=attempts.recipe_digest
+                     AND latest.legacy_sha256=attempts.legacy_sha256
+                     AND latest.status='converted'
+                 )""",
+            (digest,),
+        ).fetchone()
         return EnrichmentSummary(
             digest,
             eligible,
@@ -551,6 +673,11 @@ def enrichment_summary(
             totals["total_blocks"],
             totals["mapped_bytes"],
             totals["total_bytes"],
+            int(telemetry["documents"]),
+            int(telemetry["pages"]),
+            float(telemetry["elapsed"]),
+            int(telemetry["peak_rss"]),
+            int(telemetry["output_bytes"]),
         )
     finally:
         connection.close()
@@ -577,11 +704,118 @@ def pending_enrichment_hashes(
         connection.close()
 
 
+def _pdf_page_count(path: Path) -> int:
+    environment = os.environ.copy()
+    environment["LC_ALL"] = "C"
+    completed = subprocess.run(
+        ["pdfinfo", str(path)],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=environment,
+    )
+    if completed.returncode:
+        raise RuntimeError(f"pdfinfo failed for {path}: {completed.stderr[-2000:]}")
+    match = PDFINFO_PAGES_RE.search(completed.stdout)
+    if not match or int(match.group(1)) < 1:
+        raise ValueError(f"pdfinfo returned no positive page count for {path}")
+    return int(match.group(1))
+
+
+def enrichment_work_items(
+    hashes: Iterable[str],
+    workspace: str | Path = DEFAULT_WORKSPACE,
+    *,
+    large_pages: int = DEFAULT_LARGE_PDF_PAGES,
+    large_bytes: int = DEFAULT_LARGE_PDF_BYTES,
+) -> list[EnrichmentWorkItem]:
+    """Classify requested work without changing catalog state."""
+    if large_pages < 1 or large_bytes < 1:
+        raise ValueError("large-work thresholds must be positive")
+    requested = list(dict.fromkeys(hashes))
+    if not requested:
+        return []
+    connection = _connect(Path(workspace) / "catalog.sqlite3")
+    try:
+        placeholders = ",".join("?" for _ in requested)
+        rows = {
+            row["legacy_sha256"]: row
+            for row in connection.execute(
+                f"""SELECT sources.legacy_sha256, raw_path, size_bytes, pages
+                     FROM sources
+                     LEFT JOIN legacy_pdf_metadata USING(legacy_sha256)
+                     WHERE legacy_sha256 IN ({placeholders})""",
+                requested,
+            )
+        }
+    finally:
+        connection.close()
+    missing = [digest for digest in requested if digest not in rows]
+    if missing:
+        raise ValueError(f"unknown enrichment source(s): {', '.join(missing)}")
+    items = []
+    metadata_updates: list[tuple[str, int]] = []
+    for digest in requested:
+        row = rows[digest]
+        pages = int(row["pages"]) if row["pages"] is not None else _pdf_page_count(
+            Path(row["raw_path"])
+        )
+        if row["pages"] is None:
+            metadata_updates.append((digest, pages))
+        source_bytes = int(row["size_bytes"])
+        items.append(
+            EnrichmentWorkItem(
+                digest,
+                source_bytes,
+                pages,
+                pages >= large_pages or source_bytes >= large_bytes,
+            )
+        )
+    if metadata_updates:
+        connection = _connect(Path(workspace) / "catalog.sqlite3")
+        try:
+            with connection:
+                connection.executemany(
+                    """INSERT INTO legacy_pdf_metadata(legacy_sha256, pages)
+                       VALUES (?, ?)
+                       ON CONFLICT(legacy_sha256) DO UPDATE SET
+                         pages=excluded.pages, inspected_at=CURRENT_TIMESTAMP""",
+                    metadata_updates,
+                )
+        finally:
+            connection.close()
+    return items
+
+
+def select_enrichment_work_items(
+    pending: Iterable[EnrichmentWorkItem],
+    slots: int,
+    *,
+    large_running: bool,
+) -> tuple[list[EnrichmentWorkItem], list[EnrichmentWorkItem]]:
+    """Fill worker slots while permitting at most one large document."""
+    remaining = list(pending)
+    selected: list[EnrichmentWorkItem] = []
+    large_selected = large_running
+    index = 0
+    while index < len(remaining) and len(selected) < slots:
+        item = remaining[index]
+        if item.large and large_selected:
+            index += 1
+            continue
+        selected.append(remaining.pop(index))
+        large_selected = large_selected or item.large
+    return selected, remaining
+
+
 def enrich_one(legacy_sha256: str, workspace: str | Path = DEFAULT_WORKSPACE) -> Path:
     root = Path(workspace)
     recipe = enrichment_recipe()
     recipe_digest = enrichment_recipe_digest(recipe)
     connection = _connect(root / "catalog.sqlite3")
+    attempt_id: int | None = None
+    started = time.monotonic()
+    sampler = _PeakRssSampler()
     try:
         with connection:
             _ensure_enrichment_rows(connection, recipe_digest)
@@ -594,21 +828,60 @@ def enrich_one(legacy_sha256: str, workspace: str | Path = DEFAULT_WORKSPACE) ->
             ).fetchone()
             if row is None:
                 raise ValueError(f"no converted legacy artifact for {legacy_sha256}")
+            attempt = connection.execute(
+                """INSERT INTO legacy_enrichment_attempts(
+                       legacy_sha256, recipe_digest, status
+                   ) VALUES (?, ?, 'processing')""",
+                (legacy_sha256, recipe_digest),
+            )
+            attempt_id = int(attempt.lastrowid)
             connection.execute(
                 """UPDATE legacy_enrichments SET status='processing', error=NULL,
                           updated_at=CURRENT_TIMESTAMP
                    WHERE legacy_sha256=? AND recipe_digest=?""",
                 (legacy_sha256, recipe_digest),
             )
-        source_path, base_path = Path(row["raw_path"]), Path(row["base_path"])
-        if blake3_file(source_path) != row["source_digest"]:
-            raise ValueError("source PDF BLAKE3 differs from the migration catalog")
-        digest_hex = row["source_digest"].removeprefix("blake3:")
-        recipe_hex = recipe_digest.removeprefix("blake3:")
-        destination = root / "generated" / digest_hex[:2] / digest_hex / "enriched" / f"{recipe_hex}.mdaf"
-        result = enrich_legacy_mdaf(source_path, base_path, destination)
+        with sampler:
+            source_path, base_path = Path(row["raw_path"]), Path(row["base_path"])
+            if blake3_file(source_path) != row["source_digest"]:
+                raise ValueError("source PDF BLAKE3 differs from the migration catalog")
+            digest_hex = row["source_digest"].removeprefix("blake3:")
+            recipe_hex = recipe_digest.removeprefix("blake3:")
+            destination = (
+                root
+                / "generated"
+                / digest_hex[:2]
+                / digest_hex
+                / "enriched"
+                / f"{recipe_hex}.mdaf"
+            )
+            result = enrich_legacy_mdaf(source_path, base_path, destination)
+        elapsed = time.monotonic() - started
+        output_size = destination.stat().st_size
         report_json = json.dumps(result.alignment.report(), sort_keys=True, separators=(",", ":"))
         with connection:
+            connection.execute(
+                """UPDATE legacy_enrichment_attempts SET status='converted',
+                          finished_at=CURRENT_TIMESTAMP, elapsed_seconds=?,
+                          peak_rss_bytes=?, peak_rss_method=?, source_pages=?,
+                          output_size_bytes=?, error=NULL
+                   WHERE id=?""",
+                (
+                    elapsed,
+                    sampler.peak_bytes or None,
+                    sampler.method,
+                    result.source_pages,
+                    output_size,
+                    attempt_id,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO legacy_pdf_metadata(legacy_sha256, pages)
+                   VALUES (?, ?)
+                   ON CONFLICT(legacy_sha256) DO UPDATE SET
+                     pages=excluded.pages, inspected_at=CURRENT_TIMESTAMP""",
+                (legacy_sha256, result.source_pages),
+            )
             connection.execute(
                 """UPDATE legacy_enrichments SET status='converted', output_path=?,
                           mdaf_identity=?, report_json=?, error=NULL,
@@ -618,7 +891,22 @@ def enrich_one(legacy_sha256: str, workspace: str | Path = DEFAULT_WORKSPACE) ->
             )
         return destination
     except Exception as exc:
+        elapsed = time.monotonic() - started
         with connection:
+            if attempt_id is not None:
+                connection.execute(
+                    """UPDATE legacy_enrichment_attempts SET status='failed',
+                              finished_at=CURRENT_TIMESTAMP, elapsed_seconds=?,
+                              peak_rss_bytes=?, peak_rss_method=?, error=?
+                       WHERE id=?""",
+                    (
+                        elapsed,
+                        sampler.peak_bytes or None,
+                        sampler.method,
+                        str(exc),
+                        attempt_id,
+                    ),
+                )
             connection.execute(
                 """UPDATE legacy_enrichments SET status='failed', error=?,
                           updated_at=CURRENT_TIMESTAMP
@@ -635,13 +923,26 @@ def verify_enrichments(
     limit: int | None = None,
 ) -> VerificationSummary:
     """Read back current-recipe derivatives and cross-check lineage/catalog data."""
-    recipe_digest = enrichment_recipe_digest(enrichment_recipe())
+    recipe_digest = enrichment_recipe_digest(
+        enrichment_recipe(validate_runtime=False)
+    )
     connection = _connect(Path(workspace) / "catalog.sqlite3")
     try:
         query = """SELECT e.legacy_sha256, e.base_mdaf_identity, e.output_path,
-                          e.mdaf_identity, e.report_json, s.blake3 AS source_digest
+                          e.mdaf_identity, e.report_json, s.blake3 AS source_digest,
+                          attempts.id AS attempt_id,
+                          attempts.elapsed_seconds, attempts.peak_rss_bytes,
+                          attempts.peak_rss_method, attempts.source_pages,
+                          attempts.output_size_bytes
                    FROM legacy_enrichments e
                    JOIN sources s USING(legacy_sha256)
+                   LEFT JOIN legacy_enrichment_attempts attempts
+                     ON attempts.id=(
+                       SELECT max(latest.id) FROM legacy_enrichment_attempts latest
+                       WHERE latest.recipe_digest=e.recipe_digest
+                         AND latest.legacy_sha256=e.legacy_sha256
+                         AND latest.status='converted'
+                     )
                    WHERE e.recipe_digest=? AND e.status='converted'
                    ORDER BY e.legacy_sha256"""
         parameters: tuple[Any, ...] = (recipe_digest,)
@@ -666,6 +967,15 @@ def verify_enrichments(
                 for source in validated.manifest.get("sources", [])
             ):
                 raise ValueError("source BLAKE3 differs from catalog")
+            if row["attempt_id"] is not None:
+                if row["elapsed_seconds"] is None or row["elapsed_seconds"] <= 0:
+                    raise ValueError("successful enrichment attempt has no duration")
+                if row["peak_rss_method"] != "unavailable" and (
+                    row["peak_rss_bytes"] is None or row["peak_rss_bytes"] <= 0
+                ):
+                    raise ValueError("successful enrichment attempt has no peak RSS")
+                if row["output_size_bytes"] != Path(row["output_path"]).stat().st_size:
+                    raise ValueError("enrichment output size telemetry differs from artifact")
             with zipfile.ZipFile(row["output_path"]) as archive:
                 provenance = json.loads(archive.read("provenance.json"))
                 enrichments = [
@@ -685,6 +995,16 @@ def verify_enrichments(
                         "enrichment publication invariants failed: "
                         + "; ".join(publication_errors)
                     )
+                if row["attempt_id"] is not None:
+                    evidence_name = next(
+                        name
+                        for name in archive.namelist()
+                        if name.startswith("renditions/org.freedesktop.poppler/")
+                        and name.endswith(".json")
+                    )
+                    evidence = json.loads(archive.read(evidence_name))
+                    if row["source_pages"] != len(evidence["pages"]):
+                        raise ValueError("enrichment page telemetry differs from evidence")
         except Exception as exc:
             errors.append(f"{row['legacy_sha256']}: {exc}")
     return VerificationSummary(len(rows), len(rows) - len(errors), tuple(errors))
