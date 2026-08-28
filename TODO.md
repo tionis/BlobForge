@@ -95,6 +95,8 @@ view; detailed research tasks remain in the sections below.
 - [x] Generate the first real eight-page three-candidate review for Poppler,
   Marker 1, and Docling; add Mistral as a new campaign after its guarded $0.032
   request rather than changing the existing campaign.
+- [x] Reblind pages 2-8 with a private random seed after page 1 was unblinded;
+  never continue a human quality campaign after exposing its label mapping.
 - [x] Improve review bundles with an inline anchored rubric, explicit N/A,
   blinded archived-asset inspection, partial-score resume, and strict result
   import/coverage summaries.

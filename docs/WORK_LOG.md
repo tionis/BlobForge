@@ -27,6 +27,13 @@
   a neutral 611x470 Docling PNG and 1632x1275 Marker JPEG; both were visually
   inspected. The submitted page-one export imports into the browser with text
   scores 1/4/3 and summarizes as 1/8 pages, 21/216 rating slots.
+- **Reblinding:** The page-one mapping had already been disclosed, so continuing
+  under it would bias the remaining review. Added `--random-seed`, which creates
+  a cryptographic label seed known only to the private key, and generated
+  `storypath-ultra-tasty-bit-03-remaining-v1` for pages 2-8. Its campaign is
+  `blake3:f8183298733ee442bd2b3f52c7554e3dcbc5110052d349392121dbbf2a22c694`;
+  a private comparison confirmed the assignment changed without printing it,
+  and the public leakage scan passed.
 - **Verification:** Six focused reviewer tests pass, including MIME mismatch,
   N/A accounting, stable blinding, and key-tampering rejection. The hermetic
   full suite passes 243 tests plus 5 subtests. The generated JavaScript executed

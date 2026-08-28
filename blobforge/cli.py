@@ -11,6 +11,7 @@ Commands:
 - janitor: Run janitor to recover stale jobs
 """
 import os
+import secrets
 import sys
 import json
 import argparse
@@ -807,12 +808,13 @@ def cmd_compare_mdaf(args):
 
 def cmd_review_bundle(args):
     """Build a blinded, source-backed browser review from comparable MDAFs."""
+    seed = secrets.token_hex(32) if args.random_seed else args.seed
     result = build_review_bundle(
         args.source,
         args.artifacts,
         args.output,
         pages=args.pages,
-        seed=args.seed,
+        seed=seed,
         key_output=args.key_output,
     )
     print(f"Review:     {result.root / 'index.html'}")
@@ -1835,8 +1837,14 @@ def main():
     p_review.add_argument(
         "--pages", help="One-based pages/ranges to review, for example 1,3-5"
     )
-    p_review.add_argument(
+    seed_options = p_review.add_mutually_exclusive_group()
+    seed_options.add_argument(
         "--seed", default="blobforge-review-v1", help="Private label-shuffle seed"
+    )
+    seed_options.add_argument(
+        "--random-seed",
+        action="store_true",
+        help="Generate a private random label seed stored only in the key",
     )
     p_review.add_argument(
         "--key-output", help="Private candidate-to-engine key JSON destination"

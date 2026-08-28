@@ -471,6 +471,8 @@ bundles keep the candidate mapping in a separate private key, expose linked
 assets under neutral magic-checked raster paths, and export blinded page scores
 directly from a local browser. Validate, unblind, and summarize an export with
 `blobforge review-summarize RESULT.json --key CAMPAIGN.key.json`.
+Use `review-bundle --random-seed` for human scoring, and start a new campaign
+whenever its candidate mapping has been disclosed.
 
 The local legacy migration is resumable and does not write to S3:
 

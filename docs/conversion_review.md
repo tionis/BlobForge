@@ -62,6 +62,25 @@ generation. All three input MDAFs already pass BlobForge and Vulcan validation.
 Open `index.html` in Firefox to review it. The v6 campaign digest matches v3,
 so the already submitted page-one export remains valid.
 
+## Continuing after page-one unblinding
+
+The A/B/C mapping was disclosed after the first score, so collecting more
+scores under that mapping would no longer be blinded. Pages 2-8 therefore use a
+fresh randomly seeded campaign:
+
+```text
+.blobforge-migration/evaluations/reviews/
+  storypath-ultra-tasty-bit-03-remaining-v1/index.html
+  storypath-ultra-tasty-bit-03-remaining-v1.key.json
+```
+
+Its campaign identity is
+`blake3:f8183298733ee442bd2b3f52c7554e3dcbc5110052d349392121dbbf2a22c694`.
+The assignment was verified to differ from the disclosed campaign without
+printing the new mapping. Do not import the page-one export into this campaign;
+the browser rejects it because the digest differs. Export pages 2-8 separately,
+then summarize the two campaigns as independent evidence.
+
 ## Regeneration
 
 The output directory and private key must not already exist. This prevents an
@@ -84,6 +103,11 @@ source digest, sorted artifact identities, selected pages, scoring dimensions,
 and a hash of the label seed. The public files omit source paths, artifact
 identities, producer names, tools, and models. Markdown is inserted via DOM
 `textContent`, never interpreted as HTML.
+
+Use `--random-seed` for a human campaign so the label assignment is not
+predictable from a documented seed. Use an explicit `--seed` only for
+reproducible engineering fixtures. The generated seed is written solely to the
+mode-`0600` key so later summarization can verify the assignment.
 
 ## Adding the Mistral candidate
 

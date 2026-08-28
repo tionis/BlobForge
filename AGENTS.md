@@ -56,6 +56,8 @@ The virtual environment is located at `.venv/` and should be activated automatic
   the seed hash, campaign digest, deterministic label assignment, allowed
   pages/dimensions/candidates, score values, and N/A coverage before unblinding.
   Older keys that cannot prove their assignment fail closed.
+  Once a campaign is unblinded it must not collect more human scores; use
+  `--random-seed` to create a fresh private assignment for the remaining pages.
 
 - **2026-08-28:** BlobForge has a runnable blinded review vertical slice.
   `blobforge review-bundle` validates that two or more MDAFs share the supplied
