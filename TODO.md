@@ -105,6 +105,9 @@ view; detailed research tasks remain in the sections below.
   import/coverage summaries.
 - [x] Add explicit previous-page rating copy without carrying notes or silently
   marking a merely viewed page as reviewed.
+- [ ] Define review format v2 with an `inline-formatting` dimension for bold,
+  emphasis, code, superscripts, and other semantically meaningful spans while
+  retaining v1 result validation.
 - [ ] Add a font/layout-evidenced normalization test for dingbat list glyphs;
   never globally replace ordinary `Y` text.
 - [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,

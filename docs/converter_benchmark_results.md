@@ -90,6 +90,12 @@ Qualitative findings across the complete document:
   callout as a container around its two paragraphs;
 - on page 8, Marker has substantially better structure and its 1632x1275 image
   is higher resolution than Docling's 611x470 extraction.
+- a supplemental post-unblinding inspection confirms the reviewer's recollection
+  that Marker preserves inline emphasis better: its Markdown contains 39 bold
+  and 17 italic spans, including semantically useful list labels, ability names,
+  headings, and quotations, while this Docling output contains none. Counts
+  alone are not a quality score, so this remains separate from the blinded
+  means and becomes an explicit dimension in the next rubric revision.
 
 The reviewer now supports copying the previous page's ratings as an explicit
 baseline while retaining page-specific notes, addressing the interaction cost
@@ -101,11 +107,12 @@ Poppler is the speed and text-layer recall control. It is roughly three orders
 of magnitude faster than Marker 1 on the rulebook canary, but it supplies no
 useful hierarchy or extracted images. The human review establishes Marker 1 as
 the current quality leader for this one rulebook, especially for text, final
-wiki utility, page-eight structure, and image resolution. Docling remains a
-serious candidate: it has better hierarchy and slightly better reading order in
-the scored pages while taking about half as long. This is not enough to select a
-default recipe: the sample contains no rated tables or references, both engines
-have material structural defects, and both model identities remain mutable.
+wiki utility, inline emphasis, page-eight structure, and image resolution.
+Docling remains a serious candidate: it has better hierarchy and slightly
+better reading order in the scored pages while taking about half as long. This
+is not enough to select a default recipe: the sample contains no rated tables or
+references, both engines have material structural defects, and both model
+identities remain mutable.
 
 Marker 2 no-OCR is runnable on this host. Marker 2 balanced still needs a pinned
 Surya endpoint (`llama-server` for a CPU feasibility probe or a suitable GPU

@@ -1,5 +1,23 @@
 # Work Log
 
+## 2026-08-29 (Supplemental Inline-Formatting Evidence)
+
+- **Observation:** The reviewer recalled after unblinding that one structured
+  candidate, probably Marker, handled bold and emphasis better.
+- **Verification:** Read the two retained MDAFs directly. Marker 1 contains 39
+  bold and 17 italic spans used for meaningful list labels, ability names,
+  headings, and quotations. Docling contains zero bold and zero italic spans.
+  This confirms the direction of the recollection but is not added to the
+  frozen blinded score after the fact.
+- **Decision:** Recorded inline formatting as a distinct review-v2 dimension.
+  Existing review-v1 keys/results must remain independently valid rather than
+  changing their dimension contract in place.
+- **Operational status:** The enrichment catalog advanced to 1,089 converted,
+  286 pending, and 2 processing with no current failed row during this check.
+- **Tooling:** Used `unzip`, `rg`, `wc`, `sqlite3`, `find`, `pdfinfo`,
+  `pdftotext`, `sed`, and `apply_patch`. No artifact, source, provider,
+  coordinator, or production state was modified.
+
 ## 2026-08-29 (Complete First Rulebook Review and Rating Baselines)
 
 - **Input:** Retained the exact reblinded pages 2-8 export without reviewer
