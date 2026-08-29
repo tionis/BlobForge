@@ -1,5 +1,42 @@
 # Work Log
 
+## 2026-08-29 (Complete First Rulebook Review and Rating Baselines)
+
+- **Input:** Retained the exact reblinded pages 2-8 export without reviewer
+  identity and validated it against private campaign
+  `blake3:f8183298733ee442bd2b3f52c7554e3dcbc5110052d349392121dbbf2a22c694`.
+  Strict summarization accepted all pages/candidates/dimensions/scores and
+  verified the seed-derived label assignment.
+- **Unblinding:** A is Docling 2.122.0, B is Marker 1.10.2, and C is Poppler
+  25.03.0. All 7 pages have notes; pages 2-4 contain 54 numeric scores plus 27
+  N/A values, giving 81/189 completed slots. Pages 5-8 deliberately describe
+  differences relative to the stable earlier ratings.
+- **Combined result:** Across independently blinded numeric pages 1-4, Marker
+  leads text 4.50 and wiki utility 4.75; Docling leads reading order 4.75 and
+  hierarchy 4.75. Both score lists 4.00 and page mapping 5.00. Poppler scores
+  1.00 for every content/structure/wiki dimension and 5.00 for mapping. Marker
+  is the provisional quality leader for this document, while Docling remains a
+  faster credible challenger; no production default was selected.
+- **Defects:** Recorded the shared `Y` dingbat issue, Marker's repeated H1
+  promotion and cross-page list-continuation error, Docling's inaccurate middle
+  dots and flattened heading relationship, both engines' loss of a boxed
+  callout container, and Marker's better page-eight structure/image resolution.
+  Tables and references remain untested.
+- **Reviewer improvement:** Added **Copy previous ratings**. It deep-copies only
+  the preceding selected page's ratings, never notes; it is disabled without a
+  rated predecessor, performs no mutation on page view, and confirms before
+  replacing existing ratings. A two-page jsdom exercise copied 4/5 text scores,
+  retained an empty destination note, and persisted successfully. The first
+  smoke command used an incorrect relative `/tmp` path and was rerun with the
+  explicit absolute path.
+- **Verification:** Six focused reviewer tests pass. The hermetic full suite
+  passes 243 tests plus 5 subtests; bytecode compilation, `git diff --check`,
+  strict summarization of the real export, generated-JavaScript execution, and
+  a fresh sdist/wheel build also pass.
+- **Tooling:** Used `apply_patch`, `jq`, `uv`, pytest, and Node/jsdom. No source
+  PDF, MDAF, provider account, API, coordinator, or production state was
+  modified.
+
 ## 2026-08-29 (Review Evidence and Resumable Scoring)
 
 - **Objective:** Correct the review limitations exposed by the first human

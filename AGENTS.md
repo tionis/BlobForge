@@ -38,6 +38,23 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-29:** The reblinded Storypath pages 2-8 result validates with all 7
+  pages reviewed, 54 numeric ratings, 27 N/A values, and qualitative notes on
+  the four pages whose repeated selectors were intentionally not filled. Its
+  private mapping is A=Docling 2.122.0, B=Marker 1.10.2, C=Poppler 25.03.0.
+  Combining the independently blinded numeric pages 1-4: Marker leads text
+  4.50 and wiki utility 4.75; Docling leads reading order 4.75 and hierarchy
+  4.75; both score lists 4.00 and page mapping 5.00; Poppler scores 1.00 except
+  mapping 5.00. Marker is the provisional quality leader for this rulebook but
+  not a default-recipe decision. It over-promotes headings and mishandles one
+  cross-page list continuation. Docling flattens one important heading
+  relationship and uses inaccurate middle dots. Neither preserves a boxed
+  callout container. Marker produces better page-eight structure and a
+  1632x1275 image versus Docling's 611x470 image. Tables and references remain
+  unevaluated. The browser now offers explicit previous-page rating copy: it
+  deep-copies ratings only, never notes, never scores a page on view, disables
+  itself without a rated predecessor, and confirms before replacing ratings.
+
 - **2026-08-29:** The first submitted blinded human score covers page 1 of the
   eight-page Storypath canary. Unblinding maps A to Poppler, B to Docling
   2.122.0, and C to Marker 1.10.2. Docling scored 4 for text/reading order while

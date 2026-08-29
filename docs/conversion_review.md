@@ -35,6 +35,13 @@ in a new bundle or browser session; a mismatched campaign is refused. The
 exported result contains the campaign digest and blinded scores, not the
 unblinding key.
 
+After rating a page, **Copy previous ratings** deep-copies only its ratings into
+the next selected page. Notes remain page-specific. The button is disabled on
+the first page or when the preceding page has no ratings, and replacing ratings
+already entered on the current page requires confirmation. This makes repeated
+layouts a one-click baseline without marking pages merely because they were
+viewed.
+
 ## Existing eight-page test
 
 The first real bundle compares Poppler, Marker 1, and Docling across all eight

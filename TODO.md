@@ -97,9 +97,14 @@ view; detailed research tasks remain in the sections below.
   request rather than changing the existing campaign.
 - [x] Reblind pages 2-8 with a private random seed after page 1 was unblinded;
   never continue a human quality campaign after exposing its label mapping.
+- [x] Complete the first rulebook review: numeric evidence for pages 1-4 and
+  qualitative adjudication for pages 5-8 establish Marker 1 as the provisional
+  quality leader while retaining Docling as the faster structured challenger.
 - [x] Improve review bundles with an inline anchored rubric, explicit N/A,
   blinded archived-asset inspection, partial-score resume, and strict result
   import/coverage summaries.
+- [x] Add explicit previous-page rating copy without carrying notes or silently
+  marking a merely viewed page as reviewed.
 - [ ] Add a font/layout-evidenced normalization test for dingbat list glyphs;
   never globally replace ordinary `Y` text.
 - [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,

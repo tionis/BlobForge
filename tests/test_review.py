@@ -158,6 +158,8 @@ def test_review_bundle_is_blinded_source_backed_and_deterministic(tmp_path):
     assert "Rating guide" in html
     assert '<option value="na">N/A</option>' in html
     assert "Import scores" in html
+    assert "Copy previous ratings" in html
+    assert "previous ratings copied and saved locally" in html
     assert "wrong campaign or invalid result" in html
     assert "engine-one-secret" not in html and "engine-two-secret" not in html
 
