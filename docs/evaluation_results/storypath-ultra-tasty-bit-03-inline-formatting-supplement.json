@@ -1,0 +1,22 @@
+{
+  "format": "dev.tionis.blobforge.review-supplement/v1",
+  "recorded_at": "2026-08-29",
+  "campaign_digests": [
+    "blake3:77957f19a06b1ddf8288840aa59f2992482eeeab004314134496c9f90e33a468",
+    "blake3:f8183298733ee442bd2b3f52c7554e3dcbc5110052d349392121dbbf2a22c694"
+  ],
+  "observation_timing": "during-blinded-review",
+  "omitted_from_browser_export": true,
+  "observation": "One structured candidate preserved semantically meaningful bold and italic emphasis better than the other.",
+  "unblinded_attribution": {
+    "converter": "marker-pdf",
+    "version": "1.10.2"
+  },
+  "post_unblinding_artifact_check": {
+    "marker_bold_spans": 39,
+    "marker_italic_spans": 17,
+    "docling_bold_spans": 0,
+    "docling_italic_spans": 0
+  },
+  "scoring_treatment": "Qualitative blinded evidence; no numeric score was reconstructed after export."
+}

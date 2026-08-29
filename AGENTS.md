@@ -38,12 +38,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
-- **2026-08-29:** A supplemental post-unblinding check confirms the reviewer's
-  recollection that Marker 1 preserves emphasis better on the Storypath canary.
-  Marker emits 39 bold and 17 italic Markdown spans, including meaningful list
-  labels, ability names, headings, and a quotation; Docling emits no bold or
-  italic spans in this artifact. This was not part of the frozen blinded rubric,
-  so it is qualitative supplemental evidence, not a retroactive score. Add an
+- **2026-08-29:** The reviewer observed during the blinded Storypath review that
+  one structured candidate preserved emphasis better, but omitted it from the
+  browser export. Unblinding attributes that candidate to Marker 1. A subsequent
+  artifact check supports the observation: Marker emits 39 bold and 17 italic
+  Markdown spans, including meaningful list labels, ability names, headings,
+  and a quotation; Docling emits none. Preserve this as qualitative blinded
+  evidence without reconstructing a numeric score after export. Add an
   `inline-formatting` dimension in review format v2 without invalidating stored
   v1 campaigns.
 

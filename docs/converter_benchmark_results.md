@@ -49,7 +49,8 @@ not only archive validation.
 The exact exports are retained as:
 
 - `docs/evaluation_results/storypath-ultra-tasty-bit-03-page-1.review.json`;
-- `docs/evaluation_results/storypath-ultra-tasty-bit-03-pages-2-8.review.json`.
+- `docs/evaluation_results/storypath-ultra-tasty-bit-03-pages-2-8.review.json`;
+- `docs/evaluation_results/storypath-ultra-tasty-bit-03-inline-formatting-supplement.json`.
 
 Page 1 used the original campaign. Because its A/B/C assignment was then
 disclosed, pages 2-8 used a new random assignment. The second export validates
@@ -90,12 +91,14 @@ Qualitative findings across the complete document:
   callout as a container around its two paragraphs;
 - on page 8, Marker has substantially better structure and its 1632x1275 image
   is higher resolution than Docling's 611x470 extraction.
-- a supplemental post-unblinding inspection confirms the reviewer's recollection
-  that Marker preserves inline emphasis better: its Markdown contains 39 bold
-  and 17 italic spans, including semantically useful list labels, ability names,
-  headings, and quotations, while this Docling output contains none. Counts
-  alone are not a quality score, so this remains separate from the blinded
-  means and becomes an explicit dimension in the next rubric revision.
+- the reviewer observed while still blinded that one structured candidate
+  preserved inline emphasis better, but omitted the note from the browser
+  export. Unblinding attributes that candidate to Marker. A subsequent artifact
+  check supports the observation: Marker contains 39 bold and 17 italic spans,
+  including semantically useful list labels, ability names, headings, and
+  quotations, while this Docling output contains none. No numeric score was
+  reconstructed after export; the observation is retained as qualitative
+  blinded evidence and becomes an explicit dimension in the next rubric.
 
 The reviewer now supports copying the previous page's ratings as an explicit
 baseline while retaining page-specific notes, addressing the interaction cost

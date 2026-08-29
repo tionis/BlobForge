@@ -1,14 +1,18 @@
 # Work Log
 
-## 2026-08-29 (Supplemental Inline-Formatting Evidence)
+## 2026-08-29 (Supplemental Blinded Inline-Formatting Evidence)
 
-- **Observation:** The reviewer recalled after unblinding that one structured
-  candidate, probably Marker, handled bold and emphasis better.
+- **Observation:** The reviewer clarified that they noticed the emphasis
+  difference during blinded scoring but forgot to include it in the exported
+  notes. The observation is therefore blinded evidence recorded late, not a
+  post-unblinding quality judgment.
 - **Verification:** Read the two retained MDAFs directly. Marker 1 contains 39
   bold and 17 italic spans used for meaningful list labels, ability names,
   headings, and quotations. Docling contains zero bold and zero italic spans.
-  This confirms the direction of the recollection but is not added to the
-  frozen blinded score after the fact.
+  Unblinding maps the observed stronger candidate to Marker and the counts
+  support the observation. The exact browser exports remain untouched; a
+  separate structured supplement records timing, attribution, and counts, and
+  no numeric score is reconstructed after the fact.
 - **Decision:** Recorded inline formatting as a distinct review-v2 dimension.
   Existing review-v1 keys/results must remain independently valid rather than
   changing their dimension contract in place.
