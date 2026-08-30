@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from ..converters.contract import PROVIDER_ATTEMPT_CONTRACT, PROVIDER_PROBE_CONTRACT
 from ..mdaf import blake3_bytes, canonical_json_bytes
 from ..recipe_lifecycle import assert_reprocessable, load_known_recipe
 
@@ -88,7 +89,9 @@ class Database:
                     completed_at INTEGER, done_seq INTEGER,
                     input_kind TEXT NOT NULL DEFAULT 'source',
                     input_artifact_id INTEGER,
-                    parent_recipe_digest TEXT
+                    parent_recipe_digest TEXT,
+                    not_before INTEGER,
+                    blocked_reason TEXT
                 );
                 CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status, priority, created_at);
                 CREATE INDEX IF NOT EXISTS jobs_done_idx ON jobs(status, done_seq);
@@ -106,13 +109,17 @@ class Database:
                     artifact_type TEXT NOT NULL, last_seen INTEGER NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1, display_name TEXT NOT NULL DEFAULT '',
                     notes TEXT NOT NULL DEFAULT '',
-                    input_kinds_json TEXT NOT NULL DEFAULT '["source"]'
+                    input_kinds_json TEXT NOT NULL DEFAULT '["source"]',
+                    provider_account TEXT,
+                    provider TEXT
                 );
                 CREATE TABLE IF NOT EXISTS worker_recipes (
                     worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
                     recipe_digest TEXT NOT NULL REFERENCES recipes(recipe_digest) ON DELETE CASCADE,
                     last_seen INTEGER NOT NULL,
                     input_kinds_json TEXT NOT NULL DEFAULT '["source"]',
+                    provider_account TEXT,
+                    provider TEXT,
                     PRIMARY KEY(worker_id, recipe_digest)
                 );
                 CREATE TABLE IF NOT EXISTS workers (
@@ -128,6 +135,46 @@ class Database:
                     traceback TEXT, context_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS provider_accounts (
+                    account_key TEXT PRIMARY KEY, provider TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    concurrency_limit INTEGER NOT NULL DEFAULT 1,
+                    cooldown_until INTEGER, cooldown_reason TEXT,
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS quota_policies (
+                    id TEXT PRIMARY KEY, account_key TEXT NOT NULL REFERENCES provider_accounts(account_key),
+                    revision INTEGER NOT NULL, window_start INTEGER NOT NULL,
+                    window_end INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '',
+                    limit_requests INTEGER, limit_pages INTEGER,
+                    limit_estimated_micro_usd INTEGER, limit_billed_micro_usd INTEGER,
+                    created_at INTEGER NOT NULL, UNIQUE(account_key, revision)
+                );
+                CREATE TABLE IF NOT EXISTS job_quota_overrides (
+                    id TEXT PRIMARY KEY, source_key TEXT NOT NULL REFERENCES sources(source_key),
+                    recipe_digest TEXT NOT NULL, extra_requests INTEGER NOT NULL DEFAULT 0,
+                    extra_pages INTEGER NOT NULL DEFAULT 0,
+                    extra_micro_usd INTEGER NOT NULL DEFAULT 0,
+                    reason TEXT NOT NULL, actor TEXT NOT NULL, expires_at INTEGER NOT NULL,
+                    consumed_by TEXT, revoked_at INTEGER, created_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS quota_reservations (
+                    id TEXT PRIMARY KEY, source_key TEXT NOT NULL REFERENCES sources(source_key),
+                    recipe_digest TEXT NOT NULL, account_key TEXT NOT NULL REFERENCES provider_accounts(account_key),
+                    worker_id TEXT NOT NULL, lease_token_hash TEXT NOT NULL,
+                    checkpoint_key TEXT NOT NULL, state TEXT NOT NULL,
+                    cache_hit INTEGER NOT NULL DEFAULT 0,
+                    reserved_requests INTEGER NOT NULL, reserved_pages INTEGER NOT NULL,
+                    reserved_estimated_micro_usd INTEGER NOT NULL,
+                    actual_requests INTEGER, actual_pages INTEGER,
+                    list_micro_usd INTEGER, billed_micro_usd INTEGER,
+                    credits_micro_usd INTEGER, override_id TEXT REFERENCES job_quota_overrides(id),
+                    detail TEXT, created_at INTEGER NOT NULL, settled_at INTEGER,
+                    reconcile_by INTEGER NOT NULL,
+                    UNIQUE(source_key,recipe_digest,lease_token_hash)
+                );
+                CREATE INDEX IF NOT EXISTS quota_usage_idx
+                    ON quota_reservations(account_key,created_at,state);
                 CREATE TABLE IF NOT EXISTS scim_users (
                     id TEXT PRIMARY KEY, external_id TEXT UNIQUE, user_name TEXT NOT NULL UNIQUE,
                     display_name TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
@@ -168,6 +215,8 @@ class Database:
                 ("input_kind", "TEXT NOT NULL DEFAULT 'source'"),
                 ("input_artifact_id", "INTEGER"),
                 ("parent_recipe_digest", "TEXT"),
+                ("not_before", "INTEGER"),
+                ("blocked_reason", "TEXT"),
             ):
                 if name not in job_columns:
                     db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
@@ -176,6 +225,8 @@ class Database:
                 ("enabled", "INTEGER NOT NULL DEFAULT 1"),
                 ("display_name", "TEXT NOT NULL DEFAULT ''"),
                 ("notes", "TEXT NOT NULL DEFAULT ''"),
+                ("provider_account", "TEXT"),
+                ("provider", "TEXT"),
             ):
                 if name not in recipe_columns:
                     db.execute(f"ALTER TABLE recipes ADD COLUMN {name} {declaration}")
@@ -192,6 +243,14 @@ class Database:
                     "ALTER TABLE worker_recipes ADD COLUMN input_kinds_json "
                     "TEXT NOT NULL DEFAULT '[\"source\"]'"
                 )
+            for name, declaration in (
+                ("provider_account", "TEXT"),
+                ("provider", "TEXT"),
+            ):
+                if name not in worker_recipe_columns:
+                    db.execute(
+                        f"ALTER TABLE worker_recipes ADD COLUMN {name} {declaration}"
+                    )
             worker_columns = {row[1] for row in db.execute("PRAGMA table_info(workers)")}
             if "managed_by" not in worker_columns:
                 db.execute("ALTER TABLE workers ADD COLUMN managed_by TEXT NOT NULL DEFAULT 'dynamic'")
@@ -301,6 +360,606 @@ class Database:
             row["detail"] = json.loads(row.pop("detail_json") or "{}")
         return rows
 
+    @staticmethod
+    def _quota_integer(value: Any, name: str, *, optional: bool = False) -> int | None:
+        if value is None and optional:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+        return value
+
+    def configure_provider_account(
+        self,
+        account_key: str,
+        provider: str,
+        *,
+        enabled: bool = True,
+        concurrency_limit: int = 1,
+    ) -> dict[str, Any]:
+        account_key = account_key.strip().lower()
+        provider = provider.strip().lower()
+        if not account_key or not provider:
+            raise ValueError("account_key and provider are required")
+        if isinstance(concurrency_limit, bool) or concurrency_limit < 1:
+            raise ValueError("concurrency_limit must be a positive integer")
+        timestamp = now_ms()
+        with self.transaction() as db:
+            existing = db.execute(
+                "SELECT provider FROM provider_accounts WHERE account_key=?",
+                (account_key,),
+            ).fetchone()
+            if existing and existing["provider"] != provider and db.execute(
+                """SELECT 1 FROM quota_policies WHERE account_key=? UNION ALL
+                SELECT 1 FROM quota_reservations WHERE account_key=? LIMIT 1""",
+                (account_key, account_key),
+            ).fetchone():
+                raise Conflict("provider cannot change after an account has quota history")
+            db.execute(
+                """INSERT INTO provider_accounts(account_key,provider,enabled,concurrency_limit,created_at,updated_at)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET
+                provider=excluded.provider,enabled=excluded.enabled,
+                concurrency_limit=excluded.concurrency_limit,updated_at=excluded.updated_at""",
+                (account_key, provider, int(enabled), concurrency_limit, timestamp, timestamp),
+            )
+            row = db.execute(
+                "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone()
+        value = dict(row)
+        value["enabled"] = bool(value["enabled"])
+        return value
+
+    def create_quota_policy(
+        self,
+        account_key: str,
+        *,
+        window_start: int,
+        window_end: int,
+        label: str = "",
+        limit_requests: int | None = None,
+        limit_pages: int | None = None,
+        limit_estimated_micro_usd: int | None = None,
+        limit_billed_micro_usd: int | None = None,
+    ) -> dict[str, Any]:
+        account_key = account_key.strip().lower()
+        if isinstance(window_start, bool) or isinstance(window_end, bool):
+            raise ValueError("quota policy window timestamps must be integers")
+        if not isinstance(window_start, int) or not isinstance(window_end, int) or window_end <= window_start:
+            raise ValueError("quota policy window_end must be after window_start")
+        limits = {
+            "limit_requests": self._quota_integer(limit_requests, "limit_requests", optional=True),
+            "limit_pages": self._quota_integer(limit_pages, "limit_pages", optional=True),
+            "limit_estimated_micro_usd": self._quota_integer(
+                limit_estimated_micro_usd, "limit_estimated_micro_usd", optional=True
+            ),
+            "limit_billed_micro_usd": self._quota_integer(
+                limit_billed_micro_usd, "limit_billed_micro_usd", optional=True
+            ),
+        }
+        if all(value is None for value in limits.values()):
+            raise ValueError("quota policy needs at least one limit")
+        timestamp = now_ms()
+        identifier = "qpol_" + secrets.token_hex(10)
+        with self.transaction() as db:
+            if not db.execute(
+                "SELECT 1 FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone():
+                raise KeyError(account_key)
+            revision = int(
+                db.execute(
+                    "SELECT COALESCE(MAX(revision),0)+1 FROM quota_policies WHERE account_key=?",
+                    (account_key,),
+                ).fetchone()[0]
+            )
+            db.execute(
+                """INSERT INTO quota_policies(id,account_key,revision,window_start,window_end,label,
+                limit_requests,limit_pages,limit_estimated_micro_usd,limit_billed_micro_usd,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    identifier,
+                    account_key,
+                    revision,
+                    window_start,
+                    window_end,
+                    label.strip()[:160],
+                    limits["limit_requests"],
+                    limits["limit_pages"],
+                    limits["limit_estimated_micro_usd"],
+                    limits["limit_billed_micro_usd"],
+                    timestamp,
+                ),
+            )
+            row = db.execute("SELECT * FROM quota_policies WHERE id=?", (identifier,)).fetchone()
+        return dict(row)
+
+    def create_quota_override(
+        self,
+        key: str,
+        recipe_digest: str,
+        *,
+        extra_requests: int,
+        extra_pages: int,
+        extra_micro_usd: int,
+        reason: str,
+        actor: str,
+        expires_at: int,
+    ) -> dict[str, Any]:
+        values = {
+            "extra_requests": self._quota_integer(extra_requests, "extra_requests"),
+            "extra_pages": self._quota_integer(extra_pages, "extra_pages"),
+            "extra_micro_usd": self._quota_integer(extra_micro_usd, "extra_micro_usd"),
+        }
+        reason = reason.strip()
+        if not reason or len(reason) > 1000:
+            raise ValueError("reason must contain 1-1000 characters")
+        if not recipe_digest or all(value == 0 for value in values.values()):
+            raise ValueError("an exact recipe and at least one positive allowance are required")
+        if isinstance(expires_at, bool) or not isinstance(expires_at, int) or expires_at <= now_ms():
+            raise ValueError("expires_at must be a future millisecond timestamp")
+        identifier = "qovr_" + secrets.token_hex(10)
+        timestamp = now_ms()
+        with self.transaction() as db:
+            job = db.execute(
+                "SELECT recipe_digest,status FROM jobs WHERE source_key=?", (key,)
+            ).fetchone()
+            if not job:
+                raise KeyError(key)
+            if job["recipe_digest"] != recipe_digest:
+                raise Conflict("quota override recipe must match the exact queued job recipe")
+            if job["status"] in {"processing", "done"}:
+                raise Conflict("quota overrides can be attached only before a provider attempt")
+            db.execute(
+                """INSERT INTO job_quota_overrides(id,source_key,recipe_digest,extra_requests,
+                extra_pages,extra_micro_usd,reason,actor,expires_at,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    identifier,
+                    key,
+                    recipe_digest,
+                    values["extra_requests"],
+                    values["extra_pages"],
+                    values["extra_micro_usd"],
+                    reason,
+                    actor,
+                    expires_at,
+                    timestamp,
+                ),
+            )
+            db.execute(
+                "UPDATE jobs SET not_before=NULL,blocked_reason=NULL,updated_at=? WHERE source_key=?",
+                (timestamp, key),
+            )
+            row = db.execute(
+                "SELECT * FROM job_quota_overrides WHERE id=?", (identifier,)
+            ).fetchone()
+        return dict(row)
+
+    def revoke_quota_override(self, identifier: str) -> None:
+        with self.transaction() as db:
+            changed = db.execute(
+                """UPDATE job_quota_overrides SET revoked_at=?
+                WHERE id=? AND revoked_at IS NULL AND consumed_by IS NULL""",
+                (now_ms(), identifier),
+            ).rowcount
+        if not changed:
+            raise KeyError(identifier)
+
+    def quota_records(self, key: str) -> dict[str, Any]:
+        with self.connect() as db:
+            reservations = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM quota_reservations WHERE source_key=? ORDER BY created_at DESC",
+                    (key,),
+                )
+            ]
+            overrides = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM job_quota_overrides WHERE source_key=? ORDER BY created_at DESC",
+                    (key,),
+                )
+            ]
+        for item in reservations:
+            item["cache_hit"] = bool(item["cache_hit"])
+            item.pop("lease_token_hash", None)
+        return {"reservations": reservations, "overrides": overrides}
+
+    def reserve_quota(
+        self,
+        key: str,
+        worker_id: str,
+        lease: str,
+        body: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        timestamp = now_ms()
+        if body.get("contract") != PROVIDER_PROBE_CONTRACT:
+            raise ValueError("unsupported provider probe contract")
+        account_key = str(body.get("account_key") or "").strip().lower()
+        provider = str(body.get("provider") or "").strip().lower()
+        checkpoint_key = str(body.get("checkpoint_key") or "").strip()
+        cache_hit = body.get("cache_hit")
+        requests = self._quota_integer(body.get("requests"), "requests")
+        pages = self._quota_integer(body.get("pages"), "pages")
+        estimated = self._quota_integer(
+            body.get("estimated_micro_usd"), "estimated_micro_usd"
+        )
+        if not account_key or not provider or not checkpoint_key:
+            raise ValueError("provider, account_key, and checkpoint_key are required")
+        if not isinstance(cache_hit, bool):
+            raise ValueError("cache_hit must be a boolean")
+        if cache_hit and (requests or estimated):
+            raise ValueError("cache hits cannot reserve requests or spend")
+        identifier = "qres_" + secrets.token_hex(12)
+        lease_digest = token_hash(lease)
+        with self.transaction() as db:
+            job = self.require_lease(db, key, worker_id, lease)
+            recipe_digest = str(job["recipe_digest"] or "")
+            recipe = db.execute(
+                """SELECT provider_account,provider FROM worker_recipes
+                WHERE worker_id=? AND recipe_digest=?""",
+                (worker_id, recipe_digest),
+            ).fetchone()
+            if not recipe or recipe["provider_account"] != account_key or recipe["provider"] != provider:
+                raise Conflict("quota probe does not match the leased recipe provider account")
+            existing = db.execute(
+                """SELECT * FROM quota_reservations
+                WHERE source_key=? AND recipe_digest=? AND lease_token_hash=?""",
+                (key, recipe_digest, lease_digest),
+            ).fetchone()
+            if existing:
+                if (
+                    existing["account_key"] != account_key
+                    or existing["checkpoint_key"] != checkpoint_key
+                    or bool(existing["cache_hit"]) != cache_hit
+                    or int(existing["reserved_requests"]) != requests
+                    or int(existing["reserved_pages"]) != pages
+                    or int(existing["reserved_estimated_micro_usd"]) != estimated
+                ):
+                    raise Conflict("quota retry does not match its existing reservation")
+                value = dict(existing)
+                value.pop("lease_token_hash", None)
+                return {"authorized": True, "reservation": value, "idempotent": True}
+            account = db.execute(
+                "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone()
+            if not account or account["provider"] != provider:
+                raise Conflict("provider account is not configured")
+            if not account["enabled"]:
+                raise Conflict("provider account is disabled")
+            resume_identifier = body.get("resume_reservation_id")
+            if isinstance(resume_identifier, str) and resume_identifier:
+                resumable = db.execute(
+                    """SELECT * FROM quota_reservations WHERE id=? AND source_key=?
+                    AND recipe_digest=? AND account_key=? AND checkpoint_key=?
+                    AND state IN ('reserved','ambiguous')""",
+                    (
+                        resume_identifier,
+                        key,
+                        recipe_digest,
+                        account_key,
+                        checkpoint_key,
+                    ),
+                ).fetchone()
+                if resumable:
+                    db.execute(
+                        """UPDATE quota_reservations SET worker_id=?,lease_token_hash=?,
+                        state='reserved',reconcile_by=? WHERE id=?""",
+                        (worker_id, lease_digest, timestamp + 86_400_000, resume_identifier),
+                    )
+                    value = dict(
+                        db.execute(
+                            "SELECT * FROM quota_reservations WHERE id=?",
+                            (resume_identifier,),
+                        ).fetchone()
+                    )
+                    value.pop("lease_token_hash", None)
+                    value["cache_hit"] = bool(value["cache_hit"])
+                    return {"authorized": True, "reservation": value, "resumed": True}
+                if not cache_hit:
+                    raise Conflict(
+                        "provider checkpoint names a reservation that cannot be resumed; "
+                        "reconcile it before retrying"
+                    )
+            if account["cooldown_until"] and int(account["cooldown_until"]) > timestamp:
+                defer_until = int(account["cooldown_until"])
+                reason = str(account["cooldown_reason"] or "provider cooldown")
+                db.execute(
+                    """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                    lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=? WHERE source_key=?""",
+                    (defer_until, reason, timestamp, key),
+                )
+                return {"authorized": False, "reason": reason, "not_before": defer_until}
+            if not cache_hit:
+                active = int(
+                    db.execute(
+                        """SELECT COUNT(*) FROM quota_reservations
+                        WHERE account_key=? AND cache_hit=0 AND state IN ('reserved','ambiguous')""",
+                        (account_key,),
+                    ).fetchone()[0]
+                )
+                if active >= int(account["concurrency_limit"]):
+                    defer_until = timestamp + 30_000
+                    reason = "provider account concurrency limit reached"
+                    db.execute(
+                        """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                        lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=? WHERE source_key=?""",
+                        (defer_until, reason, timestamp, key),
+                    )
+                    return {"authorized": False, "reason": reason, "not_before": defer_until}
+            policies = list(
+                db.execute(
+                    """SELECT * FROM quota_policies WHERE account_key=?
+                    AND window_start<=? AND window_end>? ORDER BY window_end""",
+                    (account_key, timestamp, timestamp),
+                )
+            )
+            if not cache_hit and not policies:
+                next_row = db.execute(
+                    "SELECT MIN(window_start) FROM quota_policies WHERE account_key=? AND window_start>?",
+                    (account_key, timestamp),
+                ).fetchone()
+                defer_until = int(next_row[0]) if next_row and next_row[0] else timestamp + 300_000
+                reason = "no active BlobForge quota policy"
+                db.execute(
+                    """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                    lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=? WHERE source_key=?""",
+                    (defer_until, reason, timestamp, key),
+                )
+                return {"authorized": False, "reason": reason, "not_before": defer_until}
+            override = db.execute(
+                """SELECT * FROM job_quota_overrides WHERE source_key=? AND recipe_digest=?
+                AND revoked_at IS NULL AND consumed_by IS NULL AND expires_at>?
+                ORDER BY created_at LIMIT 1""",
+                (key, recipe_digest, timestamp),
+            ).fetchone()
+            extras = {
+                "requests": int(override["extra_requests"]) if override else 0,
+                "pages": int(override["extra_pages"]) if override else 0,
+                "estimated": int(override["extra_micro_usd"]) if override else 0,
+                "billed": int(override["extra_micro_usd"]) if override else 0,
+            }
+            exceeded: list[dict[str, Any]] = []
+            override_needed = False
+            for policy in policies:
+                usage = db.execute(
+                    """SELECT COALESCE(SUM(reserved_requests),0),
+                    COALESCE(SUM(reserved_pages),0),
+                    COALESCE(SUM(reserved_estimated_micro_usd),0),
+                    COALESCE(SUM(COALESCE(billed_micro_usd,reserved_estimated_micro_usd)),0)
+                    FROM quota_reservations WHERE account_key=? AND created_at>=? AND created_at<?
+                    AND state IN ('reserved','committed','ambiguous')""",
+                    (account_key, policy["window_start"], policy["window_end"]),
+                ).fetchone()
+                dimensions = (
+                    ("requests", policy["limit_requests"], int(usage[0]), requests),
+                    ("pages", policy["limit_pages"], int(usage[1]), pages),
+                    ("estimated", policy["limit_estimated_micro_usd"], int(usage[2]), estimated),
+                    ("billed", policy["limit_billed_micro_usd"], int(usage[3]), estimated),
+                )
+                for name, limit, used, requested in dimensions:
+                    if limit is None or used + requested <= int(limit):
+                        continue
+                    override_needed = True
+                    if used + requested > int(limit) + extras[name]:
+                        exceeded.append(
+                            {"policy_id": policy["id"], "dimension": name,
+                             "used": used, "requested": requested, "limit": int(limit)}
+                        )
+            if exceeded:
+                defer_until = min(int(policy["window_end"]) for policy in policies)
+                reason = json.dumps({"kind": "quota", "exceeded": exceeded}, sort_keys=True)
+                db.execute(
+                    """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                    lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=? WHERE source_key=?""",
+                    (defer_until, reason, timestamp, key),
+                )
+                return {"authorized": False, "reason": "quota exhausted", "not_before": defer_until, "exceeded": exceeded}
+            override_id = str(override["id"]) if override_needed and override else None
+            db.execute(
+                """INSERT INTO quota_reservations(id,source_key,recipe_digest,account_key,
+                worker_id,lease_token_hash,checkpoint_key,state,cache_hit,reserved_requests,
+                reserved_pages,reserved_estimated_micro_usd,created_at,reconcile_by,override_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    identifier, key, recipe_digest, account_key, worker_id, lease_digest,
+                    checkpoint_key, "reserved", int(cache_hit), requests, pages, estimated,
+                    timestamp, timestamp + 86_400_000, override_id,
+                ),
+            )
+            if override_id:
+                db.execute(
+                    "UPDATE job_quota_overrides SET consumed_by=? WHERE id=?",
+                    (identifier, override_id),
+                )
+            row = db.execute("SELECT * FROM quota_reservations WHERE id=?", (identifier,)).fetchone()
+        value = dict(row)
+        value.pop("lease_token_hash", None)
+        value["cache_hit"] = bool(value["cache_hit"])
+        return {"authorized": True, "reservation": value, "idempotent": False}
+
+    def settle_quota(
+        self,
+        identifier: str,
+        worker_id: str,
+        report: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        timestamp = now_ms()
+        if report.get("contract") != PROVIDER_ATTEMPT_CONTRACT:
+            raise ValueError("unsupported provider attempt contract")
+        state = str(report.get("state") or "")
+        if state not in {"committed", "cache_hit", "released", "ambiguous", "rate_limited"}:
+            raise ValueError("unsupported provider attempt state")
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT * FROM quota_reservations WHERE id=?", (identifier,)
+            ).fetchone()
+            if not row:
+                raise KeyError(identifier)
+            if row["worker_id"] != worker_id:
+                raise Conflict("quota reservation belongs to another worker")
+            if report.get("reservation_id") != identifier:
+                raise Conflict("provider report reservation does not match")
+            if report.get("account_key") != row["account_key"] or report.get("checkpoint_key") != row["checkpoint_key"]:
+                raise Conflict("provider report identity does not match the reservation")
+            account = db.execute(
+                "SELECT provider FROM provider_accounts WHERE account_key=?",
+                (row["account_key"],),
+            ).fetchone()
+            if not account or report.get("provider") != account["provider"]:
+                raise Conflict("provider report does not match the reservation provider")
+            if row["state"] != "reserved":
+                value = dict(row)
+                value.pop("lease_token_hash", None)
+                return value
+            actual_requests = self._quota_integer(report.get("requests"), "requests")
+            actual_pages = self._quota_integer(report.get("pages"), "pages")
+            list_micro = self._quota_integer(report.get("list_micro_usd"), "list_micro_usd", optional=True)
+            billed_micro = self._quota_integer(report.get("billed_micro_usd"), "billed_micro_usd", optional=True)
+            credits_micro = self._quota_integer(report.get("credits_micro_usd"), "credits_micro_usd", optional=True)
+            if actual_requests > int(row["reserved_requests"]) or actual_pages > int(row["reserved_pages"]):
+                raise Conflict("provider usage exceeds the authorized request or page reservation")
+            stored_state = "committed" if state in {"committed", "cache_hit"} else state
+            if state == "rate_limited":
+                stored_state = "released"
+                retry_after = self._quota_integer(
+                    report.get("retry_after_ms"), "retry_after_ms", optional=True
+                )
+                cooldown_until = timestamp + max(
+                    1_000, min(retry_after or 60_000, 86_400_000)
+                )
+                db.execute(
+                    """UPDATE provider_accounts SET cooldown_until=?,cooldown_reason=?,updated_at=?
+                    WHERE account_key=?""",
+                    (cooldown_until, "provider rate limited the account", timestamp, row["account_key"]),
+                )
+                db.execute(
+                    """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                    lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=?
+                    WHERE source_key=? AND worker_id=? AND status='processing'""",
+                    (
+                        cooldown_until,
+                        "provider rate limited the account",
+                        timestamp,
+                        row["source_key"],
+                        worker_id,
+                    ),
+                )
+            db.execute(
+                """UPDATE quota_reservations SET state=?,actual_requests=?,actual_pages=?,
+                list_micro_usd=?,billed_micro_usd=?,credits_micro_usd=?,detail=?,settled_at=?
+                WHERE id=?""",
+                (
+                    stored_state, actual_requests, actual_pages, list_micro, billed_micro,
+                    credits_micro, str(report.get("detail") or "")[:1000] or None,
+                    timestamp, identifier,
+                ),
+            )
+            value = dict(db.execute("SELECT * FROM quota_reservations WHERE id=?", (identifier,)).fetchone())
+        value.pop("lease_token_hash", None)
+        value["cache_hit"] = bool(value["cache_hit"])
+        return value
+
+    def reconcile_quota(
+        self,
+        identifier: str,
+        *,
+        state: str,
+        detail: str,
+        billed_micro_usd: int | None = None,
+        credits_micro_usd: int | None = None,
+    ) -> dict[str, Any]:
+        if state not in {"committed", "released"}:
+            raise ValueError("reconciliation state must be committed or released")
+        detail = detail.strip()
+        if not detail or len(detail) > 1000:
+            raise ValueError("reconciliation detail must contain 1-1000 characters")
+        billed = self._quota_integer(
+            billed_micro_usd, "billed_micro_usd", optional=True
+        )
+        credits = self._quota_integer(
+            credits_micro_usd, "credits_micro_usd", optional=True
+        )
+        with self.transaction() as db:
+            row = db.execute(
+                "SELECT * FROM quota_reservations WHERE id=?", (identifier,)
+            ).fetchone()
+            if not row:
+                raise KeyError(identifier)
+            if row["state"] not in {"reserved", "ambiguous"}:
+                raise Conflict("only reserved or ambiguous attempts can be reconciled")
+            db.execute(
+                """UPDATE quota_reservations SET state=?,billed_micro_usd=?,
+                credits_micro_usd=?,detail=?,settled_at=? WHERE id=?""",
+                (state, billed, credits, detail, now_ms(), identifier),
+            )
+            value = dict(
+                db.execute(
+                    "SELECT * FROM quota_reservations WHERE id=?", (identifier,)
+                ).fetchone()
+            )
+        value.pop("lease_token_hash", None)
+        value["cache_hit"] = bool(value["cache_hit"])
+        return value
+
+    def quota_summary(self) -> dict[str, Any]:
+        timestamp = now_ms()
+        with self.connect() as db:
+            accounts = [dict(row) for row in db.execute("SELECT * FROM provider_accounts ORDER BY account_key")]
+            policies = [dict(row) for row in db.execute("SELECT * FROM quota_policies ORDER BY account_key,revision DESC")]
+            for policy in policies:
+                row = db.execute(
+                    """SELECT COALESCE(SUM(reserved_requests),0) requests,
+                    COALESCE(SUM(reserved_pages),0) pages,
+                    COALESCE(SUM(reserved_estimated_micro_usd),0) estimated_micro_usd,
+                    COALESCE(SUM(COALESCE(billed_micro_usd,reserved_estimated_micro_usd)),0) billed_exposure_micro_usd
+                    FROM quota_reservations WHERE account_key=? AND created_at>=? AND created_at<?
+                    AND state IN ('reserved','committed','ambiguous')""",
+                    (policy["account_key"], policy["window_start"], policy["window_end"]),
+                ).fetchone()
+                policy["usage"] = dict(row)
+                policy["active"] = policy["window_start"] <= timestamp < policy["window_end"]
+            usage = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT account_key,state,COUNT(*) attempts,
+                    COALESCE(SUM(reserved_requests),0) requests,
+                    COALESCE(SUM(reserved_pages),0) pages,
+                    COALESCE(SUM(reserved_estimated_micro_usd),0) estimated_micro_usd,
+                    COALESCE(SUM(list_micro_usd),0) list_micro_usd,
+                    COALESCE(SUM(billed_micro_usd),0) billed_micro_usd,
+                    COALESCE(SUM(credits_micro_usd),0) credits_micro_usd
+                    FROM quota_reservations GROUP BY account_key,state ORDER BY account_key,state"""
+                )
+            ]
+            waiting = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE not_before>? AND blocked_reason IS NOT NULL",
+                    (timestamp,),
+                ).fetchone()[0]
+            )
+            ambiguous = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT id,source_key,recipe_digest,account_key,checkpoint_key,state,
+                    reserved_requests,reserved_pages,reserved_estimated_micro_usd,detail,
+                    created_at,reconcile_by FROM quota_reservations
+                    WHERE state='ambiguous' ORDER BY created_at DESC LIMIT 200"""
+                )
+            ]
+            overrides = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT * FROM job_quota_overrides WHERE revoked_at IS NULL
+                    AND consumed_by IS NULL AND expires_at>? ORDER BY created_at DESC LIMIT 200""",
+                    (timestamp,),
+                )
+            ]
+        for account in accounts:
+            account["enabled"] = bool(account["enabled"])
+        return {"accounts": accounts, "policies": policies, "usage": usage,
+                "ambiguous": ambiguous, "overrides": overrides,
+                "waiting_jobs": waiting, "generated_at": timestamp}
+
     def worker_for_token(self, token: str) -> str | None:
         with self.connect() as db:
             row = db.execute("SELECT worker_id FROM workers WHERE token_hash=? AND revoked=0", (token_hash(token),)).fetchone()
@@ -326,6 +985,15 @@ class Database:
             and blake3_bytes(canonical_json_bytes(recipe)) != digest
         ):
             raise ValueError("tagged recipe_digest does not match canonical recipe JSON")
+        provider_account = capability.get("provider_account")
+        provider = capability.get("provider")
+        if provider_account is not None:
+            provider_account = str(provider_account).strip().lower()
+            provider = str(provider or "").strip().lower()
+            if not provider_account or not provider:
+                raise ValueError("provider capabilities need provider and provider_account")
+        elif provider is not None:
+            raise ValueError("provider requires provider_account")
         return {
             "recipe_digest": digest,
             "backend": backend,
@@ -333,6 +1001,8 @@ class Database:
             "media_types": media_types,
             "input_kinds": input_kinds,
             "artifact_type": str(capability.get("artifact_type") or "mdaf/v1"),
+            "provider_account": provider_account,
+            "provider": provider,
         }
 
     def register_capabilities(self, worker_id: str, capabilities: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -341,17 +1011,20 @@ class Database:
         with self.transaction() as db:
             db.execute("DELETE FROM worker_recipes WHERE worker_id=?", (worker_id,))
             for value in normalized:
-                db.execute("""INSERT INTO recipes(recipe_digest,backend,recipe_json,media_types_json,artifact_type,last_seen,input_kinds_json)
-                    VALUES(?,?,?,?,?,?,?) ON CONFLICT(recipe_digest) DO UPDATE SET backend=excluded.backend,
+                db.execute("""INSERT INTO recipes(recipe_digest,backend,recipe_json,media_types_json,artifact_type,last_seen,input_kinds_json,provider_account,provider)
+                    VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(recipe_digest) DO UPDATE SET backend=excluded.backend,
                     recipe_json=excluded.recipe_json,media_types_json=excluded.media_types_json,
                     artifact_type=excluded.artifact_type,last_seen=excluded.last_seen,
-                    input_kinds_json=excluded.input_kinds_json""",
+                    input_kinds_json=excluded.input_kinds_json,
+                    provider_account=excluded.provider_account,provider=excluded.provider""",
                     (value["recipe_digest"], value["backend"], json.dumps(value["recipe"], sort_keys=True),
                      json.dumps(value["media_types"]), value["artifact_type"], timestamp,
-                     json.dumps(value["input_kinds"])))
-                db.execute("INSERT INTO worker_recipes(worker_id,recipe_digest,last_seen,input_kinds_json) VALUES(?,?,?,?)",
+                     json.dumps(value["input_kinds"]), value["provider_account"], value["provider"]))
+                db.execute("""INSERT INTO worker_recipes(worker_id,recipe_digest,last_seen,
+                    input_kinds_json,provider_account,provider) VALUES(?,?,?,?,?,?)""",
                            (worker_id, value["recipe_digest"], timestamp,
-                            json.dumps(value["input_kinds"])))
+                            json.dumps(value["input_kinds"]), value["provider_account"],
+                            value["provider"]))
         return normalized
 
     def recipes(self, media_type: str | None = None) -> list[dict[str, Any]]:
@@ -468,7 +1141,8 @@ class Database:
                 raise Conflict("completed jobs require a different recipe conversion request")
             retry_sql = ",retry_count=0" if reset_retries else ""
             db.execute(f"""UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
-                lease_expires_at=NULL,progress_json=NULL,error_message=NULL,updated_at=?{retry_sql}
+                lease_expires_at=NULL,progress_json=NULL,error_message=NULL,not_before=NULL,
+                blocked_reason=NULL,updated_at=?{retry_sql}
                 WHERE source_key=?""", (now_ms(), key))
         return self.get_job(key)
 
@@ -482,6 +1156,8 @@ class Database:
                 raise Conflict("processing jobs must be requeued before deletion")
             artifacts = [dict(row) for row in db.execute("SELECT storage_path FROM artifacts WHERE source_key=?", (key,))]
             db.execute("UPDATE workers SET current_job=NULL WHERE current_job=?", (key,))
+            db.execute("DELETE FROM quota_reservations WHERE source_key=?", (key,))
+            db.execute("DELETE FROM job_quota_overrides WHERE source_key=?", (key,))
             db.execute("DELETE FROM job_failures WHERE source_key=?", (key,))
             db.execute("DELETE FROM artifacts WHERE source_key=?", (key,))
             db.execute("DELETE FROM source_aliases WHERE source_key=?", (key,))
@@ -518,6 +1194,16 @@ class Database:
 
     def recover_expired(self, db: sqlite3.Connection) -> int:
         timestamp = now_ms()
+        db.execute(
+            """UPDATE quota_reservations SET state='ambiguous',detail=COALESCE(detail,'job lease expired before settlement')
+            WHERE state='reserved' AND EXISTS (
+              SELECT 1 FROM jobs j WHERE j.source_key=quota_reservations.source_key
+              AND j.recipe_digest=quota_reservations.recipe_digest
+              AND j.worker_id=quota_reservations.worker_id AND j.status='processing'
+              AND j.lease_expires_at<?
+            )""",
+            (timestamp,),
+        )
         cursor = db.execute("""UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
             updated_at=? WHERE status='processing' AND lease_expires_at<?""", (timestamp, timestamp))
         return cursor.rowcount
@@ -568,9 +1254,10 @@ class Database:
                 capability_params.extend(capability["input_kinds"])
                 capability_params.append(capability["recipe_digest"])
             row = db.execute(f"""SELECT j.source_key FROM jobs j JOIN sources s USING(source_key)
-                WHERE j.status='todo' AND j.priority IN ({placeholders}) AND ({' OR '.join(predicates)})
+                WHERE j.status='todo' AND (j.not_before IS NULL OR j.not_before<=?)
+                AND j.priority IN ({placeholders}) AND ({' OR '.join(predicates)})
                 ORDER BY CASE j.priority WHEN '1_urgent' THEN 1 WHEN '2_high' THEN 2 WHEN '3_normal' THEN 3 ELSE 4 END,j.created_at LIMIT 1""",
-                (*priorities, *capability_params)).fetchone()
+                (timestamp, *priorities, *capability_params)).fetchone()
             if not row:
                 return None
             key = str(row[0]); lease = secrets.token_urlsafe(24)
@@ -580,7 +1267,8 @@ class Database:
                             input_kind in value["input_kinds"] and
                             (requested_recipe is None or requested_recipe == value["recipe_digest"]))
             db.execute("""UPDATE jobs SET status='processing',worker_id=?,lease_token=?,lease_expires_at=?,
-                recipe_digest=COALESCE(recipe_digest,?),recipe_json=COALESCE(recipe_json,?),updated_at=? WHERE source_key=?""",
+                recipe_digest=COALESCE(recipe_digest,?),recipe_json=COALESCE(recipe_json,?),
+                not_before=NULL,blocked_reason=NULL,updated_at=? WHERE source_key=?""",
                 (worker_id, lease, timestamp + self.lease_ms, selected["recipe_digest"], json.dumps(selected["recipe"]), timestamp, key))
         job = self.get_job(key)
         job["lease_token"] = lease
@@ -668,14 +1356,15 @@ class Database:
             artifact = db.execute("SELECT 1 FROM artifacts WHERE source_key=? AND recipe_digest=?", (key, recipe)).fetchone()
             if artifact:
                 db.execute("""UPDATE jobs SET status='done',recipe_digest=?,input_kind='source',
-                    input_artifact_id=NULL,parent_recipe_digest=NULL,updated_at=? WHERE source_key=?""",
+                    input_artifact_id=NULL,parent_recipe_digest=NULL,not_before=NULL,
+                    blocked_reason=NULL,updated_at=? WHERE source_key=?""",
                     (recipe, timestamp, key))
                 action = "selected"
             else:
                 db.execute("""UPDATE jobs SET status='todo',recipe_digest=?,recipe_json=NULL,worker_id=NULL,
                     lease_token=NULL,lease_expires_at=NULL,error_message=NULL,input_kind='source',
                     input_artifact_id=NULL,parent_recipe_digest=NULL,completed_at=NULL,done_seq=NULL,
-                    updated_at=? WHERE source_key=?""", (recipe, timestamp, key))
+                    not_before=NULL,blocked_reason=NULL,updated_at=? WHERE source_key=?""", (recipe, timestamp, key))
                 action = "queued"
         return {"action": action, "job": self.get_job(key)}
 
@@ -762,7 +1451,8 @@ class Database:
                             worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
                             progress_json=NULL,error_message=NULL,retry_count=0,
                             completed_at=NULL,done_seq=NULL,input_kind='artifact',
-                            input_artifact_id=?,parent_recipe_digest=?,updated_at=?
+                            input_artifact_id=?,parent_recipe_digest=?,not_before=NULL,
+                            blocked_reason=NULL,updated_at=?
                             WHERE source_key=?""",
                         (
                             *values,

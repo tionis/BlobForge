@@ -480,6 +480,25 @@ directly from a local browser. Validate, unblind, and summarize an export with
 Use `review-bundle --random-seed` for human scoring, and start a new campaign
 whenever its candidate mapping has been disclosed.
 
+Production-style hosted workers are quota-managed by the coordinator. Create a
+logical provider account and at least one active policy window in the **Quotas**
+console before starting live workers; otherwise cache misses are deferred
+without consuming retries. Keep Mistral and Datalab in separate containers and
+worker credentials:
+
+```bash
+uv run blobforge recipe-worker --provider mistral \
+  --provider-account mistral:primary --max-pages 500 --max-cost-usd 2 \
+  --confirm-api-rights
+uv run blobforge recipe-worker --provider datalab \
+  --provider-account datalab:primary --max-pages 500 --max-cost-usd 5 \
+  --confirm-api-rights
+```
+
+The console tracks reservations, list price, billed cash, credits, cooldowns,
+deferred jobs, reconciliation, and bounded single-use overages. See
+`docs/api_workers_and_quotas.md` for purchase-boundary and failure semantics.
+
 The local legacy migration is resumable and does not write to S3:
 
 ```bash
@@ -494,6 +513,7 @@ uv run blobforge migrate stage   # local v2 object-key tree; no upload
 See [the migration runbook](docs/local_mdaf_migration.md),
 [the MDAF redesign](docs/mdaf_redesign.md), and
 [the immutable recipe lifecycle](docs/recipe_lifecycle.md),
+[hosted workers and quotas](docs/api_workers_and_quotas.md),
 [the benchmark canary](docs/converter_benchmark_results.md), and
 [the adapter architecture](docs/converter_adapter_architecture.md), and
 [the review workflow](docs/conversion_review.md) for safety,

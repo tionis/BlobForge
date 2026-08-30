@@ -1,5 +1,77 @@
 # Work Log
 
+## 2026-08-30 (Hosted API Worker Quota Implementation)
+
+- **Objective:** Implement provider workers that can safely share the Citadel
+  coordinator, enforce local quota and promotional-credit budgets, recover
+  across crashes without duplicate purchases, and permit explicit bounded job
+  overages.
+- **Adapter and worker protocol:** Added versioned network-free provider probes
+  and purchase-boundary attempt reports to the converter ABI. Mistral and
+  Datalab now probe durable cache/checkpoint state, persist reservation IDs,
+  report list/billed/credit micro-USD separately, classify rate limits and
+  ambiguous outcomes, and support checkpoint-based reservation resume. The
+  recipe worker reserves before a cache-miss purchase, settles independently
+  of artifact publication, and defers scheduling conditions without a failed
+  conversion or retry increment.
+- **Coordinator and persistence:** Added provider accounts, immutable quota
+  policies, one-use overrides, fenced reservations, delayed jobs, shared
+  provider cooldowns, reconciliation, per-job history, and summary accounting
+  to SQLite and the FastAPI protocol. Budget checks and reservation creation
+  run in one immediate transaction. Strict contracts, worker capability/account
+  binding, reservation idempotency, and settlement identity/usage bounds fail
+  closed. Unknown billed cash is represented as conservative billed exposure,
+  not mislabeled as an actual charge.
+- **Operations and UI:** Added the Quotas console for account and policy setup,
+  usage/cooldown visibility, bounded overages, revocation, and ambiguous-attempt
+  reconciliation. Added separate Mistral and Datalab rootless Quadlet examples,
+  key/worker-token templates, persistent response-cache volumes, the combined
+  hosted-worker image, README commands, and recovery documentation. Live
+  Citadel/Gandalf integration and backup canaries remain intentionally pending.
+- **Tools and verification:** Used `rg`, `sed`, `apply_patch`, focused and full
+  `uv run pytest`, Node syntax checking, Python bytecode compilation, diff
+  validation, and a local Podman hosted-worker container build. Focused provider,
+  worker, adapter, and coordinator tests cover exhaustion, cache hits,
+  concurrency, bounded override consumption, recovery, reconciliation,
+  billing, and HTTP fencing. The focused suite passes 46 tests; the complete
+  hermetic suite passes 296 tests and 5 subtests. Management JavaScript passes
+  Node syntax validation, changed Python modules compile, and the image builds
+  both frozen environments and runs the dual-provider CLI. The build exposed
+  and corrected a stale `.dockerignore` rule that had omitted Datalab. The
+  first full-suite invocation inherited a retired Bunny coordinator URL from
+  the operator shell and made 16 legacy worker tests fail on DNS; the CI-style
+  rerun with coordinator variables cleared passed completely.
+- **Handoff:** Reviewed the final worktree with `git status`, `git diff
+  --check`, and `git diff --stat`, then prepared the implementation, tests,
+  architecture notes, roadmap updates, and deployment examples as one cohesive
+  repository commit at the user's request.
+
+## 2026-08-30 (Hosted API Workers and Quota Architecture)
+
+- **Objective:** Decide how hosted-provider workers can run alongside the
+  coordinator while preventing duplicate purchases, enforcing quota across
+  workers, and permitting exceptional jobs to exceed a local budget safely.
+- **Inspection/tools:** Used `rg` and `sed` to inspect the SQLite job/lease and
+  recipe capability models, worker/client protocol, hosted Mistral/Datalab
+  adapters, durable response caches, management API/UI, routing policy,
+  deployment documentation, tests, and current roadmap.
+- **Decision:** Keep provider workers out of the coordinator process and deploy
+  separate provider-account Quadlets, even on the same VPS. Extend the fenced
+  worker protocol with a network-free adapter probe, transactional quota
+  reservation, immediate post-purchase checkpoint/report, and independent
+  settlement. Cache hits do not consume paid allowance; ambiguous outcomes do
+  not repurchase automatically.
+- **Accounting and override:** Separate provider-side limits, non-overrideable
+  applicability/safety rules, and BlobForge budgets. Record requests, pages,
+  integer micro-USD estimates, reported list price, billed cash, and credits in
+  an append-only reservation ledger. A job overage must be bounded, expiring,
+  single-use, exact-recipe, reasoned, and audited; it cannot bypass privacy,
+  rights, hard provider limits, or provider cooldowns.
+- **Result:** Added `docs/api_workers_and_quotas.md` with persistence, protocol,
+  failure-state, UI, deployment, and rollout decisions; decomposed the pending
+  implementation and Citadel canaries in `TODO.md`; recorded the protocol in
+  `AGENTS.md`. No runtime behavior or production state changed.
+
 ## 2026-08-30 (Coordinator-native Artifact Reprocessing)
 
 - **Objective:** Complete the production-side lifecycle path so existing MDAFs

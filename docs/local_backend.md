@@ -117,6 +117,14 @@ it unless ownership is provisioned separately. Quadlet's
 explicitly whether to enable a `podman-auto-update.timer`; pin a digest instead
 when deployments must be manually promoted.
 
+Hosted API conversion uses `:latest-worker-hosted` and separate Mistral and
+Datalab examples under `deploy/quadlet/`. Install each provider environment
+file with mode `0600`, enroll a different worker token for each, configure its
+logical account and an active quota policy in the UI, and only then enable the
+unit. The provider response-cache volumes must be included alongside the
+coordinator directory in backup and restore tests. See
+`api_workers_and_quotas.md` for the recovery and accounting contract.
+
 ## Backup and restore
 
 The first release does not claim online snapshot consistency. For a guaranteed

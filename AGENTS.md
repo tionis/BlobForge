@@ -38,6 +38,41 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** The hosted API-worker quota design is implemented for
+  Mistral OCR wiki-v3 and Datalab accurate wiki-v1. Both adapters implement a
+  network-free provider-probe and durable provider-attempt ABI, carry the
+  coordinator reservation ID in response checkpoints, classify rate limits
+  and ambiguous purchase outcomes, and can resume an unsettled checkpoint
+  after a lease crash. SQLite now owns logical provider accounts, immutable
+  overlapping policy windows, fenced reservations, shared cooldowns,
+  deferred jobs, append-only usage/billing records, and bounded expiring
+  single-use exact-job/exact-recipe overrides. Reservation and budget checks
+  use `BEGIN IMMEDIATE`; cache hits need no paid allowance; absent policy,
+  exhausted policy, concurrency, and rate-limit waits do not consume retries.
+  The coordinator validates versioned probe/report contracts and binds the
+  provider account to the worker's exact advertised capability. The admin UI
+  configures accounts/policies, creates or revokes overages, shows job quota
+  history and conservative billed exposure, and reconciles ambiguous attempts.
+  Separate Mistral and Datalab Quadlet examples use concurrency-one workers,
+  credentials, and persistent caches. These files are deployment-ready, but
+  Citadel/Gandalf integration, published hosted image, backup coverage, and
+  live paid canaries remain rollout gates.
+
+- **2026-08-30:** Hosted API conversion workers may run beside the coordinator
+  on Citadel, but remain separate rootless containers and security/failure
+  boundaries per provider account. Quota enforcement is a two-phase fenced
+  protocol: locally probe page count, request identity, estimate, and durable
+  cache state; reserve coordinator allowance only for a cache miss; checkpoint
+  provider success before packaging; then settle from a structured attempt
+  report even if packaging fails. SQLite transactions count committed usage
+  plus live reservations, with money stored as integer micro-USD and list
+  price, billed cash, and credits kept distinct. Budget denials defer jobs
+  without consuming retries. An admin overage is a bounded, expiring,
+  single-use allowance tied to one job and exact recipe with actor/reason; it
+  never bypasses processing rights, privacy, recipe/provider safety limits,
+  provider cooldowns, or actual provider-side quota. Full design and failure
+  semantics are in `docs/api_workers_and_quotas.md`.
+
 - **2026-08-30:** Coordinator-native MDAF upgrades now use explicit artifact
   inputs rather than masquerading as source conversions. Jobs retain one active
   row per source but bind `input_kind`, exact parent artifact ID, and parent

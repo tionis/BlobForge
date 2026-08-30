@@ -1,10 +1,15 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from blobforge.converters import ConverterRunResult
-from blobforge.recipe_runtime import AdapterRecipe, mistral_wiki_v3_recipe
+from blobforge.converters import ConverterRunResult, ProviderProbe
+from blobforge.recipe_runtime import (
+    AdapterRecipe,
+    datalab_wiki_v1_recipe,
+    mistral_wiki_v3_recipe,
+)
 from blobforge.recipe_worker import RecipeWorker
 
 
@@ -31,6 +36,8 @@ class FakeCoordinator:
         self.completed = []
         self.failed = []
         self.released = []
+        self.quota_authorization = None
+        self.quota_settled = []
 
     def worker_identity(self):
         return "mixed-worker"
@@ -49,6 +56,9 @@ class FakeCoordinator:
     def worker_heartbeat(self, *args, **kwargs):
         pass
 
+    def deregister_worker(self, *args, **kwargs):
+        pass
+
     def download_job_input(self, job, path):
         Path(path).write_bytes(job.get("source", b"source"))
 
@@ -63,6 +73,15 @@ class FakeCoordinator:
 
     def release(self, key, **kwargs):
         self.released.append((key, kwargs))
+
+    def reserve_quota(self, key, **kwargs):
+        if self.quota_authorization is not None:
+            return self.quota_authorization
+        return {"authorized": True, "reservation": {"id": f"qres-{key}"}}
+
+    def settle_quota(self, identifier, report):
+        self.quota_settled.append((identifier, report))
+        return {"id": identifier, "state": report["state"]}
 
 
 def _job(key, recipe, media_type):
@@ -191,3 +210,123 @@ def test_mistral_canary_runtime_is_exact_and_secret_free(tmp_path):
         cache_only=True,
     )
     assert cached.environment["MISTRAL_API_KEY"] == ""
+
+    datalab = datalab_wiki_v1_recipe(
+        max_pages=250,
+        max_cost_usd=1.0,
+        response_cache=tmp_path / "datalab-cache",
+        api_rights_confirmed=True,
+    )
+    assert datalab.recipe_digest == (
+        "blake3:fcc851f8e84d0c22e44200208ccd50d76319c5aec6d3bc1de6bc9b026d3ac502"
+    )
+    assert datalab.provider == "datalab"
+    assert datalab.provider_account == "datalab:primary"
+    assert datalab.input_kinds == ("source",)
+
+
+def test_hosted_worker_reserves_and_settles_before_completion(tmp_path):
+    base = _recipe("hosted-v1", "application/pdf")
+    recipe = AdapterRecipe(
+        **{
+            **base.__dict__,
+            "provider": "test-provider",
+            "provider_account": "test:primary",
+        }
+    )
+    coordinator = FakeCoordinator([_job("paid", recipe, "application/pdf")])
+    probe = ProviderProbe(
+        provider="test-provider",
+        account_key="test:primary",
+        checkpoint_key="checkpoint:paid",
+        cache_hit=False,
+        requests=1,
+        pages=8,
+        estimated_micro_usd=32_000,
+        raw={
+            "contract": "dev.tionis.blobforge.provider-probe/v1",
+            "provider": "test-provider",
+            "account_key": "test:primary",
+            "checkpoint_key": "checkpoint:paid",
+            "cache_hit": False,
+            "requests": 1,
+            "pages": 8,
+            "estimated_micro_usd": 32_000,
+        },
+    )
+
+    def convert(_command, _source, output, **kwargs):
+        report = {
+            "contract": "dev.tionis.blobforge.provider-attempt/v1",
+            "reservation_id": kwargs["reservation_id"],
+            "provider": "test-provider",
+            "account_key": "test:primary",
+            "checkpoint_key": "checkpoint:paid",
+            "state": "committed",
+            "requests": 1,
+            "pages": 8,
+            "list_micro_usd": 32_000,
+            "billed_micro_usd": 0,
+            "credits_micro_usd": 32_000,
+        }
+        Path(kwargs["attempt_report_path"]).write_text(json.dumps(report))
+        Path(output).write_bytes(b"mdaf")
+        return ConverterRunResult(Path(output), "paid-identity", 1.0, (), report)
+
+    worker = RecipeWorker(
+        coordinator,
+        [recipe],
+        converter=convert,
+        prober=lambda *_args, **_kwargs: probe,
+        heartbeat_interval=3600,
+    )
+    worker.register()
+    outcome = worker.process_once()
+    assert outcome.success
+    assert coordinator.quota_settled[0][0] == "qres-paid"
+    assert coordinator.quota_settled[0][1]["state"] == "committed"
+    assert coordinator.completed[0][0] == "paid"
+
+
+def test_hosted_worker_returns_deferred_outcome_without_failure():
+    base = _recipe("hosted-v1", "application/pdf")
+    recipe = AdapterRecipe(
+        **{
+            **base.__dict__,
+            "provider": "test-provider",
+            "provider_account": "test:primary",
+        }
+    )
+    coordinator = FakeCoordinator([_job("deferred", recipe, "application/pdf")])
+    coordinator.quota_authorization = {
+        "authorized": False,
+        "reason": "quota exhausted",
+        "not_before": 123,
+    }
+    probe = ProviderProbe(
+        "test-provider",
+        "test:primary",
+        "checkpoint:deferred",
+        False,
+        1,
+        8,
+        32_000,
+        {
+            "contract": "dev.tionis.blobforge.provider-probe/v1",
+            "provider": "test-provider",
+            "account_key": "test:primary",
+            "checkpoint_key": "checkpoint:deferred",
+            "cache_hit": False,
+            "requests": 1,
+            "pages": 8,
+            "estimated_micro_usd": 32_000,
+        },
+    )
+    worker = RecipeWorker(
+        coordinator,
+        [recipe],
+        converter=lambda *_args, **_kwargs: pytest.fail("deferred work must not convert"),
+        prober=lambda *_args, **_kwargs: probe,
+    )
+    assert worker.run(run_once=True) == 0
+    assert coordinator.failed == []

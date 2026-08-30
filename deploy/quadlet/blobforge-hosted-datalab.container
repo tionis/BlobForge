@@ -1,0 +1,27 @@
+[Unit]
+Description=BlobForge Datalab hosted API worker
+After=network-online.target blobforge.service
+Requires=blobforge.service
+
+[Container]
+Image=ghcr.io/tionis/blobforge:latest-worker-hosted
+ContainerName=blobforge-hosted-datalab
+AutoUpdate=registry
+Network=host
+EnvironmentFile=/etc/blobforge/hosted-datalab.env
+Volume=blobforge-datalab-cache.volume:/var/lib/blobforge-provider:U
+ReadOnly=true
+ReadOnlyTmpfs=true
+NoNewPrivileges=true
+DropCapability=all
+Exec=recipe-worker --provider datalab --coordinator-url http://127.0.0.1:8080 --provider-account datalab:primary --response-cache /var/lib/blobforge-provider/responses --max-pages 1000 --max-cost-usd 10 --confirm-api-rights
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+MemoryMax=1G
+TasksMax=128
+
+[Install]
+WantedBy=default.target

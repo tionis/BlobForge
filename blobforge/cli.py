@@ -1096,7 +1096,7 @@ def cmd_worker(args):
 
 def cmd_recipe_worker(args):
     """Start the exact-recipe, isolated MDAF worker."""
-    from .recipe_runtime import mistral_wiki_v3_recipe
+    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe
     from .recipe_worker import RecipeWorker
 
     coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
@@ -1107,19 +1107,28 @@ def cmd_recipe_worker(args):
     if not args.confirm_api_rights:
         print("Error: hosted recipe workers require --confirm-api-rights")
         return 1
-    if not args.cache_only and not os.getenv("MISTRAL_API_KEY"):
-        print("Error: MISTRAL_API_KEY is required unless --cache-only is selected")
+    key_name = "MISTRAL_API_KEY" if args.provider == "mistral" else "DATALAB_API_KEY"
+    if not args.cache_only and not os.getenv(key_name):
+        print(f"Error: {key_name} is required unless --cache-only is selected")
         return 1
     try:
-        recipes = [
-            mistral_wiki_v3_recipe(
-                max_pages=args.max_pages,
-                max_cost_usd=args.max_cost_usd,
-                response_cache=args.response_cache,
-                api_rights_confirmed=args.confirm_api_rights,
-                cache_only=args.cache_only,
-            )
-        ]
+        factory = (
+            mistral_wiki_v3_recipe
+            if args.provider == "mistral"
+            else datalab_wiki_v1_recipe
+        )
+        provider_account = args.provider_account or f"{args.provider}:primary"
+        response_cache = args.response_cache or str(
+            Path.home() / ".cache" / "blobforge" / f"{args.provider}-responses"
+        )
+        recipes = [factory(
+            max_pages=args.max_pages,
+            max_cost_usd=args.max_cost_usd,
+            response_cache=response_cache,
+            api_rights_confirmed=args.confirm_api_rights,
+            cache_only=args.cache_only,
+            provider_account=provider_account,
+        )]
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -2255,6 +2264,9 @@ def main():
         help="Start an isolated exact-recipe MDAF worker (canary)",
     )
     p_recipe_worker.add_argument("--run-once", action="store_true")
+    p_recipe_worker.add_argument(
+        "--provider", choices=("mistral", "datalab"), default="mistral"
+    )
     p_recipe_worker.add_argument("--coordinator-url")
     p_recipe_worker.add_argument("--token")
     p_recipe_worker.add_argument("--max-pages", type=int, required=True)
@@ -2264,12 +2276,15 @@ def main():
     p_recipe_worker.add_argument("--idle-sleep", type=float, default=10.0)
     p_recipe_worker.add_argument(
         "--response-cache",
-        default=os.environ.get(
-            "BLOBFORGE_MISTRAL_RESPONSE_CACHE",
-            str(Path.home() / ".cache" / "blobforge" / "mistral-responses"),
-        ),
+        default=None,
+        help="Durable provider response cache (provider-specific default when omitted)",
     )
     p_recipe_worker.add_argument("--confirm-api-rights", action="store_true")
+    p_recipe_worker.add_argument(
+        "--provider-account",
+        default=os.environ.get("BLOBFORGE_PROVIDER_ACCOUNT") or None,
+        help="Logical coordinator quota account; never contains credentials",
+    )
     p_recipe_worker.add_argument(
         "--cache-only",
         action="store_true",

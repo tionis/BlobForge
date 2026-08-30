@@ -29,6 +29,8 @@ from blobforge.normalization import (
 
 CONTRACT = "dev.tionis.blobforge.converter-bundle/v1"
 CACHE_CONTRACT = "dev.tionis.blobforge.datalab-response/v1"
+PROBE_CONTRACT = "dev.tionis.blobforge.provider-probe/v1"
+ATTEMPT_CONTRACT = "dev.tionis.blobforge.provider-attempt/v1"
 ADAPTER_VERSION = "0.1.0"
 API_URL = "https://www.datalab.to/api/v1/convert"
 MAX_FILE_BYTES = 200_000_000
@@ -103,6 +105,65 @@ def _write_cache(path: Path, envelope: dict[str, Any]) -> None:
             os.unlink(temporary_name)
         except FileNotFoundError:
             pass
+
+
+def _attempt_report(
+    request: dict[str, Any],
+    *,
+    state: str,
+    account_key: str,
+    checkpoint_key: str,
+    requests: int,
+    pages: int,
+    estimated_micro_usd: int,
+    list_micro_usd: int | None = None,
+    billed_micro_usd: int | None = None,
+    credits_micro_usd: int | None = None,
+    detail: str | None = None,
+    retry_after_ms: int | None = None,
+) -> None:
+    raw_path = request.get("attempt_report_path")
+    if not raw_path:
+        return
+    reservation_id = request.get("reservation_id")
+    if not isinstance(reservation_id, str) or not reservation_id:
+        raise ValueError("quota-managed conversion requires a reservation_id")
+    _write_cache(
+        Path(raw_path),
+        {
+            "contract": ATTEMPT_CONTRACT,
+            "reservation_id": reservation_id,
+            "provider": "datalab",
+            "account_key": account_key,
+            "checkpoint_key": checkpoint_key,
+            "state": state,
+            "cache_hit": state == "cache_hit",
+            "requests": requests,
+            "pages": pages,
+            "estimated_micro_usd": estimated_micro_usd,
+            "list_micro_usd": list_micro_usd,
+            "billed_micro_usd": billed_micro_usd,
+            "credits_micro_usd": credits_micro_usd,
+            **({"detail": detail[:1000]} if detail else {}),
+            **({"retry_after_ms": retry_after_ms} if retry_after_ms is not None else {}),
+        },
+    )
+
+
+def _rate_limited(error: Exception) -> bool:
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) == 429
+
+
+def _retry_after_ms(error: Exception) -> int | None:
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(1_000, min(round(seconds * 1000), 86_400_000))
 
 
 def _read_cache(
@@ -356,6 +417,50 @@ def main() -> int:
         _sha256_file(source), provider_request_digest, mode
     )
     response_path = _cache_path(Path(cache_root).expanduser(), request_id)
+    account_key = str(parameters.get("provider_account") or "datalab:primary")
+    maximum_micro_usd = round(max_cost * 1_000_000)
+    checkpoint_key = f"sha256:{request_id}"
+    if request.get("operation") == "probe":
+        with _response_lock(response_path):
+            existing = _read_cache(response_path, request_id, request_value)
+        if existing is not None and existing["state"] == "failed":
+            raise ValueError("cached Datalab request failed; refusing automatic repurchase")
+        complete = existing is not None and existing["state"] == "complete"
+        submitted = existing is not None and existing["state"] == "submitted"
+        _write_cache(
+            output / "probe.json",
+            {
+                "contract": PROBE_CONTRACT,
+                "provider": "datalab",
+                "account_key": account_key,
+                "checkpoint_key": checkpoint_key,
+                "cache_hit": complete,
+                "checkpoint_state": (
+                    "complete" if complete else "submitted" if submitted else "missing"
+                ),
+                "requests": 0 if existing is not None else 1,
+                "pages": 0 if existing is not None else source_pages,
+                "source_pages": source_pages,
+                "estimated_micro_usd": 0 if existing is not None else maximum_micro_usd,
+                "estimate_basis": (
+                    "configured-per-job-ceiling" if existing is None else "existing-submission"
+                ),
+                **(
+                    {"resume_reservation_id": existing["reservation_id"]}
+                    if existing is not None
+                    and isinstance(existing.get("reservation_id"), str)
+                    and existing["reservation_id"]
+                    else {}
+                ),
+            },
+        )
+        return 0
+    if request.get("operation", "convert") != "convert":
+        raise ValueError("unsupported adapter operation")
+    if parameters.get("quota_managed") is True and not request.get("reservation_id"):
+        raise ValueError("quota-managed conversion requires coordinator reservation")
+    submitted_here = False
+    completed_cache_hit = False
     with _response_lock(response_path):
         envelope = _read_cache(response_path, request_id, request_value)
         if envelope is not None and envelope["state"] == "failed":
@@ -366,9 +471,28 @@ def main() -> int:
                 raise ValueError("api_rights_confirmed=true is required before provider access")
             api_key = os.environ.get("DATALAB_API_KEY")
             if not api_key:
+                _attempt_report(
+                    request, state="released", account_key=account_key,
+                    checkpoint_key=checkpoint_key, requests=0, pages=0,
+                    estimated_micro_usd=0, detail="API key missing before provider access",
+                )
                 raise ValueError("DATALAB_API_KEY is required before provider access")
             if envelope is None:
-                submission = _submit(source, api_key, source_pages, mode)
+                try:
+                    submission = _submit(source, api_key, source_pages, mode)
+                except Exception as exc:
+                    _attempt_report(
+                        request,
+                        state="rate_limited" if _rate_limited(exc) else "ambiguous",
+                        account_key=account_key,
+                        checkpoint_key=checkpoint_key,
+                        requests=1,
+                        pages=source_pages,
+                        estimated_micro_usd=maximum_micro_usd,
+                        detail=str(exc),
+                        retry_after_ms=_retry_after_ms(exc),
+                    )
+                    raise
                 check_url = _safe_check_url(submission.get("request_check_url"))
                 envelope = {
                     "contract": CACHE_CONTRACT,
@@ -377,20 +501,92 @@ def main() -> int:
                     "state": "submitted",
                     "request_check_url": check_url,
                     "submission": submission,
+                    **(
+                        {"reservation_id": request["reservation_id"]}
+                        if request.get("reservation_id")
+                        else {}
+                    ),
                 }
                 _write_cache(response_path, envelope)
                 cache_status = "captured submission and result"
-            response = _poll(envelope["request_check_url"], api_key)
+                submitted_here = True
+            try:
+                response = _poll(envelope["request_check_url"], api_key)
+            except Exception as exc:
+                _attempt_report(
+                    request, state="ambiguous", account_key=account_key,
+                    checkpoint_key=checkpoint_key,
+                    requests=1 if submitted_here else 0,
+                    pages=source_pages if submitted_here else 0,
+                    estimated_micro_usd=maximum_micro_usd if submitted_here else 0,
+                    detail=str(exc),
+                )
+                raise
             envelope["state"] = "complete"
             envelope["response"] = response
             _write_cache(response_path, envelope)
         else:
+            completed_cache_hit = True
             response = envelope.get("response")
             if not isinstance(response, dict):
                 raise ValueError("complete Datalab cache entry has no response")
 
     markdown, list_cents, final_cents = _validate_response(
         response, source_pages, max_cost
+    )
+    list_micro_usd = round(list_cents * 10_000) if list_cents is not None else None
+    billed_micro_usd = round(final_cents * 10_000)
+    credits_micro_usd = (
+        max(0, list_micro_usd - billed_micro_usd)
+        if list_micro_usd is not None
+        else None
+    )
+    _attempt_report(
+        request,
+        state=(
+            "cache_hit"
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else "committed"
+        ),
+        account_key=account_key,
+        checkpoint_key=checkpoint_key,
+        requests=(
+            0
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else 1
+        ),
+        pages=(
+            0
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else source_pages
+        ),
+        estimated_micro_usd=(
+            0
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else maximum_micro_usd
+        ),
+        list_micro_usd=(
+            0
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else list_micro_usd
+        ),
+        billed_micro_usd=(
+            0
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else billed_micro_usd
+        ),
+        credits_micro_usd=(
+            0
+            if completed_cache_hit
+            and request.get("reservation_id") != envelope.get("reservation_id")
+            else credits_micro_usd
+        ),
     )
     (native_dir / "response.json").write_text(
         json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

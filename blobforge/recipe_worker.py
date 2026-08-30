@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import tempfile
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .converters import ConverterRunResult, run_converter
+from .converters import ConverterRunResult, ProviderProbe, probe_provider, run_converter
 from .coordinator_client import CoordinatorClient
 from .recipe_runtime import AdapterRecipe
 from .reprocessing import ReprocessResult, reprocess_mdaf
@@ -28,6 +29,7 @@ class JobOutcome:
     recipe_digest: str | None = None
     success: bool | None = None
     error: str | None = None
+    deferred: bool = False
 
 
 class _LeaseHeartbeat:
@@ -77,6 +79,7 @@ class RecipeWorker:
         timeout_seconds: int = 86_400,
         heartbeat_interval: float = 30.0,
         converter: Callable[..., ConverterRunResult] = run_converter,
+        prober: Callable[..., ProviderProbe] = probe_provider,
         reprocessor: Callable[..., ReprocessResult] = reprocess_mdaf,
     ):
         if not recipes:
@@ -93,6 +96,7 @@ class RecipeWorker:
         self.timeout_seconds = timeout_seconds
         self.heartbeat_interval = heartbeat_interval
         self.converter = converter
+        self.prober = prober
         self.reprocessor = reprocessor
         self.worker_id: str | None = None
 
@@ -177,6 +181,11 @@ class RecipeWorker:
                 error="media type mismatch",
             )
 
+        quota_reservation_id: str | None = None
+        quota_report_path: Path | None = None
+        quota_probe: ProviderProbe | None = None
+        quota_settled = False
+        quota_report_state: str | None = None
         try:
             self.coordinator.worker_heartbeat(
                 self.worker_id,
@@ -196,6 +205,46 @@ class RecipeWorker:
                 )
                 artifact = root / "artifact.mdaf"
                 self.coordinator.download_job_input(job, str(source))
+                if input_kind == "source" and recipe.provider_account is not None:
+                    self.coordinator.heartbeat(
+                        source_key,
+                        worker_id=self.worker_id,
+                        lease_token=lease,
+                        progress={"stage": "provider-preflight"},
+                    )
+                    quota_probe = self.prober(
+                        recipe.command,
+                        source,
+                        parameters=recipe.parameters,
+                        timeout_seconds=min(self.timeout_seconds, 300),
+                        environment=recipe.environment,
+                    )
+                    if (
+                        quota_probe.account_key != recipe.provider_account
+                        or quota_probe.provider != recipe.provider
+                    ):
+                        raise ValueError(
+                            "provider probe does not match the exact recipe capability"
+                        )
+                    authorization = self.coordinator.reserve_quota(
+                        source_key,
+                        lease_token=lease,
+                        probe=quota_probe.raw,
+                    )
+                    if not authorization.get("authorized"):
+                        return JobOutcome(
+                            True,
+                            source_key,
+                            digest,
+                            None,
+                            str(authorization.get("reason") or "quota deferred"),
+                            True,
+                        )
+                    reservation = authorization.get("reservation") or {}
+                    quota_reservation_id = str(reservation.get("id") or "")
+                    if not quota_reservation_id:
+                        raise RuntimeError("coordinator did not return a quota reservation")
+                    quota_report_path = root / "provider-attempt.json"
                 work_stage = "reprocessing" if input_kind == "artifact" else "converting"
                 self.coordinator.heartbeat(
                     source_key,
@@ -225,10 +274,24 @@ class RecipeWorker:
                             recipe=recipe.recipe,
                             timeout_seconds=self.timeout_seconds,
                             environment=recipe.environment,
+                            attempt_report_path=quota_report_path,
+                            reservation_id=quota_reservation_id,
                         )
                         elapsed_seconds = result.elapsed_seconds
                         diagnostics = list(result.diagnostics)
                         identity = result.identity
+                        if quota_reservation_id:
+                            if result.provider_attempt is None:
+                                raise RuntimeError(
+                                    "quota-managed adapter omitted its attempt report"
+                                )
+                            quota_report_state = str(
+                                result.provider_attempt.get("state") or ""
+                            )
+                            self.coordinator.settle_quota(
+                                quota_reservation_id, result.provider_attempt
+                            )
+                            quota_settled = True
                 self.coordinator.heartbeat(
                     source_key,
                     worker_id=self.worker_id,
@@ -259,11 +322,55 @@ class RecipeWorker:
                         "logical_identity": identity,
                         "media_type": "application/zip",
                         "recipe_digest": digest,
+                        **(
+                            {"quota_reservation_id": quota_reservation_id}
+                            if quota_reservation_id
+                            else {}
+                        ),
                     },
                     metrics={"elapsed_seconds": elapsed_seconds},
                 )
             return JobOutcome(True, source_key, digest, True)
         except Exception as exc:
+            if quota_reservation_id and not quota_settled:
+                try:
+                    if quota_report_path and quota_report_path.is_file():
+                        report = json.loads(
+                            quota_report_path.read_text(encoding="utf-8")
+                        )
+                    elif quota_probe is not None:
+                        report = {
+                            "contract": "dev.tionis.blobforge.provider-attempt/v1",
+                            "reservation_id": quota_reservation_id,
+                            "provider": quota_probe.provider,
+                            "account_key": quota_probe.account_key,
+                            "checkpoint_key": quota_probe.checkpoint_key,
+                            "state": "cache_hit" if quota_probe.cache_hit else "ambiguous",
+                            "cache_hit": quota_probe.cache_hit,
+                            "requests": 0 if quota_probe.cache_hit else quota_probe.requests,
+                            "pages": 0 if quota_probe.cache_hit else quota_probe.pages,
+                            "estimated_micro_usd": (
+                                0 if quota_probe.cache_hit else quota_probe.estimated_micro_usd
+                            ),
+                            "list_micro_usd": 0 if quota_probe.cache_hit else None,
+                            "billed_micro_usd": None,
+                            "credits_micro_usd": None,
+                            "detail": "worker lost adapter report; purchase outcome is ambiguous",
+                        }
+                    else:
+                        report = None
+                    if report is not None:
+                        quota_report_state = str(report.get("state") or "")
+                        self.coordinator.settle_quota(quota_reservation_id, report)
+                        quota_settled = True
+                except Exception as settlement_error:
+                    logger.error(
+                        "Could not settle provider reservation %s: %s",
+                        quota_reservation_id,
+                        settlement_error,
+                    )
+            if quota_report_state == "rate_limited":
+                return JobOutcome(True, source_key, digest, None, str(exc), True)
             try:
                 self.coordinator.fail(
                     source_key,
@@ -291,7 +398,7 @@ class RecipeWorker:
                 self.coordinator.worker_heartbeat(worker_id, current_job=None)
                 outcome = self.process_once()
                 if run_once and outcome.claimed:
-                    return 0 if outcome.success else 1
+                    return 0 if outcome.success or outcome.deferred else 1
                 if not outcome.claimed:
                     if run_once:
                         return 0

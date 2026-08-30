@@ -363,6 +363,30 @@ class CoordinatorClient:
             {"worker_id": worker_id, "status": status, "detail": detail or {}},
         ) or {}
 
+    def reserve_quota(
+        self,
+        file_hash: str,
+        *,
+        lease_token: str,
+        probe: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Atomically reserve hosted-provider allowance for a fenced lease."""
+        body = dict(probe)
+        body["lease_token"] = lease_token
+        return self._request(
+            "POST", f"/api/v1/jobs/{file_hash}/quota-reservation", body
+        ) or {}
+
+    def settle_quota(
+        self, reservation_id: str, report: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Settle a provider purchase independently of artifact completion."""
+        return self._request(
+            "POST",
+            f"/api/v1/quota-reservations/{reservation_id}/settle",
+            dict(report),
+        ) or {}
+
     def deregister_worker(self, worker_id: str) -> None:
         self._request("POST", "/api/v1/workers/deregister", {"worker_id": worker_id})
 

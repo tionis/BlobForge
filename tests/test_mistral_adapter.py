@@ -170,6 +170,93 @@ def test_success_is_captured_then_replayed_without_api_key(tmp_path, monkeypatch
     assert any("cache hit" in item["message"] for item in bundle["diagnostics"])
 
 
+def test_provider_probe_and_attempt_report_bound_the_purchase(tmp_path, monkeypatch):
+    adapter = _load_adapter()
+    cache = tmp_path / "responses"
+    monkeypatch.setenv("BLOBFORGE_MISTRAL_RESPONSE_CACHE", str(cache))
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+    monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
+    monkeypatch.setattr(adapter, "version", lambda _name: "2.9.4")
+    calls = []
+    monkeypatch.setattr(
+        adapter,
+        "_perform_request",
+        lambda *_args: calls.append(True) or _response(),
+    )
+
+    probe_output = tmp_path / "probe"
+    probe_request = _request(
+        tmp_path,
+        probe_output,
+        provider_account="mistral:test",
+        quota_managed=True,
+    )
+    probe_value = json.loads(probe_request.read_text(encoding="utf-8"))
+    probe_value["operation"] = "probe"
+    probe_request.write_text(json.dumps(probe_value), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["adapter", str(probe_request)])
+    assert adapter.main() == 0
+    probe = json.loads((probe_output / "probe.json").read_text(encoding="utf-8"))
+    assert probe == {
+        "contract": "dev.tionis.blobforge.provider-probe/v1",
+        "provider": "mistral-ai",
+        "account_key": "mistral:test",
+        "checkpoint_key": probe["checkpoint_key"],
+        "cache_hit": False,
+        "requests": 1,
+        "pages": 2,
+        "source_pages": 2,
+        "estimated_micro_usd": 8_000,
+    }
+    assert calls == []
+
+    output = tmp_path / "converted"
+    request_path = _request(
+        tmp_path,
+        output,
+        provider_account="mistral:test",
+        quota_managed=True,
+    )
+    request_value = json.loads(request_path.read_text(encoding="utf-8"))
+    report_path = tmp_path / "attempt.json"
+    request_value.update(
+        {
+            "operation": "convert",
+            "reservation_id": "qres_test",
+            "attempt_report_path": str(report_path),
+        }
+    )
+    request_path.write_text(json.dumps(request_value), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["adapter", str(request_path)])
+    assert adapter.main() == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["state"] == "committed"
+    assert report["reservation_id"] == "qres_test"
+    assert report["list_micro_usd"] == 8_000
+    envelope = json.loads(next(cache.glob("*/*.json")).read_text(encoding="utf-8"))
+    assert envelope["reservation_id"] == "qres_test"
+    assert calls == [True]
+
+    replay_output = tmp_path / "replay-probe"
+    replay = _request(
+        tmp_path,
+        replay_output,
+        provider_account="mistral:test",
+        quota_managed=True,
+    )
+    replay_value = json.loads(replay.read_text(encoding="utf-8"))
+    replay_value["operation"] = "probe"
+    replay.write_text(json.dumps(replay_value), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["adapter", str(replay)])
+    assert adapter.main() == 0
+    cached_probe = json.loads(
+        (replay_output / "probe.json").read_text(encoding="utf-8")
+    )
+    assert cached_probe["cache_hit"] is True
+    assert cached_probe["requests"] == 0
+    assert cached_probe["estimated_micro_usd"] == 0
+
+
 def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monkeypatch):
     adapter = _load_adapter()
     cache = tmp_path / "responses"

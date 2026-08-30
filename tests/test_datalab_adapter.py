@@ -136,6 +136,69 @@ def test_success_is_captured_then_replayed_without_api_key(tmp_path, monkeypatch
     assert any("billed=$0.0050" in item["message"] for item in bundle["diagnostics"])
 
 
+def test_provider_probe_reserves_ceiling_and_reports_returned_billing(tmp_path, monkeypatch):
+    adapter = _load_adapter()
+    cache = tmp_path / "responses"
+    monkeypatch.setenv("BLOBFORGE_DATALAB_RESPONSE_CACHE", str(cache))
+    monkeypatch.setenv("DATALAB_API_KEY", "test-key")
+    monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
+    submissions = []
+    monkeypatch.setattr(
+        adapter,
+        "_submit",
+        lambda *_args: submissions.append(True)
+        or {"request_check_url": "https://www.datalab.to/api/v1/convert/quota"},
+    )
+    monkeypatch.setattr(adapter, "_poll", lambda *_args: _response())
+
+    probe_output = tmp_path / "probe"
+    probe_request = _request(
+        tmp_path,
+        probe_output,
+        provider_account="datalab:test",
+        quota_managed=True,
+    )
+    probe_value = json.loads(probe_request.read_text(encoding="utf-8"))
+    probe_value["operation"] = "probe"
+    probe_request.write_text(json.dumps(probe_value), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["adapter", str(probe_request)])
+    assert adapter.main() == 0
+    probe = json.loads((probe_output / "probe.json").read_text(encoding="utf-8"))
+    assert probe["cache_hit"] is False
+    assert probe["requests"] == 1
+    assert probe["pages"] == 2
+    assert probe["estimated_micro_usd"] == 100_000
+    assert probe["estimate_basis"] == "configured-per-job-ceiling"
+    assert submissions == []
+
+    output = tmp_path / "converted"
+    request_path = _request(
+        tmp_path,
+        output,
+        provider_account="datalab:test",
+        quota_managed=True,
+    )
+    value = json.loads(request_path.read_text(encoding="utf-8"))
+    report_path = tmp_path / "attempt.json"
+    value.update(
+        {
+            "reservation_id": "qres_datalab",
+            "attempt_report_path": str(report_path),
+        }
+    )
+    request_path.write_text(json.dumps(value), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["adapter", str(request_path)])
+    assert adapter.main() == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["state"] == "committed"
+    assert report["estimated_micro_usd"] == 100_000
+    assert report["list_micro_usd"] == 20_000
+    assert report["billed_micro_usd"] == 5_000
+    assert report["credits_micro_usd"] == 15_000
+    envelope = json.loads(next(cache.glob("*/*.json")).read_text(encoding="utf-8"))
+    assert envelope["reservation_id"] == "qres_datalab"
+
+
 def test_wiki_profile_reuses_raw_cache_and_normalizes_tables(tmp_path, monkeypatch):
     adapter = _load_adapter()
     cache = tmp_path / "responses"

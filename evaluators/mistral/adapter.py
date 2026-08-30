@@ -29,6 +29,8 @@ from blobforge.normalization import referenced_asset_names, render_mistral_respo
 
 CONTRACT = "dev.tionis.blobforge.converter-bundle/v1"
 CACHE_CONTRACT = "dev.tionis.blobforge.mistral-response/v1"
+PROBE_CONTRACT = "dev.tionis.blobforge.provider-probe/v1"
+ATTEMPT_CONTRACT = "dev.tionis.blobforge.provider-attempt/v1"
 PRICE_PER_PAGE_USD = 0.004
 LINK_RE = re.compile(r"(!?\[[^\]]*\]\()([^\)\s]+)(\))")
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -111,11 +113,20 @@ def _read_cached_response(
     return envelope["response"]
 
 
+def _cached_reservation_id(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    value = json.loads(path.read_text(encoding="utf-8"))
+    reservation_id = value.get("reservation_id") if isinstance(value, dict) else None
+    return reservation_id if isinstance(reservation_id, str) and reservation_id else None
+
+
 def _write_cached_response(
     path: Path,
     request_identity: str,
     request_value: dict[str, Any],
     response: dict[str, Any],
+    reservation_id: str | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     envelope = {
@@ -123,6 +134,7 @@ def _write_cached_response(
         "request_identity": f"sha256:{request_identity}",
         "request": request_value,
         "response": response,
+        **({"reservation_id": reservation_id} if reservation_id else {}),
     }
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -140,6 +152,82 @@ def _write_cached_response(
             os.unlink(temporary_name)
         except FileNotFoundError:
             pass
+
+
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
+def _attempt_report(
+    request: dict[str, Any],
+    *,
+    state: str,
+    provider_account: str,
+    checkpoint_key: str,
+    pages: int,
+    estimated_micro_usd: int,
+    cache_hit: bool,
+    detail: str | None = None,
+    retry_after_ms: int | None = None,
+) -> None:
+    raw_path = request.get("attempt_report_path")
+    if not raw_path:
+        return
+    reservation_id = request.get("reservation_id")
+    if not isinstance(reservation_id, str) or not reservation_id:
+        raise ValueError("quota-managed conversion requires a reservation_id")
+    value = {
+        "contract": ATTEMPT_CONTRACT,
+        "reservation_id": reservation_id,
+        "provider": "mistral-ai",
+        "account_key": provider_account,
+        "checkpoint_key": checkpoint_key,
+        "state": state,
+        "cache_hit": cache_hit,
+        "requests": 0 if cache_hit or state == "released" else 1,
+        "pages": 0 if cache_hit or state == "released" else pages,
+        "estimated_micro_usd": 0 if cache_hit or state == "released" else estimated_micro_usd,
+        "list_micro_usd": 0 if cache_hit or state == "released" else estimated_micro_usd,
+        "billed_micro_usd": None,
+        "credits_micro_usd": None,
+        **({"detail": detail[:1000]} if detail else {}),
+        **({"retry_after_ms": retry_after_ms} if retry_after_ms is not None else {}),
+    }
+    _write_json_atomic(Path(raw_path), value)
+
+
+def _rate_limited(error: Exception) -> bool:
+    status = getattr(error, "status_code", None)
+    if status == 429:
+        return True
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) == 429
+
+
+def _retry_after_ms(error: Exception) -> int | None:
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(1_000, min(round(seconds * 1000), 86_400_000))
 
 
 def _perform_request(source: Path, model: str, api_key: str) -> dict[str, Any]:
@@ -309,6 +397,37 @@ def main() -> int:
         source_sha256, provider_request_digest, model
     )
     response_path = _cache_path(Path(cache_root_value).expanduser(), request_id)
+    provider_account = str(parameters.get("provider_account") or "mistral:primary")
+    estimated_micro_usd = round(expected_cost * 1_000_000)
+    if request.get("operation") == "probe":
+        with _response_lock(response_path):
+            cached = _read_cached_response(response_path, request_id, request_value)
+        cache_hit = cached is not None
+        _write_json_atomic(
+            output / "probe.json",
+            {
+                "contract": PROBE_CONTRACT,
+                "provider": "mistral-ai",
+                "account_key": provider_account,
+                "checkpoint_key": f"sha256:{request_id}",
+                "cache_hit": cache_hit,
+                "requests": 0 if cache_hit else 1,
+                "pages": 0 if cache_hit else page_count,
+                "source_pages": page_count,
+                "estimated_micro_usd": 0 if cache_hit else estimated_micro_usd,
+                **(
+                    {"resume_reservation_id": cached_reservation}
+                    if cache_hit
+                    and (cached_reservation := _cached_reservation_id(response_path))
+                    else {}
+                ),
+            },
+        )
+        return 0
+    if request.get("operation", "convert") != "convert":
+        raise ValueError("unsupported adapter operation")
+    if parameters.get("quota_managed") is True and not request.get("reservation_id"):
+        raise ValueError("quota-managed conversion requires coordinator reservation")
     with _response_lock(response_path):
         native = _read_cached_response(response_path, request_id, request_value)
         cache_status = "hit"
@@ -317,13 +436,65 @@ def main() -> int:
                 raise ValueError("api_rights_confirmed=true is required for a cache miss")
             api_key = os.environ.get("MISTRAL_API_KEY")
             if not api_key:
+                _attempt_report(
+                    request,
+                    state="released",
+                    provider_account=provider_account,
+                    checkpoint_key=f"sha256:{request_id}",
+                    pages=page_count,
+                    estimated_micro_usd=estimated_micro_usd,
+                    cache_hit=False,
+                    detail="API key missing before provider access",
+                )
                 raise ValueError("MISTRAL_API_KEY is required for a cache miss")
-            native = _perform_request(source, model, api_key)
+            try:
+                native = _perform_request(source, model, api_key)
+            except Exception as exc:
+                _attempt_report(
+                    request,
+                    state="rate_limited" if _rate_limited(exc) else "ambiguous",
+                    provider_account=provider_account,
+                    checkpoint_key=f"sha256:{request_id}",
+                    pages=page_count,
+                    estimated_micro_usd=estimated_micro_usd,
+                    cache_hit=False,
+                    detail=str(exc),
+                    retry_after_ms=_retry_after_ms(exc),
+                )
+                raise
             # Persist provider success before validation, rendition creation,
             # or packaging so a local bug fix can replay it without another
             # API call.
-            _write_cached_response(response_path, request_id, request_value, native)
+            _write_cached_response(
+                response_path,
+                request_id,
+                request_value,
+                native,
+                str(request.get("reservation_id") or "") or None,
+            )
             cache_status = "captured"
+            _attempt_report(
+                request,
+                state="committed",
+                provider_account=provider_account,
+                checkpoint_key=f"sha256:{request_id}",
+                pages=page_count,
+                estimated_micro_usd=estimated_micro_usd,
+                cache_hit=False,
+            )
+        else:
+            resumed_purchase = (
+                request.get("reservation_id") == _cached_reservation_id(response_path)
+            )
+            _attempt_report(
+                request,
+                state="committed" if resumed_purchase else "cache_hit",
+                provider_account=provider_account,
+                checkpoint_key=f"sha256:{request_id}",
+                pages=page_count,
+                estimated_micro_usd=estimated_micro_usd,
+                cache_hit=not resumed_purchase,
+            )
 
     _validate_response(native, page_count)
     (native_dir / "response.json").write_text(

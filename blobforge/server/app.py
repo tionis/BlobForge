@@ -378,7 +378,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         authorize(request, roles={"admin"})
         try:
             return {"job": database.get_job(key), "artifacts": database.artifacts(key),
-                    "failures": database.job_failures(key)}
+                    "failures": database.job_failures(key),
+                    "quota": database.quota_records(key)}
         except KeyError:
             raise HTTPException(404, "job not found") from None
 
@@ -484,6 +485,121 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         except ValueError as exc: raise HTTPException(400, str(exc)) from exc
         database.audit(principal_id(request), "recipe.update", digest,
                        {key: body[key] for key in ("enabled", "display_name") if key in body})
+        return value
+
+    @app.get("/api/v1/admin/quotas")
+    async def admin_quotas(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        return database.quota_summary()
+
+    @app.put("/api/v1/admin/provider-accounts/{account_key:path}")
+    async def admin_provider_account(account_key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        if "enabled" in body and not isinstance(body["enabled"], bool):
+            raise HTTPException(400, "enabled must be a boolean")
+        try:
+            value = database.configure_provider_account(
+                account_key,
+                str(body.get("provider") or ""),
+                enabled=bool(body.get("enabled", True)),
+                concurrency_limit=body.get("concurrency_limit", 1),
+            )
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(principal_id(request), "quota.account.configure", account_key,
+                       {"provider": value["provider"], "enabled": value["enabled"],
+                        "concurrency_limit": value["concurrency_limit"]})
+        return value
+
+    @app.post("/api/v1/admin/quota-policies")
+    async def admin_quota_policy(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        try:
+            value = database.create_quota_policy(
+                str(body.get("account_key") or ""),
+                window_start=body.get("window_start"),
+                window_end=body.get("window_end"),
+                label=str(body.get("label") or ""),
+                limit_requests=body.get("limit_requests"),
+                limit_pages=body.get("limit_pages"),
+                limit_estimated_micro_usd=body.get("limit_estimated_micro_usd"),
+                limit_billed_micro_usd=body.get("limit_billed_micro_usd"),
+            )
+        except KeyError:
+            raise HTTPException(404, "provider account not found") from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(principal_id(request), "quota.policy.create", value["id"],
+                       {key: value[key] for key in value if key != "created_at"})
+        return value
+
+    @app.post("/api/v1/admin/jobs/{key}/quota-overrides")
+    async def admin_quota_override(key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        if body.get("confirm") is not True:
+            raise HTTPException(400, "confirm=true is required for a quota overage")
+        try:
+            value = database.create_quota_override(
+                key,
+                str(body.get("recipe_digest") or ""),
+                extra_requests=body.get("extra_requests", 0),
+                extra_pages=body.get("extra_pages", 0),
+                extra_micro_usd=body.get("extra_micro_usd", 0),
+                reason=str(body.get("reason") or ""),
+                actor=principal_id(request),
+                expires_at=body.get("expires_at"),
+            )
+        except KeyError:
+            raise HTTPException(404, "job not found") from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(principal_id(request), "quota.override.create", value["id"],
+                       {"source_key": key, "recipe_digest": value["recipe_digest"],
+                        "reason": value["reason"], "expires_at": value["expires_at"],
+                        "extra_requests": value["extra_requests"],
+                        "extra_pages": value["extra_pages"],
+                        "extra_micro_usd": value["extra_micro_usd"]})
+        return value
+
+    @app.post("/api/v1/admin/quota-overrides/{identifier}/revoke")
+    async def admin_revoke_quota_override(identifier: str, request: Request) -> dict[str, bool]:
+        authorize(request, roles={"admin"})
+        try:
+            database.revoke_quota_override(identifier)
+        except KeyError:
+            raise HTTPException(404, "unused quota override not found") from None
+        database.audit(principal_id(request), "quota.override.revoke", identifier)
+        return {"revoked": True}
+
+    @app.post("/api/v1/admin/quota-reservations/{identifier}/reconcile")
+    async def admin_reconcile_quota(identifier: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        suffix = f" [reconciled by {principal_id(request)}]"
+        detail = f"{str(body.get('detail') or '')[:1000 - len(suffix)]}{suffix}"
+        try:
+            value = database.reconcile_quota(
+                identifier,
+                state=str(body.get("state") or ""),
+                detail=detail,
+                billed_micro_usd=body.get("billed_micro_usd"),
+                credits_micro_usd=body.get("credits_micro_usd"),
+            )
+        except KeyError:
+            raise HTTPException(404, "quota reservation not found") from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(principal_id(request), "quota.reservation.reconcile", identifier,
+                       {"state": value["state"], "detail": detail})
         return value
 
     @app.post("/api/v1/jobs/status")
@@ -657,6 +773,32 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     async def job_heartbeat(key: str, request: Request) -> dict[str, Any]:
         worker_id = str(authorize(request, worker=True)); body = await request.json()
         database.heartbeat(key, worker_id, str(body.get("lease_token")), body.get("progress")); return {"ok": True, "config": runtime_config()}
+
+    @app.post("/api/v1/jobs/{key}/quota-reservation")
+    async def reserve_job_quota(key: str, request: Request) -> dict[str, Any]:
+        worker_id = str(authorize(request, worker=True))
+        body = await request.json()
+        try:
+            return database.reserve_quota(
+                key, worker_id, str(body.get("lease_token") or ""), body
+            )
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/v1/quota-reservations/{identifier}/settle")
+    async def settle_job_quota(identifier: str, request: Request) -> dict[str, Any]:
+        worker_id = str(authorize(request, worker=True))
+        body = await request.json()
+        try:
+            return database.settle_quota(identifier, worker_id, body)
+        except KeyError:
+            raise HTTPException(404, "quota reservation not found") from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.post("/api/v1/jobs/{key}/upload-url")
     async def output_upload_url(key: str, request: Request) -> dict[str, Any]:

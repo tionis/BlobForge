@@ -311,7 +311,7 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert "Snapshot JSON" not in root.text
         assert "Conversion recipes" not in root.text
         assert "script-src 'self'" in root.headers["content-security-policy"]
-        assert (await client.get("/static/management-v2.js")).status_code == 200
+        assert (await client.get("/static/management-v3.js")).status_code == 200
         assert "Plan upgrades" in root.text
 
         uploaded = await client.post(

@@ -24,9 +24,11 @@ class AdapterRecipe:
     environment: Mapping[str, str]
     deployment_status: str
     input_kinds: tuple[str, ...] = ("source",)
+    provider_account: str | None = None
+    provider: str | None = None
 
     def capability(self) -> dict[str, Any]:
-        return {
+        value = {
             "backend": self.backend,
             "recipe_digest": self.recipe_digest,
             "recipe": dict(self.recipe),
@@ -34,6 +36,10 @@ class AdapterRecipe:
             "artifact_type": self.artifact_type,
             "input_kinds": list(self.input_kinds),
         }
+        if self.provider_account is not None:
+            value["provider_account"] = self.provider_account
+            value["provider"] = self.provider
+        return value
 
 
 def mistral_wiki_v3_recipe(
@@ -44,8 +50,12 @@ def mistral_wiki_v3_recipe(
     response_cache: str | Path,
     api_rights_confirmed: bool,
     cache_only: bool = False,
+    provider_account: str = "mistral:primary",
 ) -> AdapterRecipe:
     """Build the canary runtime without embedding credentials in metadata."""
+    provider_account = provider_account.strip().lower()
+    if not provider_account:
+        raise ValueError("provider_account must be non-empty")
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
     if max_cost_usd <= 0:
@@ -89,8 +99,77 @@ def mistral_wiki_v3_recipe(
             "normalization_profile": "wiki-v2",
             "provider_request_digest": blake3_bytes(canonical_json_bytes(raw_recipe)),
             "recipe_digest": digest,
+            "provider_account": provider_account,
+            "quota_managed": True,
         },
         environment=environment,
         deployment_status="canary",
         input_kinds=("source", "artifact"),
+        provider_account=provider_account,
+        provider="mistral-ai",
+    )
+
+
+def datalab_wiki_v1_recipe(
+    *,
+    repository: str | Path | None = None,
+    max_pages: int,
+    max_cost_usd: float,
+    response_cache: str | Path,
+    api_rights_confirmed: bool,
+    cache_only: bool = False,
+    provider_account: str = "datalab:primary",
+) -> AdapterRecipe:
+    """Build the quota-managed Datalab accurate wiki runtime."""
+    provider_account = provider_account.strip().lower()
+    if not provider_account:
+        raise ValueError("provider_account must be non-empty")
+    if max_pages < 1:
+        raise ValueError("max_pages must be positive")
+    if max_cost_usd <= 0:
+        raise ValueError("max_cost_usd must be positive")
+    if not api_rights_confirmed:
+        raise ValueError("hosted workers require explicit API-rights confirmation")
+    root = Path(repository or Path(__file__).resolve().parent.parent).resolve()
+    recipe_path = root / "blobforge" / "recipes" / "datalab-convert-accurate-wiki-v1.json"
+    raw_path = root / "blobforge" / "recipes" / "datalab-convert-accurate-v1.json"
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+    raw_recipe = json.loads(raw_path.read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    expected = "blake3:fcc851f8e84d0c22e44200208ccd50d76319c5aec6d3bc1de6bc9b026d3ac502"
+    if digest != expected:
+        raise RuntimeError(f"datalab-wiki-v1 recipe identity changed: {digest}")
+    adapter = root / "evaluators" / "datalab" / "adapter.py"
+    environment = {
+        "BLOBFORGE_DATALAB_RESPONSE_CACHE": str(Path(response_cache).expanduser())
+    }
+    if cache_only:
+        environment["DATALAB_API_KEY"] = ""
+    return AdapterRecipe(
+        key="datalab-wiki-v1",
+        backend="datalab-convert-wiki",
+        recipe=recipe,
+        recipe_digest=digest,
+        media_types=("application/pdf",),
+        artifact_type="mdaf/v1",
+        input_suffix=".pdf",
+        command=("uv", "run", "--project", str(adapter.parent), "python", str(adapter)),
+        parameters={
+            "api_rights_confirmed": True,
+            "do_table_structure": True,
+            "extract_images": True,
+            "max_cost_usd": max_cost_usd,
+            "max_pages": max_pages,
+            "mode": "accurate",
+            "normalization_profile": "wiki-v1",
+            "provider_account": provider_account,
+            "provider_request_digest": blake3_bytes(canonical_json_bytes(raw_recipe)),
+            "quota_managed": True,
+            "recipe_digest": digest,
+        },
+        environment=environment,
+        deployment_status="canary",
+        input_kinds=("source",),
+        provider_account=provider_account,
+        provider="datalab",
     )

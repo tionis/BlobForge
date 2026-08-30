@@ -97,8 +97,9 @@ trusted digest. Offline/revoked workers do not satisfy the routing endpoint's
 availability gate.
 
 The dispatcher is media-neutral and tests alternate audio/PDF capabilities in
-one worker process. The only deployable catalog entry today is the PDF Mistral
-wiki-v3 canary. Adding audio later means adding another exact `AdapterRecipe`;
+one worker process. The hosted catalog contains the PDF Mistral wiki-v3 and
+Datalab accurate wiki-v1 canaries. They run under separate provider-account
+credentials and quota ledgers. Adding audio later means another exact `AdapterRecipe`;
 the claim/dispatch loop does not need to become media-specific.
 
 Run a bounded hosted canary worker with:
@@ -119,6 +120,13 @@ response cache must be persistent because it is the purchase boundary and
 retry mechanism. GitHub Actions builds this runtime as
 `ghcr.io/tionis/blobforge:latest-worker-hosted` from
 `Containerfile.hosted-worker`.
+
+For provider-capable source jobs, the dispatcher runs a network-free adapter
+probe and obtains a coordinator reservation before conversion. It settles the
+attempt as soon as the provider checkpoint is durable, even if MDAF packaging
+later fails. Completed cache hits create zero-purchase ledger entries. See
+`api_workers_and_quotas.md` for policies, cooldowns, operator overages, and
+ambiguous-attempt reconciliation.
 
 The wiki-v3 worker advertises both source and artifact input. Source claims run
 the isolated hosted adapter; artifact claims download the exact immutable

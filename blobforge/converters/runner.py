@@ -27,7 +27,12 @@ from ..recipe_lifecycle import (
     parse_recipe_lifecycle,
     recipe_digest,
 )
-from .contract import ConversionRequest, load_bundle
+from .contract import (
+    PROVIDER_ATTEMPT_CONTRACT,
+    PROVIDER_PROBE_CONTRACT,
+    ConversionRequest,
+    load_bundle,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,96 @@ class ConverterRunResult:
     identity: str
     elapsed_seconds: float
     diagnostics: tuple[Mapping[str, Any], ...]
+    provider_attempt: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ProviderProbe:
+    provider: str
+    account_key: str
+    checkpoint_key: str
+    cache_hit: bool
+    requests: int
+    pages: int
+    estimated_micro_usd: int
+    raw: Mapping[str, Any]
+
+
+def _adapter_environment(environment: Mapping[str, str] | None) -> dict[str, str]:
+    value = os.environ.copy()
+    if environment:
+        value.update(environment)
+    return value
+
+
+def probe_provider(
+    command: Sequence[str],
+    source_path: str | Path,
+    *,
+    parameters: Mapping[str, Any] | None = None,
+    timeout_seconds: int = 300,
+    environment: Mapping[str, str] | None = None,
+) -> ProviderProbe:
+    """Run the adapter's network-free purchase probe."""
+    source = Path(source_path).resolve()
+    if not source.is_file():
+        raise ValueError(f"source is not a file: {source}")
+    with tempfile.TemporaryDirectory(prefix="blobforge-provider-probe-") as temporary:
+        root = Path(temporary)
+        output = root / "output"
+        output.mkdir()
+        request_path = root / "request.json"
+        request_path.write_text(
+            json.dumps(
+                ConversionRequest(
+                    source,
+                    output,
+                    parameters or {},
+                    operation="probe",
+                ).as_json()
+            ),
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [*command, str(request_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=_adapter_environment(environment),
+        )
+        if completed.returncode:
+            raise RuntimeError(
+                f"provider probe exited {completed.returncode}: {completed.stderr[-4000:]}"
+            )
+        probe_path = output / "probe.json"
+        value = json.loads(probe_path.read_text(encoding="utf-8"))
+        if value.get("contract") != PROVIDER_PROBE_CONTRACT:
+            raise ValueError("unsupported provider probe contract")
+        for key in ("provider", "account_key", "checkpoint_key"):
+            if not isinstance(value.get(key), str) or not value[key]:
+                raise ValueError(f"provider probe {key} must be a non-empty string")
+        for key in ("requests", "pages", "estimated_micro_usd"):
+            if isinstance(value.get(key), bool) or not isinstance(value.get(key), int):
+                raise ValueError(f"provider probe {key} must be an integer")
+            if value[key] < 0:
+                raise ValueError(f"provider probe {key} cannot be negative")
+        if not isinstance(value.get("cache_hit"), bool):
+            raise ValueError("provider probe cache_hit must be a boolean")
+        if value["cache_hit"] and any(
+            value[key] for key in ("requests", "estimated_micro_usd")
+        ):
+            raise ValueError("a cache hit cannot reserve a request or estimated spend")
+        return ProviderProbe(
+            provider=value["provider"],
+            account_key=value["account_key"],
+            checkpoint_key=value["checkpoint_key"],
+            cache_hit=value["cache_hit"],
+            requests=value["requests"],
+            pages=value["pages"],
+            estimated_micro_usd=value["estimated_micro_usd"],
+            raw=value,
+        )
 
 
 def _sha256_file(path: Path) -> str:
@@ -55,6 +150,8 @@ def run_converter(
     recipe: Mapping[str, Any] | None = None,
     timeout_seconds: int = 86_400,
     environment: Mapping[str, str] | None = None,
+    attempt_report_path: str | Path | None = None,
+    reservation_id: str | None = None,
 ) -> ConverterRunResult:
     """Run one isolated adapter and package its validated bundle as MDAF."""
     source = Path(source_path).resolve()
@@ -65,19 +162,23 @@ def run_converter(
         root = Path(temporary)
         bundle_root = root / "bundle"
         bundle_root.mkdir()
-        request = ConversionRequest(source, bundle_root, parameters or {})
+        report_path = Path(attempt_report_path).resolve() if attempt_report_path else None
+        request = ConversionRequest(
+            source,
+            bundle_root,
+            parameters or {},
+            attempt_report_path=report_path,
+            reservation_id=reservation_id,
+        )
         request_path = root / "request.json"
         request_path.write_text(json.dumps(request.as_json()), encoding="utf-8")
-        process_environment = os.environ.copy()
-        if environment:
-            process_environment.update(environment)
         completed = subprocess.run(
             [*command, str(request_path)],
             check=False,
             capture_output=True,
             text=True,
             timeout=timeout_seconds,
-            env=process_environment,
+            env=_adapter_environment(environment),
         )
         if completed.returncode:
             raise RuntimeError(
@@ -219,9 +320,17 @@ def run_converter(
         validated = validate_mdaf(result.path)
         if validated.identity != result.identity:
             raise RuntimeError("MDAF changed during post-build validation")
+        provider_attempt = None
+        if report_path is not None:
+            provider_attempt = json.loads(report_path.read_text(encoding="utf-8"))
+            if provider_attempt.get("contract") != PROVIDER_ATTEMPT_CONTRACT:
+                raise ValueError("unsupported provider attempt contract")
+            if provider_attempt.get("reservation_id") != reservation_id:
+                raise ValueError("provider attempt reservation does not match")
         return ConverterRunResult(
             artifact_path=result.path,
             identity=result.identity,
             elapsed_seconds=time.monotonic() - started,
             diagnostics=bundle.diagnostics,
+            provider_attempt=provider_attempt,
         )

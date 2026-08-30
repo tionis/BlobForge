@@ -8,6 +8,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 CONTRACT = "dev.tionis.blobforge.converter-bundle/v1"
+PROVIDER_PROBE_CONTRACT = "dev.tionis.blobforge.provider-probe/v1"
+PROVIDER_ATTEMPT_CONTRACT = "dev.tionis.blobforge.provider-attempt/v1"
 
 
 def _relative_path(root: Path, value: str) -> Path:
@@ -25,14 +27,23 @@ class ConversionRequest:
     source_path: Path
     output_dir: Path
     parameters: Mapping[str, Any]
+    operation: str = "convert"
+    attempt_report_path: Path | None = None
+    reservation_id: str | None = None
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        value = {
             "contract": CONTRACT,
+            "operation": self.operation,
             "source_path": str(self.source_path.resolve()),
             "output_dir": str(self.output_dir.resolve()),
             "parameters": dict(self.parameters),
         }
+        if self.attempt_report_path is not None:
+            value["attempt_report_path"] = str(self.attempt_report_path.resolve())
+        if self.reservation_id is not None:
+            value["reservation_id"] = self.reservation_id
+        return value
 
 
 @dataclass(frozen=True)

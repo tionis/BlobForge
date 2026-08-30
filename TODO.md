@@ -79,9 +79,10 @@ view; detailed research tasks remain in the sections below.
   submitted/complete response capture, exact page-delimiter validation, safe
   asset rewriting, API-limit checks, returned cost accounting, and offline
   replay; real-response validation remains the promotion gate.
-- [ ] Promote Mistral beyond evaluation by adding shared worker checkpoint
-  storage, an actual-billing/credits attempt ledger, and validated block-to-byte
-  region mappings; the provider still exposes no immutable checkpoint digest.
+- [ ] Promote Mistral beyond evaluation by validating block-to-byte region
+  mappings; shared worker checkpoint storage and the list/billed/credits
+  attempt ledger are implemented, but the provider still exposes no immutable
+  checkpoint digest.
 - [ ] Promote Docling from the current evaluation path into the principal local
   structured recipe, preserving its lossless document representation rather
   than only Markdown.
@@ -169,6 +170,21 @@ view; detailed research tasks remain in the sections below.
   The generic dispatcher, bounded Mistral wiki-v3 canary runtime, hosted-worker
   image, and alternating-media unit canary are implemented; coordinator and
   production canaries remain.
+- [x] Define the hosted API-worker deployment and quota architecture, including
+  separate provider security boundaries, two-phase preflight/reservation,
+  checkpoint-aware settlement, integer money accounting, provider cooldowns,
+  deferred jobs, and bounded audited per-job overage allowances. See
+  `docs/api_workers_and_quotas.md`.
+- [x] Implement the provider-adapter probe/attempt-report ABI and make the
+  durable response checkpoint retain the coordinator reservation identity.
+- [x] Add coordinator provider-account, immutable quota-policy, reservation,
+  settlement, cooldown, deferred-job, reconciliation, and usage-summary APIs.
+- [x] Add an admin quota console and a single-use, exact-recipe job overage
+  control requiring a reason, expiry, and explicit maximum allowance.
+- [ ] Deploy separate concurrency-one Mistral and Datalab Quadlets on Citadel
+  with dedicated worker credentials, provider keys, persistent checkpoint
+  volumes, and recovery coverage; example Quadlets are implemented, but image
+  publication, Gandalf integration, backup inclusion, and live canaries remain.
 - [ ] Run production canaries with rollback to retained legacy artifacts before
   expanding any selected recipe.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
