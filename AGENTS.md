@@ -45,6 +45,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
   and no paid request occurred. Hosted images must set
   `UV_CACHE_DIR=/tmp/uv-cache`, retain the writable `/tmp` tmpfs, and verify an
   evaluator-project `uv run` under UID 10001 with a read-only root filesystem.
+  Container PID 1 also needs explicit SIGINT/SIGTERM handling: the initial
+  worker ignored Podman's stop signal until SIGKILL. The recipe supervisor now
+  uses an interruptible stop event, terminates isolated adapter process groups,
+  releases safe leases, and leaves ambiguous provider attempts for
+  reconciliation before deregistering.
 
 - **2026-08-30:** Hosted provider recipes are explicit-assignment only. Their
   worker capability sets `claim_unassigned=false`, which is persisted in

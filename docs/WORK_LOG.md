@@ -22,6 +22,14 @@
   with a read-only root and a 128 MiB `/tmp` tmpfs; each created only
   `/tmp/uv-cache` and loaded pinned pypdf 6.14.2. The published digest must
   repeat this contract before the canary is retried.
+- The first production stop also revealed that the idle worker, running as
+  container PID 1, did not act on SIGTERM and was killed after the 60-second
+  timeout. Added explicit supervisor signal handling, interruptible idle waits,
+  cancellable isolated adapter process groups, safe lease release, and
+  ambiguity-preserving settlement. Unit/integration coverage terminates and
+  reaps a real adapter process and delivers SIGTERM to the supervisor. A final
+  disposable Podman container exited zero, printed its deregistration marker,
+  and needed no SIGKILL under a five-second stop deadline.
 
 ## 2026-08-30 (Hosted Worker Production Claim Fence)
 

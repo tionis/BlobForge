@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -56,11 +58,71 @@ class ProviderProbe:
     raw: Mapping[str, Any]
 
 
+class AdapterCancelled(RuntimeError):
+    """The worker requested termination of an isolated adapter subprocess."""
+
+
 def _adapter_environment(environment: Mapping[str, str] | None) -> dict[str, str]:
     value = os.environ.copy()
     if environment:
         value.update(environment)
     return value
+
+
+def _terminate_adapter(process: subprocess.Popen[str]) -> tuple[str, str]:
+    if process.poll() is None:
+        try:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:  # pragma: no cover - exercised by Windows workers.
+                process.terminate()
+        except ProcessLookupError:
+            pass
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:  # pragma: no cover - exercised by Windows workers.
+            process.kill()
+        return process.communicate()
+
+
+def _run_adapter(
+    command: Sequence[str],
+    *,
+    timeout_seconds: int,
+    environment: Mapping[str, str] | None,
+    cancel_event: threading.Event | None,
+) -> subprocess.CompletedProcess[str]:
+    started = time.monotonic()
+    process = subprocess.Popen(
+        list(command),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_adapter_environment(environment),
+        start_new_session=os.name == "posix",
+    )
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            stdout, stderr = _terminate_adapter(process)
+            raise AdapterCancelled(
+                f"adapter cancelled during worker shutdown: {stderr[-4000:]}"
+            )
+        remaining = timeout_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            stdout, stderr = _terminate_adapter(process)
+            raise subprocess.TimeoutExpired(
+                list(command), timeout_seconds, output=stdout, stderr=stderr
+            )
+        try:
+            stdout, stderr = process.communicate(timeout=min(0.25, remaining))
+            return subprocess.CompletedProcess(
+                list(command), process.returncode, stdout, stderr
+            )
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def probe_provider(
@@ -70,6 +132,7 @@ def probe_provider(
     parameters: Mapping[str, Any] | None = None,
     timeout_seconds: int = 300,
     environment: Mapping[str, str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderProbe:
     """Run the adapter's network-free purchase probe."""
     source = Path(source_path).resolve()
@@ -91,13 +154,11 @@ def probe_provider(
             ),
             encoding="utf-8",
         )
-        completed = subprocess.run(
+        completed = _run_adapter(
             [*command, str(request_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=_adapter_environment(environment),
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+            cancel_event=cancel_event,
         )
         if completed.returncode:
             raise RuntimeError(
@@ -152,6 +213,7 @@ def run_converter(
     environment: Mapping[str, str] | None = None,
     attempt_report_path: str | Path | None = None,
     reservation_id: str | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ConverterRunResult:
     """Run one isolated adapter and package its validated bundle as MDAF."""
     source = Path(source_path).resolve()
@@ -172,13 +234,11 @@ def run_converter(
         )
         request_path = root / "request.json"
         request_path.write_text(json.dumps(request.as_json()), encoding="utf-8")
-        completed = subprocess.run(
+        completed = _run_adapter(
             [*command, str(request_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            env=_adapter_environment(environment),
+            timeout_seconds=timeout_seconds,
+            environment=environment,
+            cancel_event=cancel_event,
         )
         if completed.returncode:
             raise RuntimeError(

@@ -233,3 +233,11 @@ read-only. Hosted images must set `UV_CACHE_DIR=/tmp/uv-cache`; deployment may
 repeat that environment setting as defense in depth. A release probe must run
 an evaluator-project `uv run` as UID 10001 with a read-only root filesystem,
 not merely invoke the already-installed BlobForge entry point.
+
+The hosted supervisor is container PID 1 and therefore installs explicit
+SIGINT/SIGTERM handlers. Idle waits are interruptible. Adapter probe/conversion
+subprocesses run in isolated process groups and are terminated on shutdown so
+the supervisor can settle a cache hit, release a pre-purchase lease, or retain
+an ambiguous purchase for reconciliation before deregistering. A Podman stop
+probe must observe exit code zero and the deregistration path before the image
+is promoted.

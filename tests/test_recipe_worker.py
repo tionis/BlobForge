@@ -1,4 +1,7 @@
 import json
+import os
+import signal
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -118,6 +121,33 @@ def test_worker_advertises_and_dispatches_alternating_media_recipes(tmp_path):
     assert first_result["logical_identity"] == "identity-audio-v1"
     assert first_result["converter_backend"] == "backend-audio-v1"
     assert first_result["artifact_type"] == "mdaf/v1"
+
+
+def test_worker_stop_event_prevents_claim_and_deregisters_without_idle_delay():
+    coordinator = FakeCoordinator([])
+    worker = RecipeWorker(coordinator, [_recipe("pdf-v1", "application/pdf")])
+    worker.stop_event.set()
+
+    assert worker.run(idle_sleep=60) == 0
+    assert coordinator.jobs == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="signal delivery is POSIX")
+def test_worker_sigterm_interrupts_idle_sleep_and_exits_cleanly():
+    class SignalCoordinator(FakeCoordinator):
+        sent = False
+
+        def worker_heartbeat(self, *args, **kwargs):
+            if not self.sent:
+                self.sent = True
+                os.kill(os.getpid(), signal.SIGTERM)
+
+    coordinator = SignalCoordinator([])
+    worker = RecipeWorker(coordinator, [_recipe("pdf-v1", "application/pdf")])
+    started = time.monotonic()
+
+    assert worker.run(idle_sleep=60) == 0
+    assert time.monotonic() - started < 1
 
 
 def test_worker_releases_unknown_claim_without_executing():

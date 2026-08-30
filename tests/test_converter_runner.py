@@ -1,11 +1,53 @@
 import json
+import os
 import sys
+import threading
+import time
 import zipfile
 from pathlib import Path
 
-from blobforge.converters import run_converter
+import pytest
+
+from blobforge.converters import AdapterCancelled, run_converter
 from blobforge.mdaf import blake3_bytes, canonical_json_bytes
 from blobforge.recipe_lifecycle import RECIPE_MEMBER_PATH
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group cancellation is POSIX")
+def test_converter_cancellation_terminates_isolated_adapter(tmp_path):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF synthetic")
+    adapter = tmp_path / "slow-adapter.py"
+    pid_path = tmp_path / "adapter.pid"
+    adapter.write_text(
+        "import os,pathlib,time\n"
+        f"pathlib.Path({str(pid_path)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    cancel = threading.Event()
+
+    def request_stop():
+        deadline = time.monotonic() + 5
+        while not pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        cancel.set()
+
+    thread = threading.Thread(target=request_stop)
+    thread.start()
+    started = time.monotonic()
+    with pytest.raises(AdapterCancelled):
+        run_converter(
+            [sys.executable, str(adapter)],
+            source,
+            tmp_path / "cancelled.mdaf",
+            cancel_event=cancel,
+        )
+    thread.join(timeout=1)
+    assert time.monotonic() - started < 5
+    pid = int(pid_path.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 def test_converter_bundle_is_packaged_by_shared_builder(tmp_path):

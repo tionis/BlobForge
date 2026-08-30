@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import socket
 import tempfile
 import threading
@@ -13,7 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .converters import ConverterRunResult, ProviderProbe, probe_provider, run_converter
+from .converters import (
+    AdapterCancelled,
+    ConverterRunResult,
+    ProviderProbe,
+    probe_provider,
+    run_converter,
+)
 from .coordinator_client import CoordinatorClient
 from .recipe_runtime import AdapterRecipe
 from .reprocessing import ReprocessResult, reprocess_mdaf
@@ -99,6 +106,7 @@ class RecipeWorker:
         self.prober = prober
         self.reprocessor = reprocessor
         self.worker_id: str | None = None
+        self.stop_event = threading.Event()
 
     @property
     def capabilities(self) -> list[dict]:
@@ -218,6 +226,7 @@ class RecipeWorker:
                         parameters=recipe.parameters,
                         timeout_seconds=min(self.timeout_seconds, 300),
                         environment=recipe.environment,
+                        cancel_event=self.stop_event,
                     )
                     if (
                         quota_probe.account_key != recipe.provider_account
@@ -276,6 +285,7 @@ class RecipeWorker:
                             environment=recipe.environment,
                             attempt_report_path=quota_report_path,
                             reservation_id=quota_reservation_id,
+                            cancel_event=self.stop_event,
                         )
                         elapsed_seconds = result.elapsed_seconds
                         diagnostics = list(result.diagnostics)
@@ -369,6 +379,24 @@ class RecipeWorker:
                         quota_reservation_id,
                         settlement_error,
                     )
+            shutdown_requested = (
+                isinstance(exc, AdapterCancelled) or self.stop_event.is_set()
+            )
+            if shutdown_requested and quota_report_state != "ambiguous":
+                try:
+                    self.coordinator.release(
+                        source_key,
+                        worker_id=self.worker_id,
+                        lease_token=lease,
+                        reason="worker shutdown requested",
+                    )
+                except Exception as release_error:
+                    logger.error(
+                        "Could not release shutdown lease %s: %s",
+                        source_key,
+                        release_error,
+                    )
+                return JobOutcome(True, source_key, digest, None, str(exc), True)
             if quota_report_state == "rate_limited":
                 return JobOutcome(True, source_key, digest, None, str(exc), True)
             try:
@@ -393,8 +421,13 @@ class RecipeWorker:
 
     def run(self, *, run_once: bool = False, idle_sleep: float = 10.0) -> int:
         worker_id = self.register()
+        previous_handlers: dict[int, object] = {}
+        if threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, lambda *_args: self.stop_event.set())
         try:
-            while True:
+            while not self.stop_event.is_set():
                 self.coordinator.worker_heartbeat(worker_id, current_job=None)
                 outcome = self.process_once()
                 if run_once and outcome.claimed:
@@ -402,6 +435,11 @@ class RecipeWorker:
                 if not outcome.claimed:
                     if run_once:
                         return 0
-                    time.sleep(idle_sleep)
+                    self.stop_event.wait(idle_sleep)
         finally:
-            self.coordinator.deregister_worker(worker_id)
+            try:
+                self.coordinator.deregister_worker(worker_id)
+            finally:
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
+        return 0
