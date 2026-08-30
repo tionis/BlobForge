@@ -178,6 +178,7 @@ def _attempt_report(
     *,
     state: str,
     provider_account: str,
+    currency: str,
     checkpoint_key: str,
     pages: int,
     estimated_micro_usd: int,
@@ -196,6 +197,7 @@ def _attempt_report(
         "reservation_id": reservation_id,
         "provider": "mistral-ai",
         "account_key": provider_account,
+        "currency": currency,
         "checkpoint_key": checkpoint_key,
         "state": state,
         "cache_hit": cache_hit,
@@ -361,12 +363,16 @@ def main() -> int:
         raise ValueError("source PDF has no pages")
     max_pages = int(parameters.get("max_pages") or 0)
     max_cost = float(parameters.get("max_cost_usd") or 0)
+    currency = str(parameters.get("billing_currency") or "USD").upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise ValueError("billing_currency must be a three-letter ISO 4217 code")
     expected_cost = page_count * PRICE_PER_PAGE_USD
     if max_pages <= 0 or page_count > max_pages:
         raise ValueError(f"page ceiling rejected {page_count} pages (limit {max_pages})")
     if not math.isfinite(max_cost) or max_cost <= 0 or expected_cost > max_cost:
         raise ValueError(
-            f"spend ceiling rejected estimated ${expected_cost:.4f} (limit ${max_cost:.4f})"
+            f"spend ceiling rejected estimated {currency} {expected_cost:.4f} "
+            f"(limit {currency} {max_cost:.4f})"
         )
     model = str(parameters.get("model") or "mistral-ocr-4-1")
     if model != "mistral-ocr-4-1":
@@ -409,6 +415,7 @@ def main() -> int:
                 "contract": PROBE_CONTRACT,
                 "provider": "mistral-ai",
                 "account_key": provider_account,
+                "currency": currency,
                 "checkpoint_key": f"sha256:{request_id}",
                 "cache_hit": cache_hit,
                 "requests": 0 if cache_hit else 1,
@@ -440,6 +447,7 @@ def main() -> int:
                     request,
                     state="released",
                     provider_account=provider_account,
+                    currency=currency,
                     checkpoint_key=f"sha256:{request_id}",
                     pages=page_count,
                     estimated_micro_usd=estimated_micro_usd,
@@ -454,6 +462,7 @@ def main() -> int:
                     request,
                     state="rate_limited" if _rate_limited(exc) else "ambiguous",
                     provider_account=provider_account,
+                    currency=currency,
                     checkpoint_key=f"sha256:{request_id}",
                     pages=page_count,
                     estimated_micro_usd=estimated_micro_usd,
@@ -477,6 +486,7 @@ def main() -> int:
                 request,
                 state="committed",
                 provider_account=provider_account,
+                currency=currency,
                 checkpoint_key=f"sha256:{request_id}",
                 pages=page_count,
                 estimated_micro_usd=estimated_micro_usd,
@@ -490,6 +500,7 @@ def main() -> int:
                 request,
                 state="committed" if resumed_purchase else "cache_hit",
                 provider_account=provider_account,
+                currency=currency,
                 checkpoint_key=f"sha256:{request_id}",
                 pages=page_count,
                 estimated_micro_usd=estimated_micro_usd,

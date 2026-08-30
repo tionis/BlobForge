@@ -107,8 +107,13 @@ the quota ledger is not a response cache.
 
 The coordinator uses these normalized records:
 
-- `provider_accounts`: non-secret logical account, provider, enabled state,
-  concurrency ceiling, and shared cooldown.
+- `provider_accounts`: non-secret logical account, provider, immutable ISO 4217
+  billing currency after first use, enabled state, concurrency ceiling, and
+  shared cooldown.
+- `quota_schedules`: one optional monthly reset rule per account. The reset is
+  local midnight in an explicit IANA timezone, supports days 1 through 28, and
+  materializes the containing immutable policy window transactionally on
+  configuration, summary, or reservation.
 - `quota_policies`: account, explicit effective window, and hard
   request/page/estimated-list-price/billed-cash limits. Multiple simultaneous
   policies may enforce, for example, a daily request rate, monthly promotional
@@ -140,8 +145,16 @@ The worker protocol uses
 `POST /api/v1/quota-reservations/{id}/settle` for the purchase-boundary report.
 Settlement is independent of MDAF completion. Administrative APIs configure
 accounts and immutable policy windows, create/revoke overages, summarize
-usage, and reconcile ambiguous attempts. The management console exposes these
-operations under **Quotas**.
+usage, and reconcile ambiguous attempts. It also configures recurring monthly
+schedules through `PUT /api/v1/admin/quota-schedules/{account}`. The management
+console exposes these operations under **Quotas**.
+
+Legacy JSON and SQLite field names retain the suffix `micro_usd` for wire and
+database compatibility. Their value is actually one-millionth of the provider
+account's declared currency. Every new probe, attempt report, policy, and
+account is currency-bound; a EUR probe cannot reserve or settle against a USD
+account. Older records without a currency predate this contract and default to
+USD.
 
 Mistral OCR wiki-v3 and Datalab accurate wiki-v1 implement the structured ABI.
 Mistral reserves its fixed per-page estimate. Datalab exposes no trustworthy
@@ -160,7 +173,8 @@ The UI presents this as **Allow one quota overage**, and the API requires:
 - the exact queued job and recipe;
 - a human reason;
 - an expiry;
-- explicit maximum additional requests, pages, and/or micro-USD; and
+- explicit maximum additional requests, pages, and/or micro-units in the
+  provider account's currency; and
 - explicit `confirm=true` after the estimated allowance is known.
 
 There is intentionally no permanent `ignore_quota` job flag. The allowance is
@@ -196,7 +210,8 @@ ambiguous purchase outcomes require operator-visible reconciliation.
 
 1. Build and publish the hosted-worker image containing both isolated adapter
    environments.
-2. Create `mistral:primary` with provider `mistral-ai` and `datalab:primary`
+2. Create a currency-specific Mistral account with provider `mistral-ai` and a
+   currency-specific Datalab account with provider `datalab`,
    with provider `datalab`, both at concurrency one in the quota console, then
    add explicit policy windows before starting workers.
 3. Deploy one Mistral canary Quadlet, disabled until the account and policy
@@ -216,10 +231,18 @@ conversion is network-bound and the response cache benefits from local durable
 storage. Separate containers and fenced protocols preserve the option to move
 them to another host later without changing job or artifact identity.
 
-Initial worker-side safety ceilings should match the canary rather than the
-full corpus: 20 pages and USD 0.05 for Mistral, and 20 pages and USD 0.10 for
-Datalab. Coordinator policy windows are an additional aggregate limit, not a
-replacement for these immutable per-job adapter caps.
+The production corpus contains PDFs up to 502 pages. Worker-side safety
+ceilings therefore allow at most 1,000 pages per purchase, EUR 5 for Mistral,
+and USD 10 for Datalab; coordinator monthly schedules remain the smaller
+aggregate authority. These per-job ceilings are safety bounds, not spending
+targets, and do not alter immutable recipe identity or provider cache keys.
+
+The initial unattended schedules reset at local midnight on day 28 in
+`Europe/Berlin`. Mistral uses a EUR 12.75 estimated and billed-exposure ceiling.
+Datalab uses its current USD 20 monthly free-credit allowance as both the
+conservative estimate and billed-exposure ceiling. Provider promotions are
+external facts: operators must verify and revise a future schedule before the
+next immutable window is materialized if the plan changes.
 
 Example Quadlets and secret templates are in `deploy/quadlet/`. The coordinator
 SQLite directory and provider response-cache volumes form one recovery

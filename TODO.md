@@ -181,6 +181,9 @@ view; detailed research tasks remain in the sections below.
   settlement, cooldown, deferred-job, reconciliation, and usage-summary APIs.
 - [x] Add an admin quota console and a single-use, exact-recipe job overage
   control requiring a reason, expiry, and explicit maximum allowance.
+- [x] Add currency-bound provider ledgers and recurring local-time monthly
+  schedules that materialize immutable reset windows without mixing EUR and
+  USD. Management UI and API support reset day/timezone configuration.
 - [x] Deploy separate concurrency-one Mistral and Datalab Quadlets on Citadel
   with dedicated worker credentials, provider keys, persistent checkpoint
   volumes, and recovery coverage. The digest-pinned hosted image, Gandalf

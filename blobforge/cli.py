@@ -1135,6 +1135,7 @@ def cmd_recipe_worker(args):
             api_rights_confirmed=args.confirm_api_rights,
             cache_only=args.cache_only,
             provider_account=provider_account,
+            billing_currency=args.billing_currency,
         )]
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"Error: {exc}")
@@ -2278,6 +2279,11 @@ def main():
     p_recipe_worker.add_argument("--token")
     p_recipe_worker.add_argument("--max-pages", type=int, required=True)
     p_recipe_worker.add_argument("--max-cost-usd", type=float, required=True)
+    p_recipe_worker.add_argument(
+        "--billing-currency",
+        default="USD",
+        help="ISO currency for quota amounts (legacy field names still contain micro_usd)",
+    )
     p_recipe_worker.add_argument("--timeout", type=int, default=86_400)
     p_recipe_worker.add_argument("--heartbeat-interval", type=float, default=30.0)
     p_recipe_worker.add_argument("--idle-sleep", type=float, default=10.0)

@@ -1,5 +1,26 @@
 # Work Log
 
+## 2026-08-31 (Recurring Hosted Quotas and Rulebook Intake)
+
+- **Objective:** Replace one-off canary windows with honest recurring Mistral
+  and Datalab budgets, close the remaining failure-injection coverage, and make
+  rulebook intake usable without enabling automatic hosted assignment.
+- **Implementation:** Added account and policy currency binding, local-time
+  monthly schedules with immutable cycle materialization, API/audit endpoints,
+  management controls, and currency-aware worker probes and settlement reports.
+  Legacy `micro_usd` names remain compatible while representing the account's
+  declared currency. The upload UI accepts multiple files with a shared
+  priority, tags, and explicit source recipe.
+- **Safety:** Added DST-boundary, schedule-idempotency, currency-mismatch,
+  rate-limit/cooldown, and post-purchase upload-failure tests. Hosted workers
+  remain explicit-assignment only and production provider services remain
+  disabled during implementation. No rulebook was uploaded or converted.
+- **Validation so far:** Python compilation, browser JavaScript syntax checking,
+  `git diff --check`, and 54 focused coordinator/worker/adapter/server tests
+  pass. Full suite, image publication, Citadel deployment, live schedule
+  configuration, acceptance probes, and recovery verification follow in this
+  rollout.
+
 ## 2026-08-30 (First Citadel Hosted-Worker Canary)
 
 - Deployed the security-patched coordinator and disabled Mistral/Datalab

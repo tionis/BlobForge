@@ -7,9 +7,12 @@ import json
 import secrets
 import sqlite3
 import time
+from calendar import monthrange
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..converters.contract import PROVIDER_ATTEMPT_CONTRACT, PROVIDER_PROBE_CONTRACT
 from ..mdaf import blake3_bytes, canonical_json_bytes
@@ -22,6 +25,37 @@ def now_ms() -> int:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def monthly_quota_window(
+    timestamp: int, *, reset_day: int, timezone_name: str
+) -> tuple[int, int]:
+    """Return the reset-day billing window containing a millisecond timestamp."""
+    if isinstance(reset_day, bool) or not isinstance(reset_day, int) or not 1 <= reset_day <= 28:
+        raise ValueError("reset_day must be an integer from 1 through 28")
+    try:
+        zone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("timezone must be a valid IANA timezone") from exc
+    current = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).astimezone(zone)
+
+    def boundary(year: int, month: int) -> datetime:
+        day = min(reset_day, monthrange(year, month)[1])
+        return datetime(year, month, day, tzinfo=zone)
+
+    candidate = boundary(current.year, current.month)
+    if current < candidate:
+        if current.month == 1:
+            start = boundary(current.year - 1, 12)
+        else:
+            start = boundary(current.year, current.month - 1)
+    else:
+        start = candidate
+    if start.month == 12:
+        end = boundary(start.year + 1, 1)
+    else:
+        end = boundary(start.year, start.month + 1)
+    return round(start.timestamp() * 1000), round(end.timestamp() * 1000)
 
 
 class Conflict(RuntimeError):
@@ -138,6 +172,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS provider_accounts (
                     account_key TEXT PRIMARY KEY, provider TEXT NOT NULL,
+                    currency TEXT NOT NULL DEFAULT 'USD',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     concurrency_limit INTEGER NOT NULL DEFAULT 1,
                     cooldown_until INTEGER, cooldown_reason TEXT,
@@ -149,7 +184,16 @@ class Database:
                     window_end INTEGER NOT NULL, label TEXT NOT NULL DEFAULT '',
                     limit_requests INTEGER, limit_pages INTEGER,
                     limit_estimated_micro_usd INTEGER, limit_billed_micro_usd INTEGER,
+                    currency TEXT NOT NULL DEFAULT 'USD',
                     created_at INTEGER NOT NULL, UNIQUE(account_key, revision)
+                );
+                CREATE TABLE IF NOT EXISTS quota_schedules (
+                    account_key TEXT PRIMARY KEY REFERENCES provider_accounts(account_key),
+                    timezone TEXT NOT NULL, reset_day INTEGER NOT NULL,
+                    label TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+                    limit_requests INTEGER, limit_pages INTEGER,
+                    limit_estimated_micro_usd INTEGER, limit_billed_micro_usd INTEGER,
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS job_quota_overrides (
                     id TEXT PRIMARY KEY, source_key TEXT NOT NULL REFERENCES sources(source_key),
@@ -258,6 +302,26 @@ class Database:
                 db.execute("ALTER TABLE workers ADD COLUMN managed_by TEXT NOT NULL DEFAULT 'dynamic'")
                 # Before dynamic enrollment existed every worker row came from environment config.
                 db.execute("UPDATE workers SET managed_by='environment'")
+            provider_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(provider_accounts)")
+            }
+            if "currency" not in provider_columns:
+                db.execute(
+                    "ALTER TABLE provider_accounts ADD COLUMN currency "
+                    "TEXT NOT NULL DEFAULT 'USD'"
+                )
+            policy_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(quota_policies)")
+            }
+            if "currency" not in policy_columns:
+                db.execute(
+                    "ALTER TABLE quota_policies ADD COLUMN currency "
+                    "TEXT NOT NULL DEFAULT 'USD'"
+                )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS quota_policy_window_idx "
+                "ON quota_policies(account_key,window_start,window_end)"
+            )
 
     def bootstrap_workers(self, worker_tokens: Mapping[str, str]) -> None:
         timestamp = now_ms()
@@ -377,17 +441,21 @@ class Database:
         *,
         enabled: bool = True,
         concurrency_limit: int = 1,
+        currency: str = "USD",
     ) -> dict[str, Any]:
         account_key = account_key.strip().lower()
         provider = provider.strip().lower()
+        currency = currency.strip().upper()
         if not account_key or not provider:
             raise ValueError("account_key and provider are required")
+        if len(currency) != 3 or not currency.isalpha():
+            raise ValueError("currency must be a three-letter ISO 4217 code")
         if isinstance(concurrency_limit, bool) or concurrency_limit < 1:
             raise ValueError("concurrency_limit must be a positive integer")
         timestamp = now_ms()
         with self.transaction() as db:
             existing = db.execute(
-                "SELECT provider FROM provider_accounts WHERE account_key=?",
+                "SELECT provider,currency FROM provider_accounts WHERE account_key=?",
                 (account_key,),
             ).fetchone()
             if existing and existing["provider"] != provider and db.execute(
@@ -396,12 +464,19 @@ class Database:
                 (account_key, account_key),
             ).fetchone():
                 raise Conflict("provider cannot change after an account has quota history")
+            if existing and existing["currency"] != currency and db.execute(
+                """SELECT 1 FROM quota_policies WHERE account_key=? UNION ALL
+                SELECT 1 FROM quota_reservations WHERE account_key=? LIMIT 1""",
+                (account_key, account_key),
+            ).fetchone():
+                raise Conflict("currency cannot change after an account has quota history")
             db.execute(
-                """INSERT INTO provider_accounts(account_key,provider,enabled,concurrency_limit,created_at,updated_at)
-                VALUES(?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET
+                """INSERT INTO provider_accounts(account_key,provider,currency,enabled,concurrency_limit,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET
                 provider=excluded.provider,enabled=excluded.enabled,
-                concurrency_limit=excluded.concurrency_limit,updated_at=excluded.updated_at""",
-                (account_key, provider, int(enabled), concurrency_limit, timestamp, timestamp),
+                currency=excluded.currency,concurrency_limit=excluded.concurrency_limit,
+                updated_at=excluded.updated_at""",
+                (account_key, provider, currency, int(enabled), concurrency_limit, timestamp, timestamp),
             )
             row = db.execute(
                 "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
@@ -409,6 +484,128 @@ class Database:
         value = dict(row)
         value["enabled"] = bool(value["enabled"])
         return value
+
+    def configure_quota_schedule(
+        self,
+        account_key: str,
+        *,
+        timezone_name: str,
+        reset_day: int,
+        label: str = "",
+        enabled: bool = True,
+        limit_requests: int | None = None,
+        limit_pages: int | None = None,
+        limit_estimated_micro_usd: int | None = None,
+        limit_billed_micro_usd: int | None = None,
+    ) -> dict[str, Any]:
+        account_key = account_key.strip().lower()
+        monthly_quota_window(now_ms(), reset_day=reset_day, timezone_name=timezone_name)
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        limits = {
+            "limit_requests": self._quota_integer(limit_requests, "limit_requests", optional=True),
+            "limit_pages": self._quota_integer(limit_pages, "limit_pages", optional=True),
+            "limit_estimated_micro_usd": self._quota_integer(
+                limit_estimated_micro_usd, "limit_estimated_micro_usd", optional=True
+            ),
+            "limit_billed_micro_usd": self._quota_integer(
+                limit_billed_micro_usd, "limit_billed_micro_usd", optional=True
+            ),
+        }
+        if all(value is None for value in limits.values()):
+            raise ValueError("quota schedule needs at least one limit")
+        timestamp = now_ms()
+        with self.transaction() as db:
+            if not db.execute(
+                "SELECT 1 FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone():
+                raise KeyError(account_key)
+            db.execute(
+                """INSERT INTO quota_schedules(account_key,timezone,reset_day,label,enabled,
+                limit_requests,limit_pages,limit_estimated_micro_usd,
+                limit_billed_micro_usd,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET
+                timezone=excluded.timezone,reset_day=excluded.reset_day,label=excluded.label,
+                enabled=excluded.enabled,limit_requests=excluded.limit_requests,
+                limit_pages=excluded.limit_pages,
+                limit_estimated_micro_usd=excluded.limit_estimated_micro_usd,
+                limit_billed_micro_usd=excluded.limit_billed_micro_usd,
+                updated_at=excluded.updated_at""",
+                (
+                    account_key,
+                    timezone_name,
+                    reset_day,
+                    label.strip()[:160],
+                    int(enabled),
+                    limits["limit_requests"],
+                    limits["limit_pages"],
+                    limits["limit_estimated_micro_usd"],
+                    limits["limit_billed_micro_usd"],
+                    timestamp,
+                    timestamp,
+                ),
+            )
+            schedule = db.execute(
+                "SELECT * FROM quota_schedules WHERE account_key=?", (account_key,)
+            ).fetchone()
+            if enabled:
+                self._ensure_scheduled_policy(db, account_key, timestamp)
+            value = dict(schedule)
+        value["enabled"] = bool(value["enabled"])
+        return value
+
+    def _ensure_scheduled_policy(
+        self, db: sqlite3.Connection, account_key: str, timestamp: int
+    ) -> None:
+        schedule = db.execute(
+            "SELECT * FROM quota_schedules WHERE account_key=? AND enabled=1",
+            (account_key,),
+        ).fetchone()
+        if not schedule:
+            return
+        start, end = monthly_quota_window(
+            timestamp,
+            reset_day=int(schedule["reset_day"]),
+            timezone_name=str(schedule["timezone"]),
+        )
+        if db.execute(
+            """SELECT 1 FROM quota_policies
+            WHERE account_key=? AND window_start=? AND window_end=?""",
+            (account_key, start, end),
+        ).fetchone():
+            return
+        account = db.execute(
+            "SELECT currency FROM provider_accounts WHERE account_key=?", (account_key,)
+        ).fetchone()
+        revision = int(
+            db.execute(
+                "SELECT COALESCE(MAX(revision),0)+1 FROM quota_policies WHERE account_key=?",
+                (account_key,),
+            ).fetchone()[0]
+        )
+        start_label = datetime.fromtimestamp(start / 1000, tz=timezone.utc).astimezone(
+            ZoneInfo(str(schedule["timezone"]))
+        ).date()
+        db.execute(
+            """INSERT INTO quota_policies(id,account_key,revision,window_start,window_end,label,
+            limit_requests,limit_pages,limit_estimated_micro_usd,
+            limit_billed_micro_usd,currency,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "qpol_" + secrets.token_hex(10),
+                account_key,
+                revision,
+                start,
+                end,
+                f"{str(schedule['label']).strip() or 'monthly allowance'} · {start_label.isoformat()}",
+                schedule["limit_requests"],
+                schedule["limit_pages"],
+                schedule["limit_estimated_micro_usd"],
+                schedule["limit_billed_micro_usd"],
+                account["currency"],
+                now_ms(),
+            ),
+        )
 
     def create_quota_policy(
         self,
@@ -442,9 +639,10 @@ class Database:
         timestamp = now_ms()
         identifier = "qpol_" + secrets.token_hex(10)
         with self.transaction() as db:
-            if not db.execute(
-                "SELECT 1 FROM provider_accounts WHERE account_key=?", (account_key,)
-            ).fetchone():
+            account = db.execute(
+                "SELECT currency FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone()
+            if not account:
                 raise KeyError(account_key)
             revision = int(
                 db.execute(
@@ -454,8 +652,9 @@ class Database:
             )
             db.execute(
                 """INSERT INTO quota_policies(id,account_key,revision,window_start,window_end,label,
-                limit_requests,limit_pages,limit_estimated_micro_usd,limit_billed_micro_usd,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                limit_requests,limit_pages,limit_estimated_micro_usd,
+                limit_billed_micro_usd,currency,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     identifier,
                     account_key,
@@ -467,6 +666,7 @@ class Database:
                     limits["limit_pages"],
                     limits["limit_estimated_micro_usd"],
                     limits["limit_billed_micro_usd"],
+                    account["currency"],
                     timestamp,
                 ),
             )
@@ -628,6 +828,9 @@ class Database:
                 raise Conflict("provider account is not configured")
             if not account["enabled"]:
                 raise Conflict("provider account is disabled")
+            probe_currency = str(body.get("currency") or "USD").upper()
+            if probe_currency != str(account["currency"]):
+                raise Conflict("provider probe currency does not match the account currency")
             resume_identifier = body.get("resume_reservation_id")
             if isinstance(resume_identifier, str) and resume_identifier:
                 resumable = db.execute(
@@ -688,6 +891,7 @@ class Database:
                         (defer_until, reason, timestamp, key),
                     )
                     return {"authorized": False, "reason": reason, "not_before": defer_until}
+            self._ensure_scheduled_policy(db, account_key, timestamp)
             policies = list(
                 db.execute(
                     """SELECT * FROM quota_policies WHERE account_key=?
@@ -804,11 +1008,14 @@ class Database:
             if report.get("account_key") != row["account_key"] or report.get("checkpoint_key") != row["checkpoint_key"]:
                 raise Conflict("provider report identity does not match the reservation")
             account = db.execute(
-                "SELECT provider FROM provider_accounts WHERE account_key=?",
+                "SELECT provider,currency FROM provider_accounts WHERE account_key=?",
                 (row["account_key"],),
             ).fetchone()
             if not account or report.get("provider") != account["provider"]:
                 raise Conflict("provider report does not match the reservation provider")
+            report_currency = str(report.get("currency") or "USD").upper()
+            if report_currency != str(account["currency"]):
+                raise Conflict("provider report currency does not match the account currency")
             if row["state"] != "reserved":
                 value = dict(row)
                 value.pop("lease_token_hash", None)
@@ -905,8 +1112,10 @@ class Database:
 
     def quota_summary(self) -> dict[str, Any]:
         timestamp = now_ms()
-        with self.connect() as db:
+        with self.transaction() as db:
             accounts = [dict(row) for row in db.execute("SELECT * FROM provider_accounts ORDER BY account_key")]
+            for account in accounts:
+                self._ensure_scheduled_policy(db, account["account_key"], timestamp)
             policies = [dict(row) for row in db.execute("SELECT * FROM quota_policies ORDER BY account_key,revision DESC")]
             for policy in policies:
                 row = db.execute(
@@ -933,6 +1142,16 @@ class Database:
                     FROM quota_reservations GROUP BY account_key,state ORDER BY account_key,state"""
                 )
             ]
+            schedules = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT quota_schedules.*,provider_accounts.currency
+                    FROM quota_schedules JOIN provider_accounts USING(account_key)
+                    ORDER BY quota_schedules.account_key"""
+                )
+            ]
+            for schedule in schedules:
+                schedule["enabled"] = bool(schedule["enabled"])
             waiting = int(
                 db.execute(
                     "SELECT COUNT(*) FROM jobs WHERE not_before>? AND blocked_reason IS NOT NULL",
@@ -958,7 +1177,8 @@ class Database:
             ]
         for account in accounts:
             account["enabled"] = bool(account["enabled"])
-        return {"accounts": accounts, "policies": policies, "usage": usage,
+        return {"accounts": accounts, "schedules": schedules,
+                "policies": policies, "usage": usage,
                 "ambiguous": ambiguous, "overrides": overrides,
                 "waiting_jobs": waiting, "generated_at": timestamp}
 

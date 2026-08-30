@@ -347,7 +347,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     @app.post("/api/v1/admin/uploads")
     async def admin_upload(request: Request, filename: str, media_type: str = "application/octet-stream",
-                           priority: str = "3_normal", tags: str = "") -> dict[str, Any]:
+                           priority: str = "3_normal", tags: str = "",
+                           recipe_digest: str = "") -> dict[str, Any]:
         authorize(request, roles={"admin"})
         filename = filename.strip()
         if not filename or len(filename) > 512:
@@ -369,8 +370,13 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             "tags": [value.strip() for value in tags.split(",") if value.strip()][:100],
             "priority": priority, "source": "management-ui",
             "aliases": {"blake3": str(result["blake3"])}})
+        if recipe_digest:
+            job = database.request_conversion(
+                key, _recipe_identifier(recipe_digest)
+            )["job"]
         database.audit(principal_id(request), "job.upload", key,
-                       {"filename": filename, "size_bytes": result["size_bytes"]})
+                       {"filename": filename, "size_bytes": result["size_bytes"],
+                        **({"recipe_digest": recipe_digest} if recipe_digest else {})})
         return job
 
     @app.get("/api/v1/admin/jobs/{key}")
@@ -504,14 +510,46 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 str(body.get("provider") or ""),
                 enabled=bool(body.get("enabled", True)),
                 concurrency_limit=body.get("concurrency_limit", 1),
+                currency=str(body.get("currency") or "USD"),
             )
         except Conflict as exc:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         database.audit(principal_id(request), "quota.account.configure", account_key,
-                       {"provider": value["provider"], "enabled": value["enabled"],
+                       {"provider": value["provider"], "currency": value["currency"],
+                        "enabled": value["enabled"],
                         "concurrency_limit": value["concurrency_limit"]})
+        return value
+
+    @app.put("/api/v1/admin/quota-schedules/{account_key:path}")
+    async def admin_quota_schedule(account_key: str, request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        if "enabled" in body and not isinstance(body["enabled"], bool):
+            raise HTTPException(400, "enabled must be a boolean")
+        try:
+            value = database.configure_quota_schedule(
+                account_key,
+                timezone_name=str(body.get("timezone") or "Europe/Berlin"),
+                reset_day=body.get("reset_day"),
+                label=str(body.get("label") or ""),
+                enabled=bool(body.get("enabled", True)),
+                limit_requests=body.get("limit_requests"),
+                limit_pages=body.get("limit_pages"),
+                limit_estimated_micro_usd=body.get("limit_estimated_micro_usd"),
+                limit_billed_micro_usd=body.get("limit_billed_micro_usd"),
+            )
+        except KeyError:
+            raise HTTPException(404, "provider account not found") from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(
+            principal_id(request),
+            "quota.schedule.configure",
+            account_key,
+            {key: value[key] for key in value if key not in {"created_at", "updated_at"}},
+        )
         return value
 
     @app.post("/api/v1/admin/quota-policies")

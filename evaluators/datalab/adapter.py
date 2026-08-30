@@ -113,6 +113,7 @@ def _attempt_report(
     *,
     state: str,
     account_key: str,
+    currency: str,
     checkpoint_key: str,
     requests: int,
     pages: int,
@@ -136,6 +137,7 @@ def _attempt_report(
             "reservation_id": reservation_id,
             "provider": "datalab",
             "account_key": account_key,
+            "currency": currency,
             "checkpoint_key": checkpoint_key,
             "state": state,
             "cache_hit": state == "cache_hit",
@@ -382,6 +384,9 @@ def main() -> int:
     source_pages = _page_count(source)
     max_pages = int(parameters.get("max_pages") or 0)
     max_cost = float(parameters.get("max_cost_usd") or 0)
+    currency = str(parameters.get("billing_currency") or "USD").upper()
+    if len(currency) != 3 or not currency.isalpha():
+        raise ValueError("billing_currency must be a three-letter ISO 4217 code")
     if source_pages <= 0:
         raise ValueError("source PDF has no pages")
     if source_pages > MAX_API_PAGES:
@@ -434,6 +439,7 @@ def main() -> int:
                 "contract": PROBE_CONTRACT,
                 "provider": "datalab",
                 "account_key": account_key,
+                "currency": currency,
                 "checkpoint_key": checkpoint_key,
                 "cache_hit": complete,
                 "checkpoint_state": (
@@ -473,7 +479,7 @@ def main() -> int:
             api_key = os.environ.get("DATALAB_API_KEY")
             if not api_key:
                 _attempt_report(
-                    request, state="released", account_key=account_key,
+                    request, state="released", account_key=account_key, currency=currency,
                     checkpoint_key=checkpoint_key, requests=0, pages=0,
                     estimated_micro_usd=0, detail="API key missing before provider access",
                 )
@@ -486,6 +492,7 @@ def main() -> int:
                         request,
                         state="rate_limited" if _rate_limited(exc) else "ambiguous",
                         account_key=account_key,
+                        currency=currency,
                         checkpoint_key=checkpoint_key,
                         requests=1,
                         pages=source_pages,
@@ -515,7 +522,7 @@ def main() -> int:
                 response = _poll(envelope["request_check_url"], api_key)
             except Exception as exc:
                 _attempt_report(
-                    request, state="ambiguous", account_key=account_key,
+                    request, state="ambiguous", account_key=account_key, currency=currency,
                     checkpoint_key=checkpoint_key,
                     requests=1 if submitted_here else 0,
                     pages=source_pages if submitted_here else 0,
@@ -551,6 +558,7 @@ def main() -> int:
             else "committed"
         ),
         account_key=account_key,
+        currency=currency,
         checkpoint_key=checkpoint_key,
         requests=(
             0

@@ -56,6 +56,7 @@ class ProviderProbe:
     pages: int
     estimated_micro_usd: int
     raw: Mapping[str, Any]
+    currency: str = "USD"
 
 
 class AdapterCancelled(RuntimeError):
@@ -178,6 +179,9 @@ def probe_provider(
                 raise ValueError(f"provider probe {key} cannot be negative")
         if not isinstance(value.get("cache_hit"), bool):
             raise ValueError("provider probe cache_hit must be a boolean")
+        currency = str(value.get("currency") or "USD").upper()
+        if len(currency) != 3 or not currency.isalpha():
+            raise ValueError("provider probe currency must be a three-letter ISO 4217 code")
         if value["cache_hit"] and any(
             value[key] for key in ("requests", "estimated_micro_usd")
         ):
@@ -191,6 +195,7 @@ def probe_provider(
             pages=value["pages"],
             estimated_micro_usd=value["estimated_micro_usd"],
             raw=value,
+            currency=currency,
         )
 
 

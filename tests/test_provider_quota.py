@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -9,7 +10,7 @@ from blobforge.converters.contract import (
 )
 from blobforge.server.app import create_app
 from blobforge.server.config import ServerSettings
-from blobforge.server.database import Conflict, Database, now_ms
+from blobforge.server.database import Conflict, Database, monthly_quota_window, now_ms
 
 
 @pytest.fixture
@@ -81,6 +82,62 @@ def _database(tmp_path):
         limit_estimated_micro_usd=32_000,
     )
     return database
+
+
+def _epoch(value: str) -> int:
+    return round(datetime.fromisoformat(value).astimezone(timezone.utc).timestamp() * 1000)
+
+
+def test_monthly_quota_window_uses_local_reset_midnight_across_dst():
+    assert monthly_quota_window(
+        _epoch("2026-08-31T12:00:00+00:00"),
+        reset_day=28,
+        timezone_name="Europe/Berlin",
+    ) == (
+        _epoch("2026-08-28T00:00:00+02:00"),
+        _epoch("2026-09-28T00:00:00+02:00"),
+    )
+    assert monthly_quota_window(
+        _epoch("2026-10-30T12:00:00+00:00"),
+        reset_day=28,
+        timezone_name="Europe/Berlin",
+    ) == (
+        _epoch("2026-10-28T00:00:00+01:00"),
+        _epoch("2026-11-28T00:00:00+01:00"),
+    )
+
+
+def test_monthly_schedule_materializes_once_and_enforces_account_currency(tmp_path):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    database.register_capabilities("hosted", [_capability()])
+    database.configure_provider_account(
+        "test:primary", "test-provider", currency="EUR", concurrency_limit=1
+    )
+    database.configure_quota_schedule(
+        "test:primary",
+        timezone_name="Europe/Berlin",
+        reset_day=28,
+        label="monthly paid allowance",
+        limit_estimated_micro_usd=12_750_000,
+        limit_billed_micro_usd=12_750_000,
+    )
+    first = database.quota_summary()
+    second = database.quota_summary()
+    assert len(first["policies"]) == len(second["policies"]) == 1
+    assert first["accounts"][0]["currency"] == "EUR"
+    assert first["schedules"][0]["reset_day"] == 28
+    assert first["policies"][0]["currency"] == "EUR"
+    assert first["policies"][0]["limit_billed_micro_usd"] == 12_750_000
+
+    _enqueue(database, "8" * 64)
+    job = _claim(database, "8" * 64)
+    with pytest.raises(Conflict, match="probe currency"):
+        database.reserve_quota(job["hash"], "hosted", job["lease_token"], _probe(job))
+    euro_probe = {**_probe(job), "currency": "EUR"}
+    assert database.reserve_quota(
+        job["hash"], "hosted", job["lease_token"], euro_probe
+    )["authorized"]
 
 
 def test_explicit_only_hosted_capability_never_claims_unassigned_work(tmp_path):
@@ -314,6 +371,41 @@ def test_provider_account_concurrency_defers_second_purchase(tmp_path):
     assert database.get_job(second_key)["retry_count"] == 0
 
 
+def test_rate_limit_releases_allowance_and_applies_shared_cooldown(tmp_path):
+    database = _database(tmp_path)
+    key = "7" * 64
+    _enqueue(database, key)
+    job = _claim(database, key)
+    reservation = database.reserve_quota(
+        key, "hosted", job["lease_token"], _probe(job)
+    )["reservation"]
+    settled = database.settle_quota(
+        reservation["id"],
+        "hosted",
+        {
+            "contract": PROVIDER_ATTEMPT_CONTRACT,
+            "reservation_id": reservation["id"],
+            "provider": "test-provider",
+            "account_key": "test:primary",
+            "checkpoint_key": f"checkpoint:{key}",
+            "state": "rate_limited",
+            "requests": 0,
+            "pages": 0,
+            "list_micro_usd": None,
+            "billed_micro_usd": None,
+            "credits_micro_usd": None,
+            "retry_after_ms": 120_000,
+        },
+    )
+    assert settled["state"] == "released"
+    blocked = database.get_job(key)
+    assert blocked["status"] == "todo"
+    assert blocked["retry_count"] == 0
+    summary = database.quota_summary()
+    assert summary["accounts"][0]["cooldown_until"] == blocked["not_before"]
+    assert "rate limited" in summary["accounts"][0]["cooldown_reason"]
+
+
 @pytest.mark.anyio
 async def test_quota_admin_and_worker_http_protocol(tmp_path):
     app = create_app(
@@ -349,6 +441,18 @@ async def test_quota_admin_and_worker_http_protocol(tmp_path):
             },
         )
         assert account.status_code == 200
+        schedule = await client.put(
+            "/api/v1/admin/quota-schedules/test%3Aprimary",
+            headers=admin,
+            json={
+                "timezone": "Europe/Berlin",
+                "reset_day": 28,
+                "label": "monthly test allowance",
+                "limit_requests": 10,
+            },
+        )
+        assert schedule.status_code == 200
+        assert schedule.json()["reset_day"] == 28
         policy = await client.post(
             "/api/v1/admin/quota-policies",
             headers=admin,

@@ -223,6 +223,7 @@ def test_mistral_canary_runtime_is_exact_and_secret_free(tmp_path):
         max_cost_usd=1.0,
         response_cache=tmp_path / "cache",
         api_rights_confirmed=True,
+        billing_currency="EUR",
     )
     assert recipe.recipe_digest == (
         "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
@@ -233,6 +234,7 @@ def test_mistral_canary_runtime_is_exact_and_secret_free(tmp_path):
     assert recipe.input_kinds == ("source", "artifact")
     assert recipe.claim_unassigned is False
     assert recipe.capability()["claim_unassigned"] is False
+    assert recipe.parameters["billing_currency"] == "EUR"
 
     cached = mistral_wiki_v3_recipe(
         max_pages=250,
@@ -319,6 +321,51 @@ def test_hosted_worker_reserves_and_settles_before_completion(tmp_path):
     assert coordinator.quota_settled[0][0] == "qres-paid"
     assert coordinator.quota_settled[0][1]["state"] == "committed"
     assert coordinator.completed[0][0] == "paid"
+
+
+def test_packaging_upload_failure_keeps_committed_provider_settlement(tmp_path):
+    base = _recipe("hosted-v1", "application/pdf")
+    recipe = AdapterRecipe(
+        **{**base.__dict__, "provider": "test-provider", "provider_account": "test:primary"}
+    )
+
+    class UploadFailureCoordinator(FakeCoordinator):
+        def upload_job_output(self, key, path, **kwargs):
+            raise RuntimeError("injected artifact upload failure")
+
+    coordinator = UploadFailureCoordinator([_job("packaging-failure", recipe, "application/pdf")])
+    probe = ProviderProbe(
+        "test-provider", "test:primary", "checkpoint:packaging-failure", False,
+        1, 8, 32_000,
+        {"contract": "dev.tionis.blobforge.provider-probe/v1", "provider": "test-provider",
+         "account_key": "test:primary", "checkpoint_key": "checkpoint:packaging-failure",
+         "cache_hit": False, "requests": 1, "pages": 8,
+         "estimated_micro_usd": 32_000},
+    )
+
+    def convert(_command, _source, output, **kwargs):
+        report = {
+            "contract": "dev.tionis.blobforge.provider-attempt/v1",
+            "reservation_id": kwargs["reservation_id"], "provider": "test-provider",
+            "account_key": "test:primary", "checkpoint_key": "checkpoint:packaging-failure",
+            "state": "committed", "requests": 1, "pages": 8,
+            "list_micro_usd": 32_000, "billed_micro_usd": 32_000,
+            "credits_micro_usd": 0,
+        }
+        Path(kwargs["attempt_report_path"]).write_text(json.dumps(report))
+        Path(output).write_bytes(b"mdaf")
+        return ConverterRunResult(Path(output), "identity", 1.0, (), report)
+
+    worker = RecipeWorker(
+        coordinator, [recipe], converter=convert,
+        prober=lambda *_args, **_kwargs: probe, heartbeat_interval=3600,
+    )
+    worker.register()
+    outcome = worker.process_once()
+    assert not outcome.success
+    assert coordinator.quota_settled[0][1]["state"] == "committed"
+    assert coordinator.failed[0][0] == "packaging-failure"
+    assert coordinator.completed == []
 
 
 def test_hosted_worker_returns_deferred_outcome_without_failure():

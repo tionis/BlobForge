@@ -169,6 +169,7 @@ def test_provider_probe_reserves_ceiling_and_reports_returned_billing(tmp_path, 
     assert probe["pages"] == 2
     assert probe["estimated_micro_usd"] == 100_000
     assert probe["estimate_basis"] == "configured-per-job-ceiling"
+    assert probe["currency"] == "USD"
     assert submissions == []
 
     output = tmp_path / "converted"
@@ -195,6 +196,7 @@ def test_provider_probe_reserves_ceiling_and_reports_returned_billing(tmp_path, 
     assert report["list_micro_usd"] == 20_000
     assert report["billed_micro_usd"] == 5_000
     assert report["credits_micro_usd"] == 15_000
+    assert report["currency"] == "USD"
     envelope = json.loads(next(cache.glob("*/*.json")).read_text(encoding="utf-8"))
     assert envelope["reservation_id"] == "qres_datalab"
 

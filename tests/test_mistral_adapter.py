@@ -204,7 +204,8 @@ def test_provider_probe_and_attempt_report_bound_the_purchase(tmp_path, monkeypa
     assert probe == {
         "contract": "dev.tionis.blobforge.provider-probe/v1",
         "provider": "mistral-ai",
-        "account_key": "mistral:test",
+            "account_key": "mistral:test",
+            "currency": "USD",
         "checkpoint_key": probe["checkpoint_key"],
         "cache_hit": False,
         "requests": 1,

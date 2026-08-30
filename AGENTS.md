@@ -38,6 +38,17 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Hosted-provider money is now bound to an immutable ISO 4217
+  account currency once quota history exists. Legacy `micro_usd` storage and
+  JSON names remain for compatibility but mean micro-units of that account
+  currency; probes and reports default to USD only for old clients and fail on
+  account mismatch. Monthly schedules use IANA-local midnight and reset days
+  1-28, transactionally materializing one immutable policy per cycle. The
+  intended production schedules are EUR 12.75 for Mistral and the currently
+  advertised USD 20 Datalab monthly free tier, both resetting on day 28 in
+  Europe/Berlin. Hosted recipes remain explicit-assignment only; the admin UI
+  supports multi-file upload with a chosen recipe and batch priority.
+
 - **2026-08-30:** Citadel's bounded hosted-provider rollout is complete for the
   success path. Mistral and Datalab each converted the same two production
   rulebooks: an eight-page durable-cache replay and a real nine-page cache

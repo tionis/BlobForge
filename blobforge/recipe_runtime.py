@@ -53,11 +53,15 @@ def mistral_wiki_v3_recipe(
     api_rights_confirmed: bool,
     cache_only: bool = False,
     provider_account: str = "mistral:primary",
+    billing_currency: str = "USD",
 ) -> AdapterRecipe:
     """Build the canary runtime without embedding credentials in metadata."""
     provider_account = provider_account.strip().lower()
     if not provider_account:
         raise ValueError("provider_account must be non-empty")
+    billing_currency = billing_currency.strip().upper()
+    if len(billing_currency) != 3 or not billing_currency.isalpha():
+        raise ValueError("billing_currency must be a three-letter ISO 4217 code")
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
     if max_cost_usd <= 0:
@@ -102,6 +106,7 @@ def mistral_wiki_v3_recipe(
             "provider_request_digest": blake3_bytes(canonical_json_bytes(raw_recipe)),
             "recipe_digest": digest,
             "provider_account": provider_account,
+            "billing_currency": billing_currency,
             "quota_managed": True,
         },
         environment=environment,
@@ -122,11 +127,15 @@ def datalab_wiki_v1_recipe(
     api_rights_confirmed: bool,
     cache_only: bool = False,
     provider_account: str = "datalab:primary",
+    billing_currency: str = "USD",
 ) -> AdapterRecipe:
     """Build the quota-managed Datalab accurate wiki runtime."""
     provider_account = provider_account.strip().lower()
     if not provider_account:
         raise ValueError("provider_account must be non-empty")
+    billing_currency = billing_currency.strip().upper()
+    if len(billing_currency) != 3 or not billing_currency.isalpha():
+        raise ValueError("billing_currency must be a three-letter ISO 4217 code")
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
     if max_cost_usd <= 0:
@@ -166,6 +175,7 @@ def datalab_wiki_v1_recipe(
             "mode": "accurate",
             "normalization_profile": "wiki-v1",
             "provider_account": provider_account,
+            "billing_currency": billing_currency,
             "provider_request_digest": blake3_bytes(canonical_json_bytes(raw_recipe)),
             "quota_managed": True,
             "recipe_digest": digest,

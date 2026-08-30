@@ -301,6 +301,7 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
     headers = {"Authorization": "Bearer client-secret"}
     source = b"%PDF-1.7\nadmin upload\n"
     digest = hashlib.sha256(source).hexdigest()
+    recipe_digest = "blake3:" + "a" * 64
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
@@ -311,7 +312,7 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert "Snapshot JSON" not in root.text
         assert "Conversion recipes" not in root.text
         assert "script-src 'self'" in root.headers["content-security-policy"]
-        assert (await client.get("/static/management-v3.js")).status_code == 200
+        assert (await client.get("/static/management-v4.js")).status_code == 200
         assert "Plan upgrades" in root.text
 
         uploaded = await client.post(
@@ -321,6 +322,7 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
                 "media_type": "application/pdf",
                 "priority": "2_high",
                 "tags": "rulebook, evaluation",
+                "recipe_digest": recipe_digest,
             },
             headers=headers,
             content=source,
@@ -328,6 +330,7 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert uploaded.status_code == 200
         assert uploaded.json()["hash"] == digest
         assert uploaded.json()["tags"] == ["rulebook", "evaluation"]
+        assert uploaded.json()["recipe_digest"] == recipe_digest
 
         listed = (await client.get(
             "/api/v1/admin/jobs", params={"search": "rulebook", "priority": "2_high"},
