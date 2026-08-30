@@ -124,7 +124,11 @@ def test_success_is_captured_then_replayed_without_api_key(tmp_path, monkeypatch
     monkeypatch.setenv("BLOBFORGE_MISTRAL_RESPONSE_CACHE", str(cache))
     monkeypatch.setenv("MISTRAL_API_KEY", "not-written-to-output")
     monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
-    monkeypatch.setattr(adapter, "version", lambda _name: "2.9.4")
+    monkeypatch.setattr(
+        adapter,
+        "version",
+        lambda name: {"mistralai": "2.9.4", "pypdf": "6.14.2"}[name],
+    )
     calls = []
     monkeypatch.setattr(
         adapter,
@@ -263,7 +267,11 @@ def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monk
     monkeypatch.setenv("BLOBFORGE_MISTRAL_RESPONSE_CACHE", str(cache))
     monkeypatch.setenv("MISTRAL_API_KEY", "one-use-test-key")
     monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
-    monkeypatch.setattr(adapter, "version", lambda _name: "2.9.4")
+    monkeypatch.setattr(
+        adapter,
+        "version",
+        lambda name: {"mistralai": "2.9.4", "pypdf": "6.14.2"}[name],
+    )
     response = _response()
     response["pages"][0]["dimensions"] = {"width": 788, "height": 1023}
     response["pages"][0]["blocks"] = [
@@ -326,7 +334,10 @@ def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monk
     assert "<table>" in text and 'colspan="2"' in text
     bundle = json.loads((wiki / "bundle.json").read_text(encoding="utf-8"))
     assert bundle["markdown_features"] == ["raw-html", "semantic-html-table-v1"]
-    assert bundle["additional_tools"][0]["name"] == "blobforge-wiki-normalizer"
+    assert bundle["additional_tools"] == [
+        {"name": "pypdf", "version": "6.14.2"},
+        {"name": "blobforge-wiki-normalizer", "version": "1.0.0"},
+    ]
     assert bundle["parameters"]["provider_request_digest"] == "blake3:" + "a" * 64
 
     wiki_v2 = tmp_path / "wiki-v2"
@@ -354,7 +365,10 @@ def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monk
     assert "- Second recovered item" in v2_text
     assert "At ♦, preserve the mechanic." in v2_text
     v2_bundle = json.loads((wiki_v2 / "bundle.json").read_text(encoding="utf-8"))
-    assert v2_bundle["additional_tools"][0]["version"] == "2.0.0"
+    assert v2_bundle["additional_tools"] == [
+        {"name": "pypdf", "version": "6.14.2"},
+        {"name": "blobforge-wiki-normalizer", "version": "2.0.0"},
+    ]
 
 
 def test_ceiling_rejects_before_cache_or_api(tmp_path, monkeypatch):

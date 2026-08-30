@@ -35,6 +35,19 @@
   deployments must give only that UID access to each provider-specific cache.
   A local Podman rebuild succeeded and image inspection returned exactly
   `10001` for the configured runtime user.
+- **Dependency gate:** Before deployment, queried open high-severity GitHub
+  dependency alerts by manifest. The two hosted environments directly parse
+  untrusted PDFs with pypdf 6.0.0, affected by two malformed-inline-image
+  infinite-loop advisories; GitHub identifies 6.14.2 as the first version
+  fixing both. Raised both isolated pins to 6.14.2 and regenerated their locks.
+  Provider bundles now record that exact pypdf version as an additional tool;
+  34 focused adapter/worker/quota tests and the complete 298-test plus
+  5-subtest suite pass with the patched environments. A fresh hosted-image
+  rebuild succeeded, and an in-container probe returned UID 10001 and pypdf
+  6.14.2.
+  Other high alerts belong to non-deployed Marker evaluation locks, the retired
+  Bunny package, or APIs outside the server execution path; they remain normal
+  repository maintenance rather than a hosted-worker deployment exception.
 
 ## 2026-08-30 (Hosted API Worker Quota Implementation)
 

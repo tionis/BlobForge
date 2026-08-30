@@ -552,6 +552,7 @@ def main() -> int:
         **(
             {
                 "additional_tools": [
+                    {"name": "pypdf", "version": version("pypdf")},
                     {
                         "name": "blobforge-wiki-normalizer",
                         "version": (

@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -687,6 +688,7 @@ def main() -> int:
         **(
             {
                 "additional_tools": [
+                    {"name": "pypdf", "version": version("pypdf")},
                     {"name": "blobforge-wiki-normalizer", "version": "1.0.0"}
                 ],
                 "markdown_features": ["raw-html", "semantic-html-table-v1"],

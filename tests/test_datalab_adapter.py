@@ -205,6 +205,7 @@ def test_wiki_profile_reuses_raw_cache_and_normalizes_tables(tmp_path, monkeypat
     monkeypatch.setenv("BLOBFORGE_DATALAB_RESPONSE_CACHE", str(cache))
     monkeypatch.setenv("DATALAB_API_KEY", "one-use-test-key")
     monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
+    monkeypatch.setattr(adapter, "version", lambda _name: "6.14.2")
     response = _response()
     separator = lambda page: f"{{{page}}}" + "-" * 48 + "\n\n"
     response["markdown"] = (
@@ -253,6 +254,10 @@ def test_wiki_profile_reuses_raw_cache_and_normalizes_tables(tmp_path, monkeypat
     assert "<table>" in text and 'colspan="2"' in text
     bundle = json.loads((wiki / "bundle.json").read_text(encoding="utf-8"))
     assert bundle["markdown_features"] == ["raw-html", "semantic-html-table-v1"]
+    assert bundle["additional_tools"] == [
+        {"name": "pypdf", "version": "6.14.2"},
+        {"name": "blobforge-wiki-normalizer", "version": "1.0.0"},
+    ]
     assert bundle["parameters"]["provider_request_digest"] == "blake3:" + "a" * 64
 
 
