@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** `pypdf` can inspect unencrypted PDFs without its optional
+  cryptography provider, but AES-encrypted PDFs fail even during the
+  network-free page-count probe. The hosted Mistral evaluator must declare
+  `cryptography` in its own isolated `pyproject.toml`/`uv.lock`, regardless of
+  the coordinator project's dependency set. The exact 436-page Cthulhu source
+  succeeds under the corrected evaluator environment; its original failure
+  made no provider request and created no quota reservation.
+
 - **2026-08-31:** A quota-managed adapter can commit provider work and then
   fail during local normalization. Its attempt report lives beneath the recipe
   worker's temporary directory, so an exception that escapes that context

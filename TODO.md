@@ -137,6 +137,8 @@ view; detailed research tasks remain in the sections below.
 - [x] Carry committed provider-attempt reports across adapter failure and
   temporary-directory cleanup so post-purchase packaging failures do not become
   false ambiguous quota records.
+- [x] Package `cryptography` in the isolated Mistral evaluator so its
+  network-free preflight can count pages in AES-encrypted PDFs.
 - [ ] Add an evidence-backed Docling table-screenshot suppression fixture;
   screenshots may remain secondary evidence but not duplicate primary tables.
 - [x] Complete the decision-sufficient blinded Mistral-wiki/Datalab-wiki

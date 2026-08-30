@@ -33,6 +33,22 @@
   idle, then retry through the checkpoint-resume path and verify the original
   reservation commits without a replacement provider request.
 
+## 2026-08-31 (Encrypted-PDF Hosted Preflight)
+
+- **Incident:** The newly ingested 436-page
+  `Cthulhu_7_Grundregelwerk.pdf` failed during the network-free Mistral quota
+  probe. Its PDF encryption uses AES, while the isolated evaluator environment
+  installed `pypdf` without its `cryptography` runtime dependency. No provider
+  request or quota reservation occurred.
+- **Correction:** Added `cryptography>=48.0.1` to the Mistral evaluator's own
+  dependency set and refreshed its frozen uv lock. The isolated evaluator
+  environment now reads all 436 pages from the exact local production source.
+  This is a runtime packaging prerequisite, not an extraction or normalization
+  recipe change, so it does not alter recipe identity.
+- **Recovery gate:** Publish and deploy the resulting hosted-worker image, then
+  retry the failed source through the normal quota probe. Do not bypass the
+  existing page and monthly spend ceilings.
+
 ## 2026-08-31 (Administrative CLI Intake)
 
 - **Objective:** Let administrators upload and prioritize local rulebook
