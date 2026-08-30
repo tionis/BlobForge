@@ -38,6 +38,16 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** The Storypath production incident is closed. Hosted image
+  `sha256:4579d53d...` from revision `cad2fb3` was deployed through a
+  queue-preserving idle drain. The retry resumed original reservation
+  `qres_1b67e099ab9729032a87fdd1`, committed exactly one request / 257 pages /
+  EUR 1.028 list exposure, created no second reservation, and published
+  validated wiki-v3 MDAF
+  `blake3:9b1d9598a5447d5f93e7de7bd820590fec74951d34f160a287c286cfceb1d4d3`.
+  The encrypted 436-page Cthulhu source now passes preflight and is deferred as
+  `todo` by the normal shared 429 cooldown without consuming another retry.
+
 - **2026-08-31:** `pypdf` can inspect unencrypted PDFs without its optional
   cryptography provider, but AES-encrypted PDFs fail even during the
   network-free page-count probe. The hosted Mistral evaluator must declare

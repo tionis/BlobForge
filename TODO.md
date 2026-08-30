@@ -139,6 +139,9 @@ view; detailed research tasks remain in the sections below.
   false ambiguous quota records.
 - [x] Package `cryptography` in the isolated Mistral evaluator so its
   network-free preflight can count pages in AES-encrypted PDFs.
+- [x] Deploy both hosted-worker repairs, recover Storypath from its original
+  paid checkpoint without repurchase, and requeue the encrypted Cthulhu source
+  under normal rate-limit and quota controls.
 - [ ] Add an evidence-backed Docling table-screenshot suppression fixture;
   screenshots may remain secondary evidence but not duplicate primary tables.
 - [x] Complete the decision-sufficient blinded Mistral-wiki/Datalab-wiki

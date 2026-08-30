@@ -32,6 +32,16 @@
   tests plus 5 subtests. Deploy the repaired hosted image while its worker is
   idle, then retry through the checkpoint-resume path and verify the original
   reservation commits without a replacement provider request.
+- **Production recovery:** GitHub Actions published hosted-worker manifest
+  `sha256:4579d53d5f019132efab36475839f30cb1acae149c6648bcdddef6030f9e7d15`
+  from revision `cad2fb3`. A queue-preserving drain let the unpaid preflight
+  lease return before deployment; the corrected image and `cryptography 50.0.1`
+  were verified before restoring scheduling. Retrying Storypath resumed
+  `qres_1b67e099ab9729032a87fdd1`, committed its original one-request/257-page
+  EUR 1.028 record, created no second reservation, and published validated MDAF
+  `blake3:9b1d9598a5447d5f93e7de7bd820590fec74951d34f160a287c286cfceb1d4d3`.
+  Its administrator-selected `2_high` priority and failure history were
+  retained. Gandalf commit `5de71540` pins and documents the deployed image.
 
 ## 2026-08-31 (Encrypted-PDF Hosted Preflight)
 
@@ -48,6 +58,11 @@
 - **Recovery gate:** Publish and deploy the resulting hosted-worker image, then
   retry the failed source through the normal quota probe. Do not bypass the
   existing page and monthly spend ceilings.
+- **Production recovery:** The corrected evaluator was deployed and the source
+  was retried without resetting its first failure or changing its `4_low`
+  priority. It passed encrypted-PDF preflight, then encountered a provider 429;
+  the shared cooldown returned it to `todo` without another retry increment or
+  charged reservation. Normal scheduling will resume it after the cooldown.
 
 ## 2026-08-31 (Administrative CLI Intake)
 
