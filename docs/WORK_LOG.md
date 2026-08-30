@@ -24,8 +24,12 @@
 - **Release correction:** The first GitHub release run failed closed before
   image publication because its runner lacked `pdftotext`; the newly added
   real enrichment tests exposed that undeclared system dependency. Added
-  `poppler-utils` to the CI setup rather than skipping the tests. The corrected
-  release run and image digests are tracked in the deployment entry.
+  `poppler-utils` to the CI setup rather than skipping the tests. Ubuntu 24.04
+  then supplied Poppler 24.02.0, which the frozen 25.03.0 recipe correctly
+  rejected. The test job now runs in Python 3.12 on Debian Trixie and installs
+  its matching Poppler line; a local clean-container probe reported exactly
+  `pdftotext version 25.03.0`. The runtime check remains fail closed. The
+  corrected release run and image digests are tracked in the deployment entry.
 - **Container hardening:** The Gandalf translation found that the hosted image
   otherwise defaulted to container root. Set its runtime user to UID 10001;
   deployments must give only that UID access to each provider-specific cache.
