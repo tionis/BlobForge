@@ -13,13 +13,27 @@
   priority, tags, and explicit source recipe.
 - **Safety:** Added DST-boundary, schedule-idempotency, currency-mismatch,
   rate-limit/cooldown, and post-purchase upload-failure tests. Hosted workers
-  remain explicit-assignment only and production provider services remain
-  disabled during implementation. No rulebook was uploaded or converted.
-- **Validation so far:** Python compilation, browser JavaScript syntax checking,
-  `git diff --check`, and 54 focused coordinator/worker/adapter/server tests
-  pass. Full suite, image publication, Citadel deployment, live schedule
-  configuration, acceptance probes, and recovery verification follow in this
-  rollout.
+  remain explicit-assignment only. No rulebook was uploaded or converted.
+- **Validation and release:** Python compilation, browser JavaScript syntax
+  checking, `git diff --check`, 54 focused tests, and the complete 306-test
+  plus 5-subtest suite passed. GitHub Actions published server manifest
+  `sha256:c8ca359aef4e4988356d78eb5dd5a97c22f02549dd1bd59dd6704b4772f1c763`
+  and hosted-worker manifest
+  `sha256:18f1be8035d07f162c684f4db431c98b3d9e47c9265e34832092d23c977f02f8`
+  from revision `f9ff3fe`.
+- **Production:** Gandalf deployed the coordinator and both concurrency-one
+  workers. Mistral has an EUR 12.75 monthly estimate and billed-exposure cap;
+  Datalab has a USD 20 cap matching its current advertised free tier. Both
+  reset at local midnight on day 28 in `Europe/Berlin`; the active cycle is
+  2026-08-28 through 2026-09-28 and started at zero usage. Both exact-recipe
+  workers registered idle with `claim_unassigned=false`, leaving the 1,377
+  done / 431 todo split unchanged. The public health endpoint passed.
+- **Recovery:** Reconciled the backup profile so its resume hook starts both
+  newly enabled workers. A fresh quiesced snapshot completed successfully,
+  all services resumed idle, and an isolated restore of that snapshot passed
+  SQLite integrity verification. Final live assertions again found all three
+  services active, both workers idle, the queue unchanged, and zero current
+  monthly exposure.
 
 ## 2026-08-30 (First Citadel Hosted-Worker Canary)
 

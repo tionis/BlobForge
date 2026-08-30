@@ -165,11 +165,12 @@ view; detailed research tasks remain in the sections below.
 - [x] Support policy-constrained per-job recipe overrides and a coordinator
   apply endpoint that recomputes and audits the actor, complete features,
   policy identity, exact recipe, estimate, status, and rationale.
-- [ ] Deploy exact-recipe worker capabilities incrementally and verify that a
+- [x] Deploy exact-recipe worker capabilities incrementally and verify that a
   multipurpose supervisor safely dispatches isolated adapters between jobs.
   The generic dispatcher, bounded Mistral wiki-v3 canary runtime, hosted-worker
-  image, alternating-media unit canary, and explicit-only hosted claim fence
-  are implemented; coordinator and production canaries remain.
+  image, alternating-media unit canary, explicit-only hosted claim fence,
+  coordinator deployment, production canaries, and idle production
+  registration are verified.
 - [x] Define the hosted API-worker deployment and quota architecture, including
   separate provider security boundaries, two-phase preflight/reservation,
   checkpoint-aware settlement, integer money accounting, provider cooldowns,
@@ -187,15 +188,17 @@ view; detailed research tasks remain in the sections below.
 - [x] Deploy separate concurrency-one Mistral and Datalab Quadlets on Citadel
   with dedicated worker credentials, provider keys, persistent checkpoint
   volumes, and recovery coverage. The digest-pinned hosted image, Gandalf
-  integration, disabled-by-default units, provider caches, and quiesced
-  backup/restore test are verified in production.
+  integration, explicit-assignment-only workers, provider caches, and
+  quiesced backup/restore test are verified in production.
 - [x] Run cache-hit and bounded cache-miss production canaries for both hosted
   recipes with rollback to retained legacy artifacts. Two rulebooks now retain
   legacy, Mistral, and Datalab MDAFs; four reservations committed without
   retries, and both workers returned to stopped steady state.
-- [ ] Exercise quota exhaustion, a bounded overage, provider cooldown,
+- [x] Exercise quota exhaustion, a bounded overage, provider cooldown,
   crash-after-checkpoint, ambiguous-outcome reconciliation, and
-  packaging-failure recovery before enabling unattended paid batches.
+  packaging-failure recovery through integration failure injection before
+  enabling unattended paid batches; retain the earlier bounded paid
+  success-path canaries as provider-side evidence.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
   immutable artifact identities.
 

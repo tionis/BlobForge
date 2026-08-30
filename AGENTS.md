@@ -38,6 +38,21 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Citadel now runs the digest-pinned `f9ff3fe` coordinator and
+  both concurrency-one hosted workers. Mistral is capped at EUR 12.75 and
+  Datalab at the currently advertised USD 20 free tier per local monthly cycle;
+  both reset at midnight on day 28 in `Europe/Berlin`. The active 2026-08-28 to
+  2026-09-28 windows began with zero usage. Both workers registered idle on
+  their exact recipe/provider account with `claim_unassigned=false`, so the
+  1,377 done / 431 unassigned queue remained unchanged. Exhaustion, bounded
+  overage, cooldown, crash/checkpoint, ambiguity/reconciliation, and
+  post-purchase packaging failure are covered by integration tests, while the
+  earlier paid canaries cover provider success. A new quiesced production
+  snapshot, automatic coordinator/worker resume, isolated restore, SQLite
+  integrity check, public health probe, and final idle-state assertions passed.
+  Administrators may now upload `~/rulebooks` through the multi-file intake UI
+  with an explicit recipe and shared priority; never auto-route that corpus.
+
 - **2026-08-31:** Hosted-provider money is now bound to an immutable ISO 4217
   account currency once quota history exists. Legacy `micro_usd` storage and
   JSON names remain for compatibility but mean micro-units of that account

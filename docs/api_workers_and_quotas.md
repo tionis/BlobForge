@@ -1,6 +1,7 @@
 # Hosted API Workers and Quota Accounting
 
-Status: implemented; bounded Citadel success-path canaries complete
+Status: implemented and deployed; bounded Citadel success-path canaries and
+failure-injection coverage complete
 
 Date: 2026-08-30
 
@@ -289,10 +290,20 @@ The catalog ended with four new hosted artifacts, all four reservations in
 `committed`, no retries, SQLite `quick_check=ok`, and the original 1,377 done /
 431 todo job split.
 
-After the campaign both provider units were returned to disabled/inactive
-steady state. A quiesced Restic snapshot including SQLite, immutable objects,
-and both response caches completed in 16 seconds. An isolated full restore
-completed in 221 seconds and passed its recovery verification. Unattended paid
-batches remain gated on the failure-mode canaries in the rollout sequence:
-quota exhaustion/override, cooldown, crash after checkpoint, ambiguous outcome,
-and packaging failure.
+After the campaign both provider units were initially returned to
+disabled/inactive steady state. A quiesced Restic snapshot including SQLite,
+immutable objects, and both response caches completed in 16 seconds. An
+isolated full restore completed in 221 seconds and passed its recovery
+verification.
+
+On 2026-08-31, revision `f9ff3fe` and its digest-pinned server/hosted images
+were deployed with both concurrency-one workers enabled. Integration tests
+exercise exhaustion, a single-use bounded override, shared cooldown,
+crash-after-checkpoint resume, ambiguous reconciliation, and packaging failure
+after provider commit. Production registration then proved each worker idle on
+its exact account and recipe with `claim_unassigned=false`; the 1,377 done / 431
+todo split did not change and the new monthly windows started at zero usage.
+A fresh quiesced snapshot, service resume, isolated restore, SQLite integrity
+check, and post-restore worker/queue/quota assertions all passed. The workers
+may therefore remain online for explicitly assigned jobs, but must never be
+changed to claim unassigned work without a separate routing decision.
