@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from ..mdaf import blake3_bytes, canonical_json_bytes
+from ..recipe_lifecycle import assert_reprocessable, load_known_recipe
 
 
 def now_ms() -> int:
@@ -84,7 +85,10 @@ class Database:
                     recipe_digest TEXT, recipe_json TEXT, worker_id TEXT, lease_token TEXT,
                     lease_expires_at INTEGER, progress_json TEXT, error_message TEXT,
                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-                    completed_at INTEGER, done_seq INTEGER
+                    completed_at INTEGER, done_seq INTEGER,
+                    input_kind TEXT NOT NULL DEFAULT 'source',
+                    input_artifact_id INTEGER,
+                    parent_recipe_digest TEXT
                 );
                 CREATE INDEX IF NOT EXISTS jobs_claim_idx ON jobs(status, priority, created_at);
                 CREATE INDEX IF NOT EXISTS jobs_done_idx ON jobs(status, done_seq);
@@ -101,12 +105,14 @@ class Database:
                     recipe_json TEXT NOT NULL, media_types_json TEXT NOT NULL,
                     artifact_type TEXT NOT NULL, last_seen INTEGER NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1, display_name TEXT NOT NULL DEFAULT '',
-                    notes TEXT NOT NULL DEFAULT ''
+                    notes TEXT NOT NULL DEFAULT '',
+                    input_kinds_json TEXT NOT NULL DEFAULT '["source"]'
                 );
                 CREATE TABLE IF NOT EXISTS worker_recipes (
                     worker_id TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
                     recipe_digest TEXT NOT NULL REFERENCES recipes(recipe_digest) ON DELETE CASCADE,
                     last_seen INTEGER NOT NULL,
+                    input_kinds_json TEXT NOT NULL DEFAULT '["source"]',
                     PRIMARY KEY(worker_id, recipe_digest)
                 );
                 CREATE TABLE IF NOT EXISTS workers (
@@ -157,6 +163,14 @@ class Database:
             ):
                 if name not in artifact_columns:
                     db.execute(f"ALTER TABLE artifacts ADD COLUMN {name} {declaration}")
+            job_columns = {row[1] for row in db.execute("PRAGMA table_info(jobs)")}
+            for name, declaration in (
+                ("input_kind", "TEXT NOT NULL DEFAULT 'source'"),
+                ("input_artifact_id", "INTEGER"),
+                ("parent_recipe_digest", "TEXT"),
+            ):
+                if name not in job_columns:
+                    db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {declaration}")
             recipe_columns = {row[1] for row in db.execute("PRAGMA table_info(recipes)")}
             for name, declaration in (
                 ("enabled", "INTEGER NOT NULL DEFAULT 1"),
@@ -165,6 +179,19 @@ class Database:
             ):
                 if name not in recipe_columns:
                     db.execute(f"ALTER TABLE recipes ADD COLUMN {name} {declaration}")
+            if "input_kinds_json" not in recipe_columns:
+                db.execute(
+                    "ALTER TABLE recipes ADD COLUMN input_kinds_json "
+                    "TEXT NOT NULL DEFAULT '[\"source\"]'"
+                )
+            worker_recipe_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(worker_recipes)")
+            }
+            if "input_kinds_json" not in worker_recipe_columns:
+                db.execute(
+                    "ALTER TABLE worker_recipes ADD COLUMN input_kinds_json "
+                    "TEXT NOT NULL DEFAULT '[\"source\"]'"
+                )
             worker_columns = {row[1] for row in db.execute("PRAGMA table_info(workers)")}
             if "managed_by" not in worker_columns:
                 db.execute("ALTER TABLE workers ADD COLUMN managed_by TEXT NOT NULL DEFAULT 'dynamic'")
@@ -285,8 +312,15 @@ class Database:
         recipe = capability.get("recipe") if isinstance(capability.get("recipe"), dict) else {}
         backend = str(capability.get("backend") or recipe.get("engine") or "unknown").strip().lower()
         media_types = sorted({str(value) for value in capability.get("media_types", []) if value})
+        input_kinds = sorted(
+            {str(value) for value in capability.get("input_kinds", ["source"]) if value}
+        )
         if not digest or not media_types:
             raise ValueError("each worker capability needs recipe_digest and media_types")
+        if not input_kinds or any(
+            value not in {"source", "artifact"} for value in input_kinds
+        ):
+            raise ValueError("capability input_kinds must contain source and/or artifact")
         if (
             digest.startswith("blake3:")
             and blake3_bytes(canonical_json_bytes(recipe)) != digest
@@ -297,6 +331,7 @@ class Database:
             "backend": backend,
             "recipe": recipe,
             "media_types": media_types,
+            "input_kinds": input_kinds,
             "artifact_type": str(capability.get("artifact_type") or "mdaf/v1"),
         }
 
@@ -306,14 +341,17 @@ class Database:
         with self.transaction() as db:
             db.execute("DELETE FROM worker_recipes WHERE worker_id=?", (worker_id,))
             for value in normalized:
-                db.execute("""INSERT INTO recipes(recipe_digest,backend,recipe_json,media_types_json,artifact_type,last_seen)
-                    VALUES(?,?,?,?,?,?) ON CONFLICT(recipe_digest) DO UPDATE SET backend=excluded.backend,
+                db.execute("""INSERT INTO recipes(recipe_digest,backend,recipe_json,media_types_json,artifact_type,last_seen,input_kinds_json)
+                    VALUES(?,?,?,?,?,?,?) ON CONFLICT(recipe_digest) DO UPDATE SET backend=excluded.backend,
                     recipe_json=excluded.recipe_json,media_types_json=excluded.media_types_json,
-                    artifact_type=excluded.artifact_type,last_seen=excluded.last_seen""",
+                    artifact_type=excluded.artifact_type,last_seen=excluded.last_seen,
+                    input_kinds_json=excluded.input_kinds_json""",
                     (value["recipe_digest"], value["backend"], json.dumps(value["recipe"], sort_keys=True),
-                     json.dumps(value["media_types"]), value["artifact_type"], timestamp))
-                db.execute("INSERT INTO worker_recipes(worker_id,recipe_digest,last_seen) VALUES(?,?,?)",
-                           (worker_id, value["recipe_digest"], timestamp))
+                     json.dumps(value["media_types"]), value["artifact_type"], timestamp,
+                     json.dumps(value["input_kinds"])))
+                db.execute("INSERT INTO worker_recipes(worker_id,recipe_digest,last_seen,input_kinds_json) VALUES(?,?,?,?)",
+                           (worker_id, value["recipe_digest"], timestamp,
+                            json.dumps(value["input_kinds"])))
         return normalized
 
     def recipes(self, media_type: str | None = None) -> list[dict[str, Any]]:
@@ -328,6 +366,7 @@ class Database:
             value = dict(row)
             value["recipe"] = json.loads(value.pop("recipe_json"))
             value["media_types"] = json.loads(value.pop("media_types_json"))
+            value["input_kinds"] = json.loads(value.pop("input_kinds_json"))
             value["enabled"] = bool(value["enabled"])
             if media_type is None or media_type in value["media_types"]:
                 result.append(value)
@@ -489,14 +528,44 @@ class Database:
         if not normalized:
             return None
         with self.transaction() as db:
+            registered_artifact_inputs = {
+                str(row["recipe_digest"])
+                for row in db.execute(
+                    "SELECT recipe_digest,input_kinds_json FROM worker_recipes "
+                    "WHERE worker_id=?",
+                    (worker_id,),
+                )
+                if "artifact" in json.loads(row["input_kinds_json"])
+            }
+            normalized = [
+                {
+                    **value,
+                    "input_kinds": [
+                        kind
+                        for kind in value["input_kinds"]
+                        if kind != "artifact"
+                        or value["recipe_digest"] in registered_artifact_inputs
+                    ],
+                }
+                for value in normalized
+            ]
+            normalized = [value for value in normalized if value["input_kinds"]]
+            if not normalized:
+                return None
             self.recover_expired(db)
             placeholders = ",".join("?" for _ in priorities) or "''"
             predicates: list[str] = []
             capability_params: list[Any] = []
             for capability in normalized:
                 media_placeholders = ",".join("?" for _ in capability["media_types"])
-                predicates.append(f"(s.media_type IN ({media_placeholders}) AND (j.recipe_digest IS NULL OR j.recipe_digest=?))")
+                input_placeholders = ",".join("?" for _ in capability["input_kinds"])
+                predicates.append(
+                    f"(s.media_type IN ({media_placeholders}) "
+                    f"AND j.input_kind IN ({input_placeholders}) "
+                    "AND (j.recipe_digest IS NULL OR j.recipe_digest=?))"
+                )
                 capability_params.extend(capability["media_types"])
+                capability_params.extend(capability["input_kinds"])
                 capability_params.append(capability["recipe_digest"])
             row = db.execute(f"""SELECT j.source_key FROM jobs j JOIN sources s USING(source_key)
                 WHERE j.status='todo' AND j.priority IN ({placeholders}) AND ({' OR '.join(predicates)})
@@ -505,9 +574,10 @@ class Database:
             if not row:
                 return None
             key = str(row[0]); lease = secrets.token_urlsafe(24)
-            media_type, requested_recipe = db.execute("""SELECT s.media_type,j.recipe_digest FROM jobs j
+            media_type, requested_recipe, input_kind = db.execute("""SELECT s.media_type,j.recipe_digest,j.input_kind FROM jobs j
                 JOIN sources s USING(source_key) WHERE j.source_key=?""", (key,)).fetchone()
             selected = next(value for value in normalized if media_type in value["media_types"] and
+                            input_kind in value["input_kinds"] and
                             (requested_recipe is None or requested_recipe == value["recipe_digest"]))
             db.execute("""UPDATE jobs SET status='processing',worker_id=?,lease_token=?,lease_expires_at=?,
                 recipe_digest=COALESCE(recipe_digest,?),recipe_json=COALESCE(recipe_json,?),updated_at=? WHERE source_key=?""",
@@ -574,6 +644,13 @@ class Database:
                 row = db.execute("SELECT * FROM artifacts WHERE source_key=? ORDER BY created_at DESC LIMIT 1", (key,)).fetchone()
         return dict(row) if row else None
 
+    def artifact_by_id(self, artifact_id: int) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT * FROM artifacts WHERE id=?", (artifact_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
     def artifacts(self, key: str) -> list[dict[str, Any]]:
         with self.connect() as db:
             rows = [dict(row) for row in db.execute("SELECT * FROM artifacts WHERE source_key=? ORDER BY created_at DESC", (key,))]
@@ -590,13 +667,128 @@ class Database:
                 raise KeyError(key)
             artifact = db.execute("SELECT 1 FROM artifacts WHERE source_key=? AND recipe_digest=?", (key, recipe)).fetchone()
             if artifact:
-                db.execute("UPDATE jobs SET status='done',recipe_digest=?,updated_at=? WHERE source_key=?", (recipe, timestamp, key))
+                db.execute("""UPDATE jobs SET status='done',recipe_digest=?,input_kind='source',
+                    input_artifact_id=NULL,parent_recipe_digest=NULL,updated_at=? WHERE source_key=?""",
+                    (recipe, timestamp, key))
                 action = "selected"
             else:
                 db.execute("""UPDATE jobs SET status='todo',recipe_digest=?,recipe_json=NULL,worker_id=NULL,
-                    lease_token=NULL,lease_expires_at=NULL,error_message=NULL,updated_at=? WHERE source_key=?""", (recipe, timestamp, key))
+                    lease_token=NULL,lease_expires_at=NULL,error_message=NULL,input_kind='source',
+                    input_artifact_id=NULL,parent_recipe_digest=NULL,completed_at=NULL,done_seq=NULL,
+                    updated_at=? WHERE source_key=?""", (recipe, timestamp, key))
                 action = "queued"
         return {"action": action, "job": self.get_job(key)}
+
+    @staticmethod
+    def _recipe_from_db(db: sqlite3.Connection, digest: str) -> dict[str, Any]:
+        row = db.execute(
+            "SELECT recipe_json FROM recipes WHERE recipe_digest=?", (digest,)
+        ).fetchone()
+        if row:
+            value = json.loads(row[0])
+            if isinstance(value, dict):
+                return value
+        return load_known_recipe(digest)
+
+    def plan_reprocessing(
+        self,
+        target_recipe: str,
+        source_recipe: str,
+        *,
+        source_keys: list[str] | None = None,
+        execute: bool = False,
+        priority: str | None = None,
+    ) -> dict[str, Any]:
+        """Plan or atomically queue artifact-input derivatives."""
+        timestamp = now_ms()
+        with self.transaction() as db:
+            target_row = db.execute(
+                "SELECT recipe_json,enabled FROM recipes WHERE recipe_digest=?",
+                (target_recipe,),
+            ).fetchone()
+            if not target_row:
+                raise KeyError(target_recipe)
+            if not bool(target_row["enabled"]):
+                raise Conflict("target recipe is retired")
+            target_definition = json.loads(target_row["recipe_json"])
+            source_definition = self._recipe_from_db(db, source_recipe)
+            assert_reprocessable(source_definition, target_definition)
+
+            filters = ["a.recipe_digest=?"]
+            params: list[Any] = [source_recipe]
+            requested_count = None
+            if source_keys is not None:
+                source_keys = list(dict.fromkeys(source_keys))
+                requested_count = len(source_keys)
+                if not source_keys:
+                    return {
+                        "target_recipe_digest": target_recipe,
+                        "source_recipe_digest": source_recipe,
+                        "eligible": 0,
+                        "already_present": 0,
+                        "processing": 0,
+                        "queued": 0,
+                        "requested": 0,
+                        "not_found": 0,
+                        "eligible_source_keys": [],
+                    }
+                placeholders = ",".join("?" for _ in source_keys)
+                filters.append(f"a.source_key IN ({placeholders})")
+                params.extend(source_keys)
+            rows = list(
+                db.execute(
+                    f"""SELECT a.id,a.source_key,j.status,
+                        EXISTS(SELECT 1 FROM artifacts target
+                          WHERE target.source_key=a.source_key
+                          AND target.recipe_digest=?) AS target_exists
+                        FROM artifacts a JOIN jobs j USING(source_key)
+                        WHERE {' AND '.join(filters)} ORDER BY a.source_key""",
+                    (target_recipe, *params),
+                )
+            )
+            already = [row for row in rows if row["target_exists"]]
+            processing = [
+                row for row in rows if not row["target_exists"] and row["status"] == "processing"
+            ]
+            eligible = [
+                row for row in rows if not row["target_exists"] and row["status"] != "processing"
+            ]
+            if execute:
+                for row in eligible:
+                    fields = "priority=?," if priority is not None else ""
+                    values: list[Any] = [priority] if priority is not None else []
+                    db.execute(
+                        f"""UPDATE jobs SET {fields}status='todo',recipe_digest=?,recipe_json=?,
+                            worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                            progress_json=NULL,error_message=NULL,retry_count=0,
+                            completed_at=NULL,done_seq=NULL,input_kind='artifact',
+                            input_artifact_id=?,parent_recipe_digest=?,updated_at=?
+                            WHERE source_key=?""",
+                        (
+                            *values,
+                            target_recipe,
+                            json.dumps(target_definition, sort_keys=True),
+                            row["id"],
+                            source_recipe,
+                            timestamp,
+                            row["source_key"],
+                        ),
+                    )
+            return {
+                "target_recipe_digest": target_recipe,
+                "source_recipe_digest": source_recipe,
+                "eligible": len(eligible),
+                "already_present": len(already),
+                "processing": len(processing),
+                "queued": len(eligible) if execute else 0,
+                "requested": requested_count,
+                "not_found": (
+                    requested_count - len(rows)
+                    if requested_count is not None
+                    else None
+                ),
+                "eligible_source_keys": [str(row["source_key"]) for row in eligible],
+            }
 
     def statuses(self, keys: list[str]) -> dict[str, Any]:
         if not keys: return {}

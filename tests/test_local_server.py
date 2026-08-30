@@ -9,8 +9,16 @@ from authlib.integrations.base_client.errors import OAuthError
 import blobforge.server.app as server_app
 from blobforge.server.app import create_app
 from blobforge.server.config import ServerSettings
-from blobforge.mdaf import blake3_bytes, canonical_json_bytes
-from blobforge.recipe_runtime import mistral_wiki_v2_recipe
+from blobforge.mdaf import (
+    MdafMemberInput,
+    MdafSource,
+    blake3_bytes,
+    build_mdaf,
+    canonical_json_bytes,
+)
+from blobforge.mdaf.builder import activity, markdown_outline
+from blobforge.recipe_lifecycle import RECIPE_MEMBER_PATH
+from blobforge.recipe_runtime import mistral_wiki_v3_recipe
 
 
 def _zip_bytes() -> bytes:
@@ -303,7 +311,8 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert "Snapshot JSON" not in root.text
         assert "Conversion recipes" not in root.text
         assert "script-src 'self'" in root.headers["content-security-policy"]
-        assert (await client.get("/static/management-v1.js")).status_code == 200
+        assert (await client.get("/static/management-v2.js")).status_code == 200
+        assert "Plan upgrades" in root.text
 
         uploaded = await client.post(
             "/api/v1/admin/uploads",
@@ -548,7 +557,7 @@ async def test_versioned_route_is_recomputed_exact_and_fully_audited(tmp_path):
         "priority": "3_normal",
         "original_name": "rulebook.pdf",
     })
-    runtime = mistral_wiki_v2_recipe(
+    runtime = mistral_wiki_v3_recipe(
         max_pages=100,
         max_cost_usd=1.0,
         response_cache=tmp_path / "cache",
@@ -620,6 +629,245 @@ async def test_versioned_route_is_recomputed_exact_and_fully_audited(tmp_path):
         assert "no active worker" in " ".join(
             unavailable.json()["detail"]["rationale"]
         )
+
+
+@pytest.mark.anyio
+async def test_bulk_reprocessing_claims_parent_artifact_not_source(tmp_path):
+    app = create_app(
+        ServerSettings(
+            data_dir=tmp_path,
+            client_token="client-secret",
+            worker_tokens={"hosted": "worker-secret"},
+        )
+    )
+    source_key = "b" * 64
+    source_recipe = (
+        "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026"
+    )
+    app.state.database.enqueue(
+        source_key,
+        {
+            "media_type": "application/pdf",
+            "priority": "3_normal",
+            "original_name": "rulebook.pdf",
+        },
+    )
+    parent_activity = activity(
+        activity_id="activity:convert",
+        kind="document-extraction",
+        tools=[{"name": "fixture", "version": "1.0.0"}],
+        models=[],
+        inputs=["source:document"],
+        outputs=["text.md", "provenance.json", "outline.json"],
+        parameters={"recipe_digest": source_recipe},
+    )
+    parent_file = tmp_path / "fixture-parent.mdaf"
+    parent_build = build_mdaf(
+        parent_file,
+        text="# Parent\n",
+        title="Fixture",
+        sources=[
+            MdafSource(
+                "document", "application/pdf", "blake3:" + "1" * 64
+            )
+        ],
+        activities=[parent_activity],
+        producer={"name": "blobforge-test", "version": "1.0.0"},
+        outline=markdown_outline("# Parent\n"),
+    )
+    parent_bytes = parent_file.read_bytes()
+    parent_identity = parent_build.identity
+    parent_path = app.state.storage.artifact_path(
+        source_key, source_recipe, parent_identity
+    )
+    parent_path.parent.mkdir(parents=True)
+    parent_path.write_bytes(parent_bytes)
+    inspected = app.state.storage.inspect(parent_path)
+    with app.state.database.transaction() as db:
+        db.execute(
+            """INSERT INTO artifacts(
+                source_key,recipe_digest,identity,storage_path,media_type,
+                artifact_type,size_bytes,sha256,blake3,provenance_json,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                source_key,
+                source_recipe,
+                parent_identity,
+                str(parent_path.relative_to(tmp_path)),
+                "application/zip",
+                "mdaf/v1",
+                inspected.size,
+                inspected.sha256,
+                inspected.blake3,
+                "{}",
+                1,
+            ),
+        )
+    runtime = mistral_wiki_v3_recipe(
+        max_pages=100,
+        max_cost_usd=1.0,
+        response_cache=tmp_path / "cache",
+        api_rights_confirmed=True,
+    )
+    admin = {"Authorization": "Bearer client-secret"}
+    worker = {"Authorization": "Bearer worker-secret"}
+    body = {
+        "source_recipe_digest": source_recipe,
+        "target_recipe_digest": runtime.recipe_digest,
+    }
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        source_only = {**runtime.capability(), "input_kinds": ["source"]}
+        registered = await client.post(
+            "/api/v1/workers/register",
+            headers=worker,
+            json={"worker_id": "hosted", "capabilities": [source_only]},
+        )
+        assert registered.status_code == 200
+        assert registered.json()["capabilities"][0]["input_kinds"] == ["source"]
+
+        preview = await client.post(
+            "/api/v1/admin/reprocessing", headers=admin, json=body
+        )
+        assert preview.status_code == 200
+        assert preview.json()["eligible"] == 1
+        assert preview.json()["queued"] == 0
+        assert app.state.database.get_job(source_key)["input_kind"] == "source"
+
+        queued = await client.post(
+            "/api/v1/admin/reprocessing",
+            headers=admin,
+            json={**body, "execute": True, "priority": "4_low"},
+        )
+        assert queued.status_code == 200
+        assert queued.json()["queued"] == 1
+        job = app.state.database.get_job(source_key)
+        assert job["input_kind"] == "artifact"
+        assert job["parent_recipe_digest"] == source_recipe
+        assert job["priority"] == "4_low"
+
+        # A worker cannot gain parent-artifact access merely by claiming a
+        # broader capability than it registered.
+        empty_claim = await client.post(
+            "/api/v1/jobs/claim",
+            headers=worker,
+            json={
+                "worker_id": "hosted",
+                "priorities": ["4_low"],
+                "capabilities": [runtime.capability()],
+            },
+        )
+        assert empty_claim.json()["job"] is None
+
+        registered = await client.post(
+            "/api/v1/workers/register",
+            headers=worker,
+            json={"worker_id": "hosted", "capabilities": [runtime.capability()]},
+        )
+        assert registered.json()["capabilities"][0]["input_kinds"] == [
+            "artifact",
+            "source",
+        ]
+
+        claim = (
+            await client.post(
+                "/api/v1/jobs/claim",
+                headers=worker,
+                json={
+                    "worker_id": "hosted",
+                    "priorities": ["4_low"],
+                    "capabilities": [runtime.capability()],
+                },
+            )
+        ).json()["job"]
+        assert claim["input_kind"] == "artifact"
+        assert claim["input"]["kind"] == "artifact"
+        assert claim["input"]["recipe_digest"] == source_recipe
+        assert (await client.get(claim["input"]["url"])).content == parent_bytes
+
+        target_recipe = runtime.recipe
+        derivative_activity = activity(
+            activity_id="activity:postprocess",
+            kind="document-normalization",
+            tools=[{"name": "fixture", "version": "2.0.0"}],
+            models=[],
+            inputs=["source:document"],
+            outputs=[
+                "text.md",
+                "provenance.json",
+                "outline.json",
+                RECIPE_MEMBER_PATH,
+            ],
+            parameters={"recipe_digest": runtime.recipe_digest},
+        )
+        derivative_file = tmp_path / "fixture-derivative.mdaf"
+        derivative = build_mdaf(
+            derivative_file,
+            text="# Derived\n",
+            title="Fixture",
+            sources=[
+                MdafSource(
+                    "document", "application/pdf", "blake3:" + "1" * 64
+                )
+            ],
+            activities=[derivative_activity],
+            producer={"name": "blobforge-test", "version": "1.0.0"},
+            extra_members=[
+                MdafMemberInput(
+                    RECIPE_MEMBER_PATH,
+                    canonical_json_bytes(target_recipe),
+                    "extension",
+                    "activity:postprocess",
+                    "application/json",
+                    namespace="dev.tionis.blobforge",
+                )
+            ],
+            outline=markdown_outline("# Derived\n"),
+            derived_from=[parent_identity],
+        )
+        upload = (
+            await client.post(
+                f"/api/v1/jobs/{source_key}/upload-url",
+                headers=worker,
+                json={
+                    "worker_id": "hosted",
+                    "lease_token": claim["lease_token"],
+                },
+            )
+        ).json()
+        assert (
+            await client.put(upload["url"], content=derivative_file.read_bytes())
+        ).status_code == 200
+        completed = await client.post(
+            f"/api/v1/jobs/{source_key}/complete",
+            headers=worker,
+            json={
+                "worker_id": "hosted",
+                "lease_token": claim["lease_token"],
+                "result": {
+                    "artifact_type": "mdaf/v1",
+                    "logical_identity": derivative.identity,
+                    "media_type": "application/zip",
+                    "recipe_digest": runtime.recipe_digest,
+                    "execution_mode": "artifact",
+                },
+            },
+        )
+        assert completed.status_code == 200
+        artifacts = app.state.database.artifacts(source_key)
+        assert {item["recipe_digest"] for item in artifacts} == {
+            source_recipe,
+            runtime.recipe_digest,
+        }
+        assert next(
+            item["identity"]
+            for item in artifacts
+            if item["recipe_digest"] == runtime.recipe_digest
+        ) == derivative.identity
+        event = app.state.database.audit_events(1)[0]
+        assert event["action"] == "artifact.reprocess.bulk"
+        assert event["detail"]["queued"] == 1
 
 
 @pytest.mark.anyio

@@ -25,7 +25,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 if str(REPOSITORY) not in sys.path:
     sys.path.insert(0, str(REPOSITORY))
 
-from blobforge.normalization import normalize_mistral_pages, referenced_asset_names
+from blobforge.normalization import referenced_asset_names, render_mistral_response
 
 CONTRACT = "dev.tionis.blobforge.converter-bundle/v1"
 CACHE_CONTRACT = "dev.tionis.blobforge.mistral-response/v1"
@@ -325,80 +325,25 @@ def main() -> int:
             _write_cached_response(response_path, request_id, request_value, native)
             cache_status = "captured"
 
-    pages = _validate_response(native, page_count)
+    _validate_response(native, page_count)
     (native_dir / "response.json").write_text(
         json.dumps(native, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    normalization_stats = None
-    if normalization_profile in {"wiki-v1", "wiki-v2"}:
-        normalized_pages, normalization_stats = normalize_mistral_pages(
-            pages,
-            normalize_lists=normalization_profile == "wiki-v2",
-        )
-    else:
-        normalized_pages = [page["markdown"] for page in pages]
-
-    markdown = ""
-    mappings = []
+    rendered = render_mistral_response(
+        native,
+        normalization_profile=normalization_profile,
+        source_pages=page_count,
+    )
+    markdown = rendered.text
+    normalization_stats = rendered.normalization_stats
     asset_media_types: dict[str, str] = {}
-    for page_number, page in enumerate(pages):
-        page_markdown = normalized_pages[page_number]
-        replacements: dict[str, str] = {}
-        for image_index, image in enumerate(page.get("images", []) or []):
-            if not isinstance(image, dict):
-                raise ValueError(f"Mistral page {page_number} contains a malformed image")
-            original_id = str(image.get("id") or f"page-{page_number}-image-{image_index}")
-            image_data = image.get("image_base64")
-            if not image_data:
-                continue
-            decoded, declared_media_type = _decode_image(str(image_data))
-            media_type = _image_media_type(decoded, declared_media_type)
-            name = _asset_name(page_number, image_index, original_id, media_type)
-            (assets / name).write_bytes(decoded)
-            asset_media_types[name] = media_type
-            link_name = Path(original_id).name
-            if link_name in replacements:
-                raise ValueError(
-                    f"Mistral page {page_number} repeats image id basename {link_name!r}"
-                )
-            replacements[link_name] = name
-        page_markdown = LINK_RE.sub(
-            lambda match: (
-                f"{match.group(1)}assets/{replacements[Path(match.group(2)).name]}{match.group(3)}"
-                if Path(match.group(2)).name in replacements
-                else match.group(0)
-            ),
-            page_markdown,
-        )
-        if markdown:
-            markdown += "\n\n"
-        start = len(markdown.encode("utf-8"))
-        markdown += page_markdown
-        end = len(markdown.encode("utf-8"))
-        if end > start:
-            mapping: dict[str, Any] = {
-                "document": {"start": start, "end": end},
-                "source": {
-                    "source_id": "document",
-                    "selectors": [
-                        {
-                            "type": "interval",
-                            "unit": "page",
-                            "start": page_number,
-                            "end": page_number + 1,
-                        }
-                    ],
-                },
-                "method": "dev.tionis.blobforge/mistral-ocr-page",
-            }
-            confidence = _page_confidence(page)
-            if confidence is not None:
-                mapping["confidence"] = confidence
-            mappings.append(mapping)
+    for name, (data_bytes, media_type) in rendered.assets.items():
+        (assets / name).write_bytes(data_bytes)
+        asset_media_types[name] = media_type
     (data / "text.md").write_text(markdown, encoding="utf-8")
     (data / "source-map.json").write_text(
-        json.dumps({"mappings": mappings, "references": []}, indent=2) + "\n",
+        json.dumps(rendered.source_map, indent=2) + "\n",
         encoding="utf-8",
     )
     members = [

@@ -49,6 +49,12 @@ def test_frozen_recipe_identity():
         canonical_json_bytes(recipe)
     )
 
+    wiki_v3_path = path.with_name("mistral-ocr-4.1-wiki-v3.json")
+    wiki_v3_recipe = json.loads(wiki_v3_path.read_text(encoding="utf-8"))
+    assert blake3_bytes(canonical_json_bytes(wiki_v3_recipe)) == (
+        "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
+    )
+
 
 def _request(tmp_path, output, **parameters):
     source = tmp_path / "source.pdf"

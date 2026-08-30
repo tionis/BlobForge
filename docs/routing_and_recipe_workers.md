@@ -8,8 +8,9 @@ not yet frozen.
 
 ## Policy contract
 
-`blobforge/routing/pdf-rulebooks-v1.json` is the canonical policy document.
-Its canonical BLAKE3 digest and integer revision accompany every decision. The
+`blobforge/routing/pdf-rulebooks-v2.json` is the current canonical policy
+document. Revision 1 remains frozen on Mistral wiki-v2 rather than being edited
+in place. The canonical BLAKE3 digest and integer revision accompany every decision. The
 resolver accepts media type, source class, native-text ratio, language, layout
 class, complex-table/equation flags, quality tier, external-processing
 authorization, page count, and a hard cost ceiling. It either returns one exact
@@ -24,7 +25,7 @@ The first policy is intentionally narrow:
 - equation-heavy and unknown-layout documents have no route;
 - hosted processing requires explicit rights confirmation and a sufficient
   per-document spend ceiling;
-- Mistral wiki-v2 is status `canary`, so the caller must opt into canary use;
+- Mistral wiki-v3 is status `canary`, so the caller must opt into canary use;
 - privacy/local-only routing returns no recipe until an exact, model-pinned
   local MDAF recipe passes its remaining gates.
 
@@ -52,11 +53,13 @@ recipe, status, and rationale in one `job.route` audit event. The management UI
 still offers the lower-level manual exact-recipe selection for exceptional
 operator decisions.
 
-## Mistral wiki-v2 recipe
+## Mistral wiki-v3 lifecycle recipe
 
 Recipe
-`blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026`
-extends wiki-v1 with evidence-backed list cleanup. It removes a decorative
+`blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139`
+preserves wiki-v2's evaluated output while adding the lifecycle contract,
+embedded canonical recipe, and split extraction/post-processing provenance.
+It removes a decorative
 `◆`, `♦`, `❖`, `•`, or `·` only when the provider already emitted a Markdown
 list marker. It also recovers a run of at least two consecutive provider-typed
 text blocks whose first visible character is one of those glyphs. A lone block,
@@ -64,10 +67,13 @@ inline mechanics such as `At ♦`, and headings such as `• TO ••` remain i
 The rules do not globally replace `Y`; Marker font/layout recovery is a
 separate pending problem.
 
-The cached Storypath response produced validated MDAF
-`blake3:aedfe70488c3a376371e64e368dd51b2c3e224d1cf8aa4cea8ad1a23e30e4f0d`.
-It removed 20 redundant list decorations, recovered 10 list items, preserved
-all inspected inline mechanics/headings, and made no provider request.
+The cached Storypath response produced direct validated v3 MDAF
+`blake3:1cb473b433c901cd2b5259ead4c309ade7b2605459dc06299c52d8fbe74997a5`.
+Offline upgrading the prior wiki-v2 artifact produced derivative
+`blake3:e984145a8dab8e737134395b1a8d92ced890885f09b3b04ea35b4d9028c917eb`.
+Both preserve the paid native response byte-for-byte and make no provider
+request. Normalization removed 20 redundant list decorations, recovered 10
+list items, and preserved all inspected inline mechanics and headings.
 
 ## Worker model
 
@@ -92,7 +98,7 @@ availability gate.
 
 The dispatcher is media-neutral and tests alternate audio/PDF capabilities in
 one worker process. The only deployable catalog entry today is the PDF Mistral
-wiki-v2 canary. Adding audio later means adding another exact `AdapterRecipe`;
+wiki-v3 canary. Adding audio later means adding another exact `AdapterRecipe`;
 the claim/dispatch loop does not need to become media-specific.
 
 Run a bounded hosted canary worker with:
@@ -113,6 +119,13 @@ response cache must be persistent because it is the purchase boundary and
 retry mechanism. GitHub Actions builds this runtime as
 `ghcr.io/tionis/blobforge:latest-worker-hosted` from
 `Containerfile.hosted-worker`.
+
+The wiki-v3 worker advertises both source and artifact input. Source claims run
+the isolated hosted adapter; artifact claims download the exact immutable
+parent MDAF and run `blobforge reprocess` without credentials or provider
+access. Capabilities and claims are input-kind constrained, so a source-only
+worker cannot accidentally consume an upgrade job. Bulk scheduling and its
+preview/execute contract are documented in `recipe_lifecycle.md`.
 
 ## Promotion gates
 

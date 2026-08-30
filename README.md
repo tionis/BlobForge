@@ -463,6 +463,12 @@ uv run blobforge evaluate marker1 ./book.pdf -o ./book.marker1.mdaf
 uv run blobforge evaluate docling ./book.pdf -o ./book.docling.mdaf
 uv run blobforge review-bundle ./book.pdf ./book.marker1.mdaf ./book.docling.mdaf \
   --pages 1-8 --output ./book-review
+uv run blobforge reprocess ./book.old.mdaf \
+  --recipe blobforge/recipes/mistral-ocr-4.1-wiki-v3.json \
+  --output ./book.upgraded.mdaf
+uv run blobforge reprocess-plan \
+  --source-recipe blake3:OLD --target-recipe blake3:NEW
+# Review the plan, then repeat with --execute to queue coordinator derivatives.
 ```
 
 Hosted Mistral trials support a no-request `--plan` mode and require explicit
@@ -487,6 +493,7 @@ uv run blobforge migrate stage   # local v2 object-key tree; no upload
 
 See [the migration runbook](docs/local_mdaf_migration.md),
 [the MDAF redesign](docs/mdaf_redesign.md), and
+[the immutable recipe lifecycle](docs/recipe_lifecycle.md),
 [the benchmark canary](docs/converter_benchmark_results.md), and
 [the adapter architecture](docs/converter_adapter_architecture.md), and
 [the review workflow](docs/conversion_review.md) for safety,

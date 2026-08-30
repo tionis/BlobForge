@@ -257,6 +257,26 @@ class CoordinatorClient:
             dict(routing_features),
         ) or {}
 
+    def plan_reprocessing(
+        self,
+        *,
+        target_recipe_digest: str,
+        source_recipe_digest: str,
+        source_keys: Optional[Iterable[str]] = None,
+        execute: bool = False,
+        priority: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "target_recipe_digest": target_recipe_digest,
+            "source_recipe_digest": source_recipe_digest,
+            "execute": execute,
+        }
+        if source_keys is not None:
+            body["source_keys"] = list(source_keys)
+        if priority is not None:
+            body["priority"] = priority
+        return self._request("POST", "/api/v1/admin/reprocessing", body) or {}
+
     def raw_upload_url(
         self,
         file_hash: str,
@@ -378,13 +398,16 @@ class CoordinatorClient:
         return job if isinstance(job, dict) else None
 
     def download_job_input(self, job: Dict[str, Any], local_path: str) -> None:
-        """Download the claimed PDF through its coordinator-issued signed URL."""
+        """Download the claimed source or parent artifact through its signed URL."""
         transfer = job.get("input") or {}
         url = str(transfer.get("url") or "")
         if not url:
             raise CoordinatorError("Coordinator claim did not include an input URL")
         try:
-            request = urllib.request.Request(url, headers={"Accept": "application/pdf"})
+            request = urllib.request.Request(
+                url,
+                headers={"Accept": str(transfer.get("media_type") or "application/octet-stream")},
+            )
             with urllib.request.urlopen(request, timeout=self.timeout) as response, open(local_path, "wb") as target:
                 shutil.copyfileobj(response, target, length=1024 * 1024)
         except (urllib.error.URLError, OSError) as exc:

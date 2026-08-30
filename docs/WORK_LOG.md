@@ -1,5 +1,90 @@
 # Work Log
 
+## 2026-08-30 (Coordinator-native Artifact Reprocessing)
+
+- **Objective:** Complete the production-side lifecycle path so existing MDAFs
+  can be upgraded through normal fenced workers without downloading the source
+  PDF or repeating a paid provider request.
+- **Coordinator/data model:** Added source/artifact job input modes, exact
+  parent artifact and recipe bindings, input-kind-aware capabilities and
+  claims, signed immutable parent downloads, and source-conversion reset
+  semantics. Artifact claims require a worker registration that advertised
+  artifact input. Normal source-only workers cannot consume them.
+- **Planning and operations:** Added read-only and atomic-execute bulk planning
+  with predecessor lifecycle validation, explicit source-key limits, counts
+  for eligible/already-present/processing work, priority selection, retry
+  reset, and audit events. Added `blobforge reprocess-plan`, a recipes-page
+  bulk dialog, per-artifact upgrade controls, and job input/parent visibility.
+- **Worker/publication:** The exact-recipe worker branches on the leased input:
+  source runs the adapter while artifact runs the offline MDAF reprocessor.
+  The coordinator validates every `mdaf/v1` result, reported logical identity,
+  embedded lifecycle recipe, leased target, and exact `derived_from` parent
+  before publication. It stores MDAF logical identity separately from the ZIP
+  content checksum and leaves all predecessor artifacts intact.
+- **Compatibility correction:** The recipe worker had reused legacy S3
+  priorities (`1_critical` through `5_background`) even though the local
+  coordinator contract is `1_urgent` through `4_low`; corrected the isolated
+  worker claim priorities while leaving the legacy worker constants unchanged.
+- **Verification/tools:** Used `rg`, `sed`, `apply_patch`, focused and full
+  pytest, Node syntax checking through a no-file subprocess, `compileall`, ZIP
+  and MDAF validation, temporary SQLite/local storage, and a credential-free
+  real Storypath canary. Focused coordinator/worker tests pass 26 cases; the
+  full hermetic suite passes 286 tests and 5 subtests. The real canary queued
+  parent `blake3:aedfe704...` as artifact input and reproduced derivative
+  `blake3:e984145a...` with zero provider calls. Its first attempt passed the
+  extensionless internal object path to the public suffix-checking validator;
+  the corrected lease-style `.mdaf` staging passed, matching worker behavior.
+  The final wheel contains the database/API/UI, worker, reprocessor, lifecycle
+  recipe, and current routing policy. As in the preceding build, the first
+  sandboxed isolated build could not resolve Hatchling through restricted DNS;
+  the approved `uv build` retry succeeded.
+
+## 2026-08-30 (Immutable Recipe Lifecycle and Offline Reprocessing)
+
+- **Objective:** Make evolving post-processing cheap and honest while using a
+  major recipe version to mark changes that require expensive extraction.
+- **Design and implementation:** Added lifecycle recipe schema v3 validation,
+  exact predecessor allowlists, extraction-major/digest gates, embedded
+  canonical recipes, and split extraction/post-processing provenance. Added a
+  shared network-free Mistral native-response renderer and
+  `blobforge reprocess`, which validates an existing MDAF, carries its native
+  evidence unchanged, records complete parent lineage, creates a new
+  self-contained derivative, validates it, and refuses overwrite. Existing v2
+  recipes retain their original combined-provenance path so their frozen
+  identities do not change.
+- **Versioned policy:** Restored routing policy revision 1 to its committed
+  wiki-v2 recipe. Added revision 2 for lifecycle-aware wiki-v3 and made the
+  resolver point to the new file. Tests assert that both policy documents and
+  identities remain distinct.
+- **Real cache canaries:** With both provider keys explicitly unset, replayed
+  the already-paid Storypath response. The v2 run from the original
+  `source.pdf` reproduced MDAF `blake3:aedfe704...` byte-for-byte. Direct v3
+  produced `blake3:1cb473b4...`; offline reprocessing produced lineage-linked
+  `blake3:e984145a...`. Both v3 paths preserve the exact 169,550-byte native
+  response and the evaluated Markdown. Repeating reprocessing produced
+  byte-identical ZIP bytes. No provider call occurred.
+- **Verification and tools:** Used `rg`, `sed`, `ls`, `cmp`, canonical JSON/ZIP
+  inspection, the shared MDAF validator, `uv run`, pytest, `git diff`, and
+  `apply_patch`. The focused lifecycle, reprocessing, runner, routing,
+  adapter, worker, and server suite passes 42 tests. The complete hermetic
+  suite passes 284 tests and 5 subtests. The built wheel contains the lifecycle
+  and reprocessing modules, shared renderer, v3 recipe, and both immutable
+  routing-policy revisions. The first sandboxed cache replay failed because the
+  adapter's cache lock lives below the read-only home cache; an approved retry
+  wrote only that lock and read the retained response. An initial inspection
+  used two nonexistent `blobforge.mdaf` exports and was corrected to the
+  supported validator plus direct ZIP inspection. The first isolated package
+  build could not resolve Hatchling due restricted DNS; the approved `uv
+  build` retry succeeded.
+- **Commit preparation:** Reviewed the complete worktree scope, whitespace,
+  generated-file exclusions, and credential patterns before creating the
+  requested repository checkpoint. Local MDAFs, provider caches, temporary
+  canaries, and build output remain outside Git.
+- **Operational boundary:** Local/archive upgrades are implemented. A future
+  coordinator job type must lease a parent artifact and schedule bulk
+  derivatives; normal source-conversion jobs must not be described as offline
+  upgrades or repeat paid work implicitly.
+
 ## 2026-08-30 (List-normalized Recipe, Routing, and MDAF Worker)
 
 - **Checkpoint:** Committed the complete preceding hosted evaluation and wiki

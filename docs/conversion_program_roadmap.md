@@ -188,10 +188,14 @@ fallback can run only when policy permits its quality, data-handling, and cost.
 Exit gate: production canaries validate claiming, checkpoints, publication,
 MDAF/Vulcan acceptance, accounting, and rollback before capacity expands.
 
-Implementation status: advisory `pdf-rulebooks` policy revision 1, its
+Implementation status: advisory `pdf-rulebooks` policy revision 2, its
 recomputed/audited coordinator apply endpoint, and the isolated multipurpose
-recipe worker are implemented. The only deployable entry is the bounded
-Mistral wiki-v2 canary; the production canary, rollback exercise, hidden
+recipe worker are implemented. Revision 1 remains immutable. The only
+deployable entry is the bounded lifecycle-aware Mistral wiki-v3 canary. Its
+offline derivative path reuses retained extraction evidence and rejects
+extraction-major changes. Coordinator artifact-input claims, atomic bulk
+planning, CLI, and management controls are implemented. The production canary,
+rollback exercise, hidden
 holdout, provider accounting/checkpoint gate, and exact local/privacy recipe
 remain. See `routing_and_recipe_workers.md`.
 

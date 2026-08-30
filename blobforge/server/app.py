@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import zipfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -27,6 +28,8 @@ from .management_ui import ASSET_VERSION, CSS as MANAGEMENT_CSS, JS as MANAGEMEN
 from .storage import CapabilitySigner, LocalStorage
 from .scim import create_scim_router
 from ..routing import RoutingFeatures, route_pdf
+from ..mdaf import canonical_json_bytes, validate_mdaf
+from ..recipe_lifecycle import RECIPE_MEMBER_PATH, recipe_digest
 
 
 PRIORITIES = {"1_urgent", "2_high", "3_normal", "4_low"}
@@ -177,6 +180,15 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     def base_url(request: Request) -> str:
         return (settings.public_url or str(request.base_url)).rstrip("/")
+
+    def validate_stored_mdaf(path: Path):
+        """Validate an extensionless content-addressed MDAF through a hard link."""
+        alias = path.with_name(f".{path.name}.{secrets.token_hex(8)}.mdaf")
+        os.link(path, alias)
+        try:
+            return validate_mdaf(alias)
+        finally:
+            alias.unlink(missing_ok=True)
 
     def capability_url(request: Request, method: str, scope: str, subject: str, path: str, extra: dict[str, str] | None = None) -> str:
         expires, signature = signer.issue(method, scope, subject)
@@ -552,6 +564,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 "recipe": body.get("conversion_recipe") or {},
                 "media_types": body.get("accepted_media_types") or ["application/pdf"],
                 "artifact_type": "legacy-archive",
+                "input_kinds": ["source"],
             }]
         try:
             registered = database.register_capabilities(worker_id, list(capabilities or []))
@@ -588,14 +601,56 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 "recipe": body.get("recipe") or {},
                 "media_types": body.get("accepted_media_types") or ["application/pdf"],
                 "artifact_type": "legacy-archive",
+                "input_kinds": ["source"],
             }]
         try:
             job = database.claim(worker_id, list(body.get("priorities") or []), list(capabilities))
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, str(exc))
         if job:
-            subject = f"{job['hash']}|{job['digest_algorithm']}|{job['digest']}"
-            job["input"] = {"url": capability_url(request, "GET", "source", subject, f"/api/v1/transfers/sources/{job['hash']}", {"algorithm": job["digest_algorithm"], "digest": job["digest"], "media_type": job["media_type"]})}
+            if job.get("input_kind") == "artifact":
+                artifact_id = job.get("input_artifact_id")
+                artifact = (
+                    database.artifact_by_id(int(artifact_id))
+                    if artifact_id is not None
+                    else None
+                )
+                if not artifact or artifact["source_key"] != job["hash"]:
+                    database.release(job["hash"], worker_id, job["lease_token"])
+                    raise HTTPException(409, "reprocessing parent artifact is missing")
+                subject = str(artifact["id"])
+                job["input"] = {
+                    "kind": "artifact",
+                    "artifact_id": artifact["id"],
+                    "artifact_identity": artifact["identity"],
+                    "recipe_digest": artifact["recipe_digest"],
+                    "media_type": artifact["media_type"],
+                    "url": capability_url(
+                        request,
+                        "GET",
+                        "artifact",
+                        subject,
+                        f"/api/v1/transfers/artifacts/{artifact['id']}",
+                    ),
+                }
+            else:
+                subject = f"{job['hash']}|{job['digest_algorithm']}|{job['digest']}"
+                job["input"] = {
+                    "kind": "source",
+                    "media_type": job["media_type"],
+                    "url": capability_url(
+                        request,
+                        "GET",
+                        "source",
+                        subject,
+                        f"/api/v1/transfers/sources/{job['hash']}",
+                        {
+                            "algorithm": job["digest_algorithm"],
+                            "digest": job["digest"],
+                            "media_type": job["media_type"],
+                        },
+                    ),
+                }
         return {"job": job, "config": runtime_config()}
 
     @app.post("/api/v1/jobs/{key}/heartbeat")
@@ -621,8 +676,39 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     async def complete(key: str, request: Request) -> dict[str, bool]:
         worker_id = str(authorize(request, worker=True)); body = await request.json(); lease = str(body.get("lease_token")); pending = storage.pending_output_path(key, lease)
         if not pending.is_file(): raise HTTPException(409, "uploaded output is missing")
-        inspected = storage.inspect(pending); result = body.get("result") or {}; recipe = str(result.get("recipe_digest") or database.get_job(key).get("recipe_digest") or "legacy")
-        identity = f"blake3:{inspected.blake3}"; destination = storage.artifact_path(key, recipe, identity); destination.parent.mkdir(parents=True, exist_ok=True)
+        result = body.get("result") or {}; job = database.get_job(key)
+        recipe = str(job.get("recipe_digest") or "legacy")
+        logical_identity = None
+        if result.get("recipe_digest") and str(result["recipe_digest"]) != recipe:
+            pending.unlink(missing_ok=True)
+            raise HTTPException(422, "worker result recipe does not match the leased job")
+        if str(result.get("artifact_type") or "legacy-archive") == "mdaf/v1":
+            try:
+                validated = validate_stored_mdaf(pending)
+                if result.get("logical_identity") != validated.identity:
+                    raise ValueError("reported logical identity does not match MDAF")
+                logical_identity = validated.identity
+                target_definition = job.get("recipe") or {}
+                if target_definition.get("schema") == "dev.tionis.blobforge.recipe/v3":
+                    with zipfile.ZipFile(pending) as archive:
+                        embedded = json.loads(archive.read(RECIPE_MEMBER_PATH))
+                    if recipe_digest(embedded) != recipe or canonical_json_bytes(
+                        embedded
+                    ) != canonical_json_bytes(target_definition):
+                        raise ValueError("embedded lifecycle recipe does not match the lease")
+                if job.get("input_kind") == "artifact":
+                    parent = database.artifact_by_id(int(job["input_artifact_id"]))
+                    if not parent or parent["source_key"] != key:
+                        raise ValueError("reprocessing parent artifact is missing")
+                    parent_path = settings.data_dir / parent["storage_path"]
+                    parent_identity = validate_stored_mdaf(parent_path).identity
+                    if parent_identity not in validated.manifest.get("derived_from", []):
+                        raise ValueError("derivative does not declare its exact parent")
+            except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+                pending.unlink(missing_ok=True)
+                raise HTTPException(422, f"invalid MDAF output: {exc}") from exc
+        inspected = storage.inspect(pending)
+        identity = logical_identity or f"blake3:{inspected.blake3}"; destination = storage.artifact_path(key, recipe, identity); destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(pending, destination)
         artifact = {"identity": identity, "storage_path": str(destination.relative_to(settings.data_dir)), "media_type": str(result.get("media_type") or "application/zip"), "artifact_type": str(result.get("artifact_type") or "legacy-archive"), "size_bytes": inspected.size, "sha256": inspected.sha256, "blake3": inspected.blake3}
         try: database.complete(key, worker_id, lease, artifact, result)
@@ -659,6 +745,50 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             raise HTTPException(400, "recipe_digest or backend is required")
         result = database.request_conversion(key, recipe)
         database.audit(principal_id(request), "job.convert", key, {"recipe_digest": recipe})
+        return result
+
+    @app.post("/api/v1/admin/reprocessing")
+    async def plan_reprocessing(request: Request) -> dict[str, Any]:
+        """Plan or atomically queue derivatives from immutable parent MDAFs."""
+        authorize(request, roles={"operator"})
+        body = await request.json()
+        target = _recipe_identifier(str(body.get("target_recipe_digest") or ""))
+        source = _recipe_identifier(str(body.get("source_recipe_digest") or ""))
+        execute = body.get("execute", False)
+        if not isinstance(execute, bool):
+            raise HTTPException(400, "execute must be a boolean")
+        keys = body.get("source_keys")
+        if keys is not None and (
+            not isinstance(keys, list)
+            or len(keys) > 10_000
+            or any(not isinstance(key, str) or not key for key in keys)
+        ):
+            raise HTTPException(400, "source_keys must be at most 10,000 non-empty strings")
+        priority = body.get("priority")
+        if priority is not None and priority not in PRIORITIES:
+            raise HTTPException(400, "unsupported priority")
+        try:
+            result = database.plan_reprocessing(
+                target,
+                source,
+                source_keys=keys,
+                execute=execute,
+                priority=priority,
+            )
+        except KeyError:
+            raise HTTPException(404, "target recipe is not registered") from None
+        except (Conflict, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        database.audit(
+            principal_id(request),
+            "artifact.reprocess.bulk" if execute else "artifact.reprocess.plan",
+            target,
+            {
+                key: value
+                for key, value in result.items()
+                if key != "eligible_source_keys"
+            },
+        )
         return result
 
     @app.post("/api/v1/jobs/{key}/route")

@@ -44,6 +44,7 @@ from .local_import import import_legacy_sources, import_stage
 from .mdaf import blake3_bytes
 from .mdaf.digest import canonical_json_bytes
 from .review import build_review_bundle, summarize_review_result
+from .reprocessing import reprocess_mdaf
 from .routing import RoutingFeatures, route_pdf
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
@@ -698,6 +699,7 @@ def cmd_evaluate_converter(args):
     provider_engine = {
         "mistral-wiki": "mistral",
         "mistral-wiki-v2": "mistral",
+        "mistral-wiki-v3": "mistral",
         "datalab-wiki": "datalab",
     }.get(args.engine, args.engine)
     project = repository / "evaluators" / provider_engine
@@ -715,7 +717,13 @@ def cmd_evaluate_converter(args):
         "model": args.model,
     }
     environment = None
-    if args.engine in {"mistral", "mistral-wiki", "mistral-wiki-v2"}:
+    embedded_recipe = None
+    if args.engine in {
+        "mistral",
+        "mistral-wiki",
+        "mistral-wiki-v2",
+        "mistral-wiki-v3",
+    }:
         raw_recipe_path = (
             repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
         )
@@ -725,23 +733,30 @@ def cmd_evaluate_converter(args):
             / "blobforge"
             / "recipes"
             / (
-                "mistral-ocr-4.1-wiki-v2.json"
-                if args.engine == "mistral-wiki-v2"
+                "mistral-ocr-4.1-wiki-v3.json"
+                if args.engine == "mistral-wiki-v3"
                 else (
-                    "mistral-ocr-4.1-wiki-v1.json"
-                    if args.engine == "mistral-wiki"
-                    else "mistral-ocr-4.1-v1.json"
+                    "mistral-ocr-4.1-wiki-v2.json"
+                    if args.engine == "mistral-wiki-v2"
+                    else (
+                        "mistral-ocr-4.1-wiki-v1.json"
+                        if args.engine == "mistral-wiki"
+                        else "mistral-ocr-4.1-v1.json"
+                    )
                 )
             )
         )
         recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+        embedded_recipe = recipe if recipe.get("schema", "").endswith("/v3") else None
         parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
-        if args.engine in {"mistral-wiki", "mistral-wiki-v2"}:
+        if args.engine in {"mistral-wiki", "mistral-wiki-v2", "mistral-wiki-v3"}:
             parameters["provider_request_digest"] = blake3_bytes(
                 canonical_json_bytes(raw_recipe)
             )
             parameters["normalization_profile"] = (
-                "wiki-v2" if args.engine == "mistral-wiki-v2" else "wiki-v1"
+                "wiki-v2"
+                if args.engine in {"mistral-wiki-v2", "mistral-wiki-v3"}
+                else "wiki-v1"
             )
         parameters["api_rights_confirmed"] = args.confirm_api_rights
         response_cache = Path(
@@ -763,7 +778,7 @@ def cmd_evaluate_converter(args):
             print(f"Pages:        {pages:,}")
             print(f"Bytes:        {Path(args.path).stat().st_size:,}")
             print(f"Recipe:       {parameters['recipe_digest']}")
-            if args.engine in {"mistral-wiki", "mistral-wiki-v2"}:
+            if args.engine in {"mistral-wiki", "mistral-wiki-v2", "mistral-wiki-v3"}:
                 print(f"Provider key: {parameters['provider_request_digest']}")
             print(f"List price:   ${estimated_cost:.3f}")
             print(f"Page ceiling: {args.max_pages if args.max_pages is not None else 'missing'}")
@@ -889,6 +904,7 @@ def cmd_evaluate_converter(args):
         args.path,
         output,
         parameters=parameters,
+        recipe=embedded_recipe,
         timeout_seconds=args.timeout,
         environment=environment,
     )
@@ -961,6 +977,45 @@ def cmd_compare_mdaf(args):
         print(Path(item.path).name + "\t" + "\t".join(str(getattr(item, column)) for column in columns))
     if args.output:
         print(f"JSON: {args.output}")
+    return 0
+
+
+def cmd_reprocess_mdaf(args):
+    """Create an immutable post-processing derivative from retained evidence."""
+    result = reprocess_mdaf(
+        args.parent,
+        args.recipe,
+        args.output,
+        recipe_root=args.recipe_root,
+    )
+    print(f"Artifact:      {result.path}")
+    print(f"Identity:      {result.identity}")
+    print(f"Derived from:  {result.parent_identity}")
+    print(f"Source recipe: {result.source_recipe_digest}")
+    print(f"Target recipe: {result.target_recipe_digest}")
+    print(f"Normalization: {dict(result.normalization_stats or {})}")
+    print("Provider calls: none")
+    return 0
+
+
+def cmd_reprocess_plan(args):
+    """Plan or queue coordinator-native artifact-input upgrades."""
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if coordinator is None:
+        print("Error: coordinator URL and token are required", file=sys.stderr)
+        return 1
+    result = coordinator.plan_reprocessing(
+        target_recipe_digest=args.target_recipe,
+        source_recipe_digest=args.source_recipe,
+        source_keys=args.source_key,
+        execute=args.execute,
+        priority=args.priority,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    if not args.execute:
+        print("Preview only; pass --execute to queue eligible derivatives.")
     return 0
 
 
@@ -1041,7 +1096,7 @@ def cmd_worker(args):
 
 def cmd_recipe_worker(args):
     """Start the exact-recipe, isolated MDAF worker."""
-    from .recipe_runtime import mistral_wiki_v2_recipe
+    from .recipe_runtime import mistral_wiki_v3_recipe
     from .recipe_worker import RecipeWorker
 
     coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
@@ -1057,7 +1112,7 @@ def cmd_recipe_worker(args):
         return 1
     try:
         recipes = [
-            mistral_wiki_v2_recipe(
+            mistral_wiki_v3_recipe(
                 max_pages=args.max_pages,
                 max_cost_usd=args.max_cost_usd,
                 response_cache=args.response_cache,
@@ -1988,6 +2043,7 @@ def main():
             "mistral",
             "mistral-wiki",
             "mistral-wiki-v2",
+            "mistral-wiki-v3",
             "datalab",
             "datalab-wiki",
         ),
@@ -2067,6 +2123,40 @@ def main():
     p_compare.add_argument("artifacts", nargs="+")
     p_compare.add_argument("--output", "-o")
     p_compare.set_defaults(func=cmd_compare_mdaf)
+
+    p_reprocess = subparsers.add_parser(
+        "reprocess",
+        help="Upgrade an MDAF from retained native evidence without rerunning extraction",
+    )
+    p_reprocess.add_argument("parent", help="Existing parent .mdaf")
+    p_reprocess.add_argument("--recipe", required=True, help="Target lifecycle recipe JSON")
+    p_reprocess.add_argument("--output", "-o", required=True, help="New derivative .mdaf")
+    p_reprocess.add_argument(
+        "--recipe-root",
+        help="Immutable recipe registry used only when the parent predates embedded recipes",
+    )
+    p_reprocess.set_defaults(func=cmd_reprocess_mdaf)
+
+    p_reprocess_plan = subparsers.add_parser(
+        "reprocess-plan",
+        help="Plan or queue coordinator upgrades from existing MDAF artifacts",
+    )
+    p_reprocess_plan.add_argument("--source-recipe", required=True)
+    p_reprocess_plan.add_argument("--target-recipe", required=True)
+    p_reprocess_plan.add_argument(
+        "--source-key",
+        action="append",
+        help="Limit to one source key; repeat to select multiple sources",
+    )
+    p_reprocess_plan.add_argument(
+        "--priority", choices=("1_urgent", "2_high", "3_normal", "4_low")
+    )
+    p_reprocess_plan.add_argument(
+        "--execute", action="store_true", help="Queue the eligible derivatives"
+    )
+    p_reprocess_plan.add_argument("--coordinator-url")
+    p_reprocess_plan.add_argument("--token")
+    p_reprocess_plan.set_defaults(func=cmd_reprocess_plan)
 
     p_review = subparsers.add_parser(
         "review-bundle", help="Build a blinded page-by-page MDAF review bundle"

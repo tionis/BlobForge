@@ -38,6 +38,47 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** Coordinator-native MDAF upgrades now use explicit artifact
+  inputs rather than masquerading as source conversions. Jobs retain one active
+  row per source but bind `input_kind`, exact parent artifact ID, and parent
+  recipe; capabilities declare `source` and/or `artifact`, and unregistered or
+  source-only capabilities cannot claim artifact jobs. Previewing bulk
+  reprocessing is read-only; execution atomically queues only compatible,
+  non-processing parents without target artifacts and is available through
+  API, CLI, and management UI. The coordinator independently validates an
+  uploaded MDAF's logical identity, embedded target recipe, and exact
+  `derived_from` parent before publication; logical identity is stored as the
+  artifact identity while physical ZIP BLAKE3 remains separate. A keyless real
+  Storypath coordinator-style canary queued the wiki-v2 parent as artifact
+  input and deterministically reproduced derivative `blake3:e984145a...` with
+  zero provider calls. The canary initially passed the extensionless internal
+  object path directly to the suffix-checking validator; actual leases stage it
+  as `parent.mdaf`, and the corrected canary passed. The exact-recipe worker
+  also previously imported legacy S3 priorities (`1_critical`/`5_background`)
+  while the coordinator uses `1_urgent` through `4_low`; its claim list now
+  matches the coordinator contract.
+
+- **2026-08-30:** Recipe lifecycle schema v3 now separates expensive
+  extraction from repeatable post-processing. The semantic recipe major must
+  equal the extraction major; same-major targets must permit automatic
+  upgrades but explicitly allowlist every predecessor recipe digest and retain
+  the exact extraction recipe. New lifecycle MDAFs embed canonical recipe JSON
+  and record separate extraction/normalization activities. Offline
+  `blobforge reprocess` validates the parent, requires declared native
+  evidence, rejects family/major/extraction changes and overwrites, and emits a
+  self-contained immutable derivative with `derived_from`, prior recipe,
+  parent manifest/provenance, and byte-identical raw renditions. Mistral wiki
+  `1.2.0` is recipe
+  `blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139`.
+  A credential-free Storypath direct replay produced
+  `blake3:1cb473b433c901cd2b5259ead4c309ade7b2605459dc06299c52d8fbe74997a5`;
+  upgrading the frozen wiki-v2 artifact produced derivative
+  `blake3:e984145a8dab8e737134395b1a8d92ced890885f09b3b04ea35b4d9028c917eb`.
+  Both retain the same 169,550-byte paid response and normalized Markdown.
+  Routing policy v1 remains immutable on wiki-v2; v2 selects wiki-v3.
+  Coordinator artifact-input/bulk upgrade jobs remain a distinct rollout task
+  and must not be simulated by silently rerunning paid source conversions.
+
 - **2026-08-30:** Mistral wiki-v2 freezes evidence-backed list normalization at
   recipe `blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026`.
   A keyless Storypath replay produced valid MDAF

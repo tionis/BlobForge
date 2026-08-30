@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
 
-from .config import PRIORITIES
 from .converters import ConverterRunResult, run_converter
 from .coordinator_client import CoordinatorClient
 from .recipe_runtime import AdapterRecipe
+from .reprocessing import ReprocessResult, reprocess_mdaf
 
 logger = logging.getLogger(__name__)
+RECIPE_PRIORITIES = ("1_urgent", "2_high", "3_normal", "4_low")
 
 
 @dataclass(frozen=True)
@@ -30,11 +31,12 @@ class JobOutcome:
 
 
 class _LeaseHeartbeat:
-    def __init__(self, client, job: dict, worker_id: str, interval: float):
+    def __init__(self, client, job: dict, worker_id: str, interval: float, stage: str):
         self.client = client
         self.job = job
         self.worker_id = worker_id
         self.interval = interval
+        self.stage = stage
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
 
@@ -44,13 +46,13 @@ class _LeaseHeartbeat:
                 self.client.worker_heartbeat(
                     self.worker_id,
                     current_job=self.job["hash"],
-                    metrics={"stage": "converting"},
+                    metrics={"stage": self.stage},
                 )
                 self.client.heartbeat(
                     self.job["hash"],
                     worker_id=self.worker_id,
                     lease_token=self.job["lease_token"],
-                    progress={"stage": "converting"},
+                    progress={"stage": self.stage},
                 )
             except Exception as exc:  # The fenced upload remains authoritative.
                 logger.warning("Lease heartbeat failed: %s", exc)
@@ -75,6 +77,7 @@ class RecipeWorker:
         timeout_seconds: int = 86_400,
         heartbeat_interval: float = 30.0,
         converter: Callable[..., ConverterRunResult] = run_converter,
+        reprocessor: Callable[..., ReprocessResult] = reprocess_mdaf,
     ):
         if not recipes:
             raise ValueError("at least one recipe is required")
@@ -90,6 +93,7 @@ class RecipeWorker:
         self.timeout_seconds = timeout_seconds
         self.heartbeat_interval = heartbeat_interval
         self.converter = converter
+        self.reprocessor = reprocessor
         self.worker_id: str | None = None
 
     @property
@@ -118,7 +122,7 @@ class RecipeWorker:
             raise RuntimeError("worker must be registered before claiming jobs")
         job = self.coordinator.claim_job(
             self.worker_id,
-            PRIORITIES,
+            RECIPE_PRIORITIES,
             capabilities=self.capabilities,
         )
         if job is None:
@@ -142,6 +146,21 @@ class RecipeWorker:
                 recipe_digest=digest or None,
                 success=False,
                 error="unknown or malformed claimed capability",
+            )
+        input_kind = str(job.get("input_kind") or (job.get("input") or {}).get("kind") or "source")
+        if input_kind not in recipe.input_kinds:
+            self.coordinator.release(
+                source_key,
+                worker_id=self.worker_id,
+                lease_token=lease,
+                reason="claimed input kind does not match exact recipe capability",
+            )
+            return JobOutcome(
+                claimed=True,
+                source_key=source_key,
+                recipe_digest=digest,
+                success=False,
+                error="input kind mismatch",
             )
         if str(job.get("media_type")) not in recipe.media_types:
             self.coordinator.release(
@@ -172,29 +191,44 @@ class RecipeWorker:
             )
             with tempfile.TemporaryDirectory(prefix="blobforge-recipe-worker-") as temporary:
                 root = Path(temporary)
-                source = root / f"source{recipe.input_suffix}"
+                source = root / (
+                    "parent.mdaf" if input_kind == "artifact" else f"source{recipe.input_suffix}"
+                )
                 artifact = root / "artifact.mdaf"
                 self.coordinator.download_job_input(job, str(source))
+                work_stage = "reprocessing" if input_kind == "artifact" else "converting"
                 self.coordinator.heartbeat(
                     source_key,
                     worker_id=self.worker_id,
                     lease_token=lease,
-                    progress={"stage": "converting"},
+                    progress={"stage": work_stage},
                 )
                 with _LeaseHeartbeat(
                     self.coordinator,
                     job,
                     self.worker_id,
                     self.heartbeat_interval,
+                    work_stage,
                 ):
-                    result = self.converter(
-                        recipe.command,
-                        source,
-                        artifact,
-                        parameters=recipe.parameters,
-                        timeout_seconds=self.timeout_seconds,
-                        environment=recipe.environment,
-                    )
+                    started = time.monotonic()
+                    if input_kind == "artifact":
+                        result = self.reprocessor(source, recipe.recipe, artifact)
+                        elapsed_seconds = time.monotonic() - started
+                        diagnostics: list[dict] = []
+                        identity = str(result.identity)
+                    else:
+                        result = self.converter(
+                            recipe.command,
+                            source,
+                            artifact,
+                            parameters=recipe.parameters,
+                            recipe=recipe.recipe,
+                            timeout_seconds=self.timeout_seconds,
+                            environment=recipe.environment,
+                        )
+                        elapsed_seconds = result.elapsed_seconds
+                        diagnostics = list(result.diagnostics)
+                        identity = result.identity
                 self.coordinator.heartbeat(
                     source_key,
                     worker_id=self.worker_id,
@@ -203,7 +237,7 @@ class RecipeWorker:
                 )
                 self.coordinator.upload_job_output(
                     source_key,
-                    str(result.artifact_path),
+                    str(artifact),
                     worker_id=self.worker_id,
                     lease_token=lease,
                 )
@@ -219,13 +253,14 @@ class RecipeWorker:
                             or "unavailable"
                         ),
                         "deployment_status": recipe.deployment_status,
-                        "diagnostics": list(result.diagnostics),
+                        "diagnostics": diagnostics,
+                        "execution_mode": input_kind,
                         "legacy": False,
-                        "logical_identity": result.identity,
+                        "logical_identity": identity,
                         "media_type": "application/zip",
                         "recipe_digest": digest,
                     },
-                    metrics={"elapsed_seconds": result.elapsed_seconds},
+                    metrics={"elapsed_seconds": elapsed_seconds},
                 )
             return JobOutcome(True, source_key, digest, True)
         except Exception as exc:
@@ -236,7 +271,12 @@ class RecipeWorker:
                     lease_token=lease,
                     error=str(exc),
                     traceback=traceback_module.format_exc(),
-                    context={"recipe_digest": digest, "backend": recipe.backend},
+                    context={
+                        "recipe_digest": digest,
+                        "backend": recipe.backend,
+                        "input_kind": input_kind,
+                        "parent_recipe_digest": job.get("parent_recipe_digest"),
+                    },
                 )
             except Exception as report_error:
                 logger.error(

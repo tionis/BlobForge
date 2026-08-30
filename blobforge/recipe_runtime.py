@@ -23,6 +23,7 @@ class AdapterRecipe:
     parameters: Mapping[str, Any]
     environment: Mapping[str, str]
     deployment_status: str
+    input_kinds: tuple[str, ...] = ("source",)
 
     def capability(self) -> dict[str, Any]:
         return {
@@ -31,10 +32,11 @@ class AdapterRecipe:
             "recipe": dict(self.recipe),
             "media_types": list(self.media_types),
             "artifact_type": self.artifact_type,
+            "input_kinds": list(self.input_kinds),
         }
 
 
-def mistral_wiki_v2_recipe(
+def mistral_wiki_v3_recipe(
     *,
     repository: str | Path | None = None,
     max_pages: int,
@@ -51,14 +53,14 @@ def mistral_wiki_v2_recipe(
     if not api_rights_confirmed:
         raise ValueError("hosted workers require explicit API-rights confirmation")
     root = Path(repository or Path(__file__).resolve().parent.parent).resolve()
-    recipe_path = root / "blobforge" / "recipes" / "mistral-ocr-4.1-wiki-v2.json"
+    recipe_path = root / "blobforge" / "recipes" / "mistral-ocr-4.1-wiki-v3.json"
     raw_path = root / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
     recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
     raw_recipe = json.loads(raw_path.read_text(encoding="utf-8"))
     digest = blake3_bytes(canonical_json_bytes(recipe))
-    expected = "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026"
+    expected = "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
     if digest != expected:
-        raise RuntimeError(f"mistral-wiki-v2 recipe identity changed: {digest}")
+        raise RuntimeError(f"mistral-wiki-v3 recipe identity changed: {digest}")
     adapter = root / "evaluators" / "mistral" / "adapter.py"
     project = adapter.parent
     environment = {
@@ -67,7 +69,7 @@ def mistral_wiki_v2_recipe(
     if cache_only:
         environment["MISTRAL_API_KEY"] = ""
     return AdapterRecipe(
-        key="mistral-wiki-v2",
+        key="mistral-wiki-v3",
         backend="mistral-ocr-wiki",
         recipe=recipe,
         recipe_digest=digest,
@@ -90,4 +92,5 @@ def mistral_wiki_v2_recipe(
         },
         environment=environment,
         deployment_status="canary",
+        input_kinds=("source", "artifact"),
     )

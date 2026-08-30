@@ -1,7 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from blobforge.converters import ConverterRunResult
-from blobforge.recipe_runtime import AdapterRecipe, mistral_wiki_v2_recipe
+from blobforge.recipe_runtime import AdapterRecipe, mistral_wiki_v3_recipe
 from blobforge.recipe_worker import RecipeWorker
 
 
@@ -124,21 +127,63 @@ def test_worker_reports_adapter_failure_and_retains_recipe_context():
     assert coordinator.failed[0][1]["context"]["recipe_digest"] == "pdf-v1"
 
 
+def test_worker_reprocesses_artifact_input_without_running_converter():
+    base = _recipe("target-v1", "application/pdf")
+    recipe = AdapterRecipe(
+        **{
+            **base.__dict__,
+            "input_kinds": ("source", "artifact"),
+        }
+    )
+    job = _job("a", recipe, "application/pdf")
+    job.update(
+        {
+            "input_kind": "artifact",
+            "parent_recipe_digest": "parent-v1",
+            "source": b"parent-mdaf",
+            "input": {"kind": "artifact"},
+        }
+    )
+    coordinator = FakeCoordinator([job])
+    calls = []
+
+    def reprocess(parent, target, output):
+        calls.append((Path(parent).suffix, Path(parent).read_bytes(), target))
+        Path(output).write_bytes(b"mdaf")
+        return SimpleNamespace(identity="derived-identity")
+
+    worker = RecipeWorker(
+        coordinator,
+        [recipe],
+        converter=lambda *args, **kwargs: pytest.fail("converter must not run"),
+        reprocessor=reprocess,
+        heartbeat_interval=3600,
+    )
+    worker.register()
+    outcome = worker.process_once()
+    assert outcome.success
+    assert calls == [(".mdaf", b"parent-mdaf", recipe.recipe)]
+    completed = coordinator.completed[0][1]["result"]
+    assert completed["execution_mode"] == "artifact"
+    assert completed["logical_identity"] == "derived-identity"
+
+
 def test_mistral_canary_runtime_is_exact_and_secret_free(tmp_path):
-    recipe = mistral_wiki_v2_recipe(
+    recipe = mistral_wiki_v3_recipe(
         max_pages=250,
         max_cost_usd=1.0,
         response_cache=tmp_path / "cache",
         api_rights_confirmed=True,
     )
     assert recipe.recipe_digest == (
-        "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026"
+        "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
     )
     assert recipe.artifact_type == "mdaf/v1"
     assert "MISTRAL_API_KEY" not in recipe.environment
     assert recipe.deployment_status == "canary"
+    assert recipe.input_kinds == ("source", "artifact")
 
-    cached = mistral_wiki_v2_recipe(
+    cached = mistral_wiki_v3_recipe(
         max_pages=250,
         max_cost_usd=1.0,
         response_cache=tmp_path / "cache",

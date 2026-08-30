@@ -166,7 +166,7 @@ view; detailed research tasks remain in the sections below.
   policy identity, exact recipe, estimate, status, and rationale.
 - [ ] Deploy exact-recipe worker capabilities incrementally and verify that a
   multipurpose supervisor safely dispatches isolated adapters between jobs.
-  The generic dispatcher, bounded Mistral wiki-v2 canary runtime, hosted-worker
+  The generic dispatcher, bounded Mistral wiki-v3 canary runtime, hosted-worker
   image, and alternating-media unit canary are implemented; coordinator and
   production canaries remain.
 - [ ] Run production canaries with rollback to retained legacy artifacts before
@@ -226,6 +226,21 @@ view; detailed research tasks remain in the sections below.
   before changing the canonical DNS record. Bunny/S3 remains preserved.
 
 ## MDAF / BLAKE3 Redesign
+
+- [x] Define and enforce a recipe lifecycle in which semantic major versions
+  are expensive-extraction compatibility boundaries, while exact canonical
+  recipe digests remain artifact/job identities.
+- [x] Embed canonical lifecycle recipes in new MDAFs, split extraction from
+  post-processing provenance, and implement deterministic immutable offline
+  derivatives from retained native data with explicit predecessor allowlists.
+- [x] Preserve routing policy revision 1 and advance the current selection to
+  revision 2 instead of changing an already-used policy document in place.
+- [x] Add coordinator artifact-input jobs and bulk upgrade planning so workers
+  can lease an existing MDAF, publish its derivative, and audit coverage
+  without downloading a source PDF or repeating a paid API call.
+- [ ] Add lifecycle-aware reprocessors for each promoted Marker, Docling, and
+  Datalab family once their sufficient raw/native evidence contracts are
+  frozen.
 
 - [ ] Approve the target architecture and staged migration plan in
   `docs/mdaf_redesign.md` before changing production persistence contracts.
