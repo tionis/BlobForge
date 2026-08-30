@@ -21,6 +21,11 @@
   including explicit-only selection, stored-capability anti-broadening, tagged
   digest parsing, and legacy worker compatibility. Container publication
   verification follows in the release step.
+- **Release correction:** The first GitHub release run failed closed before
+  image publication because its runner lacked `pdftotext`; the newly added
+  real enrichment tests exposed that undeclared system dependency. Added
+  `poppler-utils` to the CI setup rather than skipping the tests. The corrected
+  release run and image digests are tracked in the deployment entry.
 
 ## 2026-08-30 (Hosted API Worker Quota Implementation)
 
