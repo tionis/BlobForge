@@ -52,10 +52,12 @@ class ConversionBundle:
     members: tuple[BundleMember, ...]
     source_map: Mapping[str, Any] | None
     outline: Mapping[str, Any] | None
-    tool: Mapping[str, Any]
+    tools: tuple[Mapping[str, Any], ...]
     models: tuple[Mapping[str, Any], ...]
     parameters: Mapping[str, Any]
     diagnostics: tuple[Mapping[str, Any], ...]
+    markdown_variant: str | None
+    markdown_features: tuple[str, ...]
 
 
 def load_bundle(root: str | Path) -> ConversionBundle:
@@ -102,17 +104,39 @@ def load_bundle(root: str | Path) -> ConversionBundle:
             raise ValueError(f"{key} must identify a JSON object")
         return parsed
 
-    tool = value.get("tool")
-    if not isinstance(tool, dict) or not tool.get("name") or not tool.get("version"):
-        raise ValueError("converter bundle needs an exact tool name and version")
+    def exact_tool(tool: Any) -> Mapping[str, Any]:
+        if not isinstance(tool, dict) or not tool.get("name") or not tool.get("version"):
+            raise ValueError("converter bundle needs exact tool names and versions")
+        return tool
+
+    tools = [exact_tool(value.get("tool"))]
+    additional_tools = value.get("additional_tools", [])
+    if not isinstance(additional_tools, list):
+        raise ValueError("additional_tools must be an array")
+    tools.extend(exact_tool(tool) for tool in additional_tools)
+
+    markdown_variant = value.get("markdown_variant", "CommonMark")
+    if markdown_variant is not None and (
+        not isinstance(markdown_variant, str) or not markdown_variant
+    ):
+        raise ValueError("markdown_variant must be a non-empty string or null")
+    markdown_features = value.get("markdown_features", [])
+    if (
+        not isinstance(markdown_features, list)
+        or any(not isinstance(item, str) or not item for item in markdown_features)
+        or len(set(markdown_features)) != len(markdown_features)
+    ):
+        raise ValueError("markdown_features must contain unique non-empty strings")
     return ConversionBundle(
         root=bundle_root,
         text_path=text_path,
         members=tuple(members),
         source_map=optional_json("source_map"),
         outline=optional_json("outline"),
-        tool=tool,
+        tools=tuple(tools),
         models=tuple(value.get("models", [])),
         parameters=value.get("parameters", {}),
         diagnostics=tuple(value.get("diagnostics", [])),
+        markdown_variant=markdown_variant,
+        markdown_features=tuple(markdown_features),
     )

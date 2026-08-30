@@ -92,20 +92,27 @@ rejection, unique artifact paths, tool versions, native members, mappings,
 models, parameters, and diagnostics. `blobforge/converters/runner.py` executes
 the adapter as a bounded subprocess and is the sole path from a bundle to the
 shared MDAF builder. `blobforge evaluate
-{poppler,marker1,marker2,docling,mistral} <pdf>` exposes the implemented
+{poppler,marker1,marker2,docling,mistral,datalab} <pdf>` exposes the implemented
 first-round adapters. When an adapter has no richer native hierarchy, the
 shared packager derives a conservative `outline.json` from non-empty ATX
 Markdown headings after all text normalization is complete. An
 adapter-supplied geometry-backed outline takes precedence; the fallback never
 fabricates source locators.
 
-The environments are independently locked below `evaluators/marker1/` and
-`evaluators/docling/`. Both select PyTorch's CPU-only wheel index on the 32-GiB
+The environments are independently locked below each `evaluators/<engine>/`
+directory. Marker and Docling select PyTorch's CPU-only wheel index on the 32-GiB
 host; the default PyPI resolution attempted to install several GiB of irrelevant
 CUDA 13 libraries and is intentionally forbidden. Marker is pinned to 1.10.2.
 Docling is pinned to 2.122.0 and retains lossless Docling JSON. Both adapters
 request explicit page separators and convert them to final UTF-8 page spans.
 Model aliases/checksums remain a production gate even with pinned packages.
+
+Hosted adapters use the same filesystem ABI but retain successful responses in
+durable, source/recipe-keyed caches before packaging. Mistral has a published
+pre-request page price and enforces a calculated ceiling. Datalab has a hard
+page cap but reports exact list/final cents only in the completed response, so
+its operator dollar ceiling is a post-charge assertion rather than a provider
+authorization limit. The distinction is explicit in plans and diagnostics.
 
 These are logical modules, not one dependency environment. Heavy local adapters
 run as subprocess entrypoints in separately locked uv projects or pinned
@@ -175,6 +182,13 @@ emitting mappings. The shared builder may validate or copy `text.md`, but must
 not silently rewrite it. Shared asset-link and Markdown-fragment helpers can be
 used inside adapters so all engines follow the same policy while retaining
 correct offsets.
+
+Table normalization follows `table_output_strategy.md`. Rectangular grids use
+deterministic pipe-table Markdown. A grid requiring merged cells may use only
+the documented sanitized semantic HTML subset after its consumer compatibility
+gate passes. Header/footer suppression, asset-description isolation, grid
+validation, and final table serialization all occur before byte mappings and
+outline spans; the shared builder still performs no silent rewrite.
 
 Where a provider returns page Markdown, the adapter can emit page-level byte
 spans immediately. Where a block tree is available, it can emit region mappings

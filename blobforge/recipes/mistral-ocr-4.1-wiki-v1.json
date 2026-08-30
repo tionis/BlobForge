@@ -1,0 +1,39 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 2,
+    "name": "blobforge-mistral-adapter",
+    "version": "0.2.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "base_recipe": {
+    "digest": "blake3:982a97ca1d45f5a0ac30dd8c7507efb594688d1b949f406ef4620f3352e723c7",
+    "path": "mistral-ocr-4.1-v1.json"
+  },
+  "engine": "mistral-ocr-wiki",
+  "generation": 1,
+  "markdown": {
+    "assets": "omit-unreferenced-after-normalization",
+    "features": [
+      "raw-html",
+      "semantic-html-table-v1"
+    ],
+    "page_join": "two-line-feeds",
+    "tables": "strict-semantic-html-from-provider-pipe-grid-v1"
+  },
+  "normalization": {
+    "ambiguous_content": "retain",
+    "footer_images": "remove-only-bottom-ten-percent-and-height-at-most-fifteen-percent",
+    "headers_and_footers": "remove-provider-typed-blocks",
+    "profile": "wiki-v1",
+    "version": "1.0.0"
+  },
+  "publication": {
+    "mapping": "provider-page-boundaries-after-normalization-v1",
+    "unsupported_precision": "retain-native-only"
+  },
+  "schema": "dev.tionis.blobforge.recipe/v2"
+}

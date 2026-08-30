@@ -694,7 +694,11 @@ def cmd_migrate_import_sources(args):
 def cmd_evaluate_converter(args):
     """Run one isolated converter adapter and emit a validated MDAF."""
     repository = Path(__file__).resolve().parent.parent
-    project = repository / "evaluators" / args.engine
+    provider_engine = {
+        "mistral-wiki": "mistral",
+        "datalab-wiki": "datalab",
+    }.get(args.engine, args.engine)
+    project = repository / "evaluators" / provider_engine
     adapter = project / "adapter.py"
     output = Path(args.output) if args.output else Path(args.path).with_suffix(
         f".{args.engine}.mdaf"
@@ -709,13 +713,28 @@ def cmd_evaluate_converter(args):
         "model": args.model,
     }
     environment = None
-    if args.engine == "mistral":
-        recipe = json.loads(
-            (repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json").read_text(
-                encoding="utf-8"
+    if args.engine in {"mistral", "mistral-wiki"}:
+        raw_recipe_path = (
+            repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
+        )
+        raw_recipe = json.loads(raw_recipe_path.read_text(encoding="utf-8"))
+        recipe_path = (
+            repository
+            / "blobforge"
+            / "recipes"
+            / (
+                "mistral-ocr-4.1-wiki-v1.json"
+                if args.engine == "mistral-wiki"
+                else "mistral-ocr-4.1-v1.json"
             )
         )
+        recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
         parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
+        if args.engine == "mistral-wiki":
+            parameters["provider_request_digest"] = blake3_bytes(
+                canonical_json_bytes(raw_recipe)
+            )
+            parameters["normalization_profile"] = "wiki-v1"
         parameters["api_rights_confirmed"] = args.confirm_api_rights
         response_cache = Path(
             args.response_cache
@@ -734,7 +753,10 @@ def cmd_evaluate_converter(args):
             credential_configured = bool(os.environ.get("MISTRAL_API_KEY"))
             print(f"Source:       {Path(args.path).resolve()}")
             print(f"Pages:        {pages:,}")
+            print(f"Bytes:        {Path(args.path).stat().st_size:,}")
             print(f"Recipe:       {parameters['recipe_digest']}")
+            if args.engine == "mistral-wiki":
+                print(f"Provider key: {parameters['provider_request_digest']}")
             print(f"List price:   ${estimated_cost:.3f}")
             print(f"Page ceiling: {args.max_pages if args.max_pages is not None else 'missing'}")
             print(
@@ -765,8 +787,94 @@ def cmd_evaluate_converter(args):
                 file=sys.stderr,
             )
             return 2
+    elif args.engine in {"datalab", "datalab-wiki"}:
+        raw_recipe_path = (
+            repository
+            / "blobforge"
+            / "recipes"
+            / "datalab-convert-accurate-v1.json"
+        )
+        raw_recipe = json.loads(raw_recipe_path.read_text(encoding="utf-8"))
+        recipe_path = (
+            repository
+            / "blobforge"
+            / "recipes"
+            / (
+                "datalab-convert-accurate-wiki-v1.json"
+                if args.engine == "datalab-wiki"
+                else "datalab-convert-accurate-v1.json"
+            )
+        )
+        recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+        parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
+        if args.engine == "datalab-wiki":
+            parameters["provider_request_digest"] = blake3_bytes(
+                canonical_json_bytes(raw_recipe)
+            )
+            parameters["normalization_profile"] = "wiki-v1"
+        parameters["api_rights_confirmed"] = args.confirm_api_rights
+        parameters["mode"] = "accurate"
+        response_cache = Path(
+            args.response_cache
+            or os.environ.get("BLOBFORGE_DATALAB_RESPONSE_CACHE")
+            or Path.home() / ".cache" / "blobforge" / "datalab-responses"
+        ).expanduser()
+        environment = {"BLOBFORGE_DATALAB_RESPONSE_CACHE": str(response_cache)}
+        if args.plan:
+            pages = pdf_pages(args.path)
+            source_bytes = Path(args.path).stat().st_size
+            page_limit_ok = (
+                args.max_pages is not None
+                and args.max_pages >= pages
+                and pages <= 7_000
+            )
+            size_limit_ok = source_bytes <= 200_000_000
+            cost_limit_ok = args.max_cost_usd is not None and args.max_cost_usd > 0
+            credential_configured = bool(os.environ.get("DATALAB_API_KEY"))
+            print(f"Source:       {Path(args.path).resolve()}")
+            print(f"Pages:        {pages:,}")
+            print(f"Bytes:        {source_bytes:,}")
+            print(f"Recipe:       {parameters['recipe_digest']}")
+            if args.engine == "datalab-wiki":
+                print(f"Provider key: {parameters['provider_request_digest']}")
+            print("Mode:         accurate")
+            print("Price:        provider-returned after conversion")
+            print(f"Page ceiling: {args.max_pages if args.max_pages is not None else 'missing'}")
+            print(
+                f"Cost ceiling: "
+                f"{f'${args.max_cost_usd:.3f}' if args.max_cost_usd is not None else 'missing'}"
+            )
+            print(f"Cache:        {response_cache}")
+            print(
+                "Credential:   "
+                + ("configured" if credential_configured else "not configured")
+            )
+            print(
+                "API rights:   "
+                + ("confirmed" if args.confirm_api_rights else "not confirmed")
+            )
+            ready = (
+                page_limit_ok
+                and size_limit_ok
+                and cost_limit_ok
+                and credential_configured
+                and args.confirm_api_rights
+            )
+            print(f"Ready:        {'yes' if ready else 'no'}")
+            print(
+                "The API has no preflight quote; the returned charge is checked "
+                "against the ceiling."
+            )
+            print("No provider request was made.")
+            return 0
+        if not args.confirm_api_rights:
+            print(
+                "Refusing Datalab upload without --confirm-api-rights.",
+                file=sys.stderr,
+            )
+            return 2
     elif args.plan:
-        print("--plan is currently supported only for Mistral.", file=sys.stderr)
+        print("--plan is supported only for hosted evaluators.", file=sys.stderr)
         return 2
     result = run_converter(
         ["uv", "run", "--project", str(project), "python", str(adapter)],
@@ -1783,7 +1891,17 @@ def main():
         "evaluate", help="Run an isolated converter and package a comparable MDAF"
     )
     p_evaluate.add_argument(
-        "engine", choices=("poppler", "marker1", "marker2", "docling", "mistral")
+        "engine",
+        choices=(
+            "poppler",
+            "marker1",
+            "marker2",
+            "docling",
+            "mistral",
+            "mistral-wiki",
+            "datalab",
+            "datalab-wiki",
+        ),
     )
     p_evaluate.add_argument("path", help="Source PDF")
     p_evaluate.add_argument("--output", "-o", help="Destination .mdaf")
@@ -1796,12 +1914,12 @@ def main():
     p_evaluate.add_argument("--model", help="Explicit provider model identifier")
     p_evaluate.add_argument(
         "--response-cache",
-        help="Durable Mistral response cache (default: ~/.cache/blobforge/mistral-responses)",
+        help="Durable hosted-provider response cache",
     )
     p_evaluate.add_argument(
         "--plan",
         action="store_true",
-        help="Print Mistral pages, limits, recipe, and cost without an API call",
+        help="Print hosted-provider limits and readiness without an API call",
     )
     p_evaluate.add_argument(
         "--confirm-api-rights",
@@ -1839,7 +1957,7 @@ def main():
     )
     seed_options = p_review.add_mutually_exclusive_group()
     seed_options.add_argument(
-        "--seed", default="blobforge-review-v1", help="Private label-shuffle seed"
+        "--seed", default="blobforge-review-v2", help="Private label-shuffle seed"
     )
     seed_options.add_argument(
         "--random-seed",

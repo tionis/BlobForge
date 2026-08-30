@@ -28,6 +28,8 @@ root = pathlib.Path(request["output_dir"])
     "namespace": "example.test"
   }],
   "tool": {"name": "fake", "version": "1.0.0"},
+  "additional_tools": [{"name": "normalizer", "version": "2.0.0"}],
+  "markdown_features": ["raw-html", "semantic-html-table-v1"],
   "models": [],
   "parameters": {"quality": "test"},
   "diagnostics": []
@@ -43,5 +45,14 @@ root = pathlib.Path(request["output_dir"])
         assert manifest["sources"][0]["digest"].startswith("blake3:")
         assert "native-renditions" in manifest["capabilities"]
         assert "outline" in manifest["capabilities"]
+        assert manifest["markdown"]["features"] == [
+            "raw-html",
+            "semantic-html-table-v1",
+        ]
+        provenance = json.loads(archive.read("provenance.json"))
+        assert provenance["activities"][0]["tools"] == [
+            {"name": "fake", "version": "1.0.0"},
+            {"name": "normalizer", "version": "2.0.0"},
+        ]
         outline = json.loads(archive.read("outline.json"))
         assert outline["nodes"][0]["title"] == "Adapter output"

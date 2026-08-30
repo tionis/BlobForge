@@ -1,0 +1,46 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 1,
+    "name": "blobforge-datalab-adapter",
+    "version": "0.1.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "engine": "datalab-convert",
+  "generation": 1,
+  "markdown": {
+    "asset_links": "page-neutral-sanitized-local-path-v1",
+    "page_delimiter": "marker-number-and-48-hyphens",
+    "provider_markdown": "otherwise-unchanged"
+  },
+  "model": {
+    "identifier": "datalab-convert-accurate",
+    "provider": "datalab",
+    "resolution": "provider-managed"
+  },
+  "native_evidence": {
+    "endpoint": "https://www.datalab.to/api/v1/convert",
+    "preserve_response": true
+  },
+  "parameters": {
+    "disable_image_captions": false,
+    "disable_image_extraction": false,
+    "mode": "accurate",
+    "output_format": "markdown",
+    "paginate": true,
+    "skip_cache": false
+  },
+  "publication": {
+    "mapping": "verified-provider-page-delimiters-v1",
+    "unsupported_precision": "page-only"
+  },
+  "response_validation": {
+    "cost_breakdown_required": true,
+    "page_count": "must-equal-source-pages",
+    "success_required": true
+  },
+  "schema": "dev.tionis.blobforge.recipe/v2"
+}

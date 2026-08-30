@@ -21,6 +21,12 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
+REPOSITORY = Path(__file__).resolve().parents[2]
+if str(REPOSITORY) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY))
+
+from blobforge.normalization import normalize_mistral_pages, referenced_asset_names
+
 CONTRACT = "dev.tionis.blobforge.converter-bundle/v1"
 CACHE_CONTRACT = "dev.tionis.blobforge.mistral-response/v1"
 PRICE_PER_PAGE_USD = 0.004
@@ -286,12 +292,22 @@ def main() -> int:
     recipe_digest = str(parameters.get("recipe_digest") or "")
     if not re.fullmatch(r"blake3:[0-9a-f]{64}", recipe_digest):
         raise ValueError("a canonical tagged recipe_digest is required")
+    provider_request_digest = str(
+        parameters.get("provider_request_digest") or recipe_digest
+    )
+    if not re.fullmatch(r"blake3:[0-9a-f]{64}", provider_request_digest):
+        raise ValueError("a canonical tagged provider_request_digest is required")
+    normalization_profile = parameters.get("normalization_profile")
+    if normalization_profile not in {None, "wiki-v1"}:
+        raise ValueError("unsupported normalization_profile")
 
     cache_root_value = os.environ.get("BLOBFORGE_MISTRAL_RESPONSE_CACHE")
     if not cache_root_value:
         raise ValueError("BLOBFORGE_MISTRAL_RESPONSE_CACHE is required")
     source_sha256 = _sha256_file(source)
-    request_id, request_value = _request_identity(source_sha256, recipe_digest, model)
+    request_id, request_value = _request_identity(
+        source_sha256, provider_request_digest, model
+    )
     response_path = _cache_path(Path(cache_root_value).expanduser(), request_id)
     with _response_lock(response_path):
         native = _read_cached_response(response_path, request_id, request_value)
@@ -311,13 +327,20 @@ def main() -> int:
 
     pages = _validate_response(native, page_count)
     (native_dir / "response.json").write_text(
-        json.dumps(native, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(native, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
+    normalization_stats = None
+    if normalization_profile == "wiki-v1":
+        normalized_pages, normalization_stats = normalize_mistral_pages(pages)
+    else:
+        normalized_pages = [page["markdown"] for page in pages]
+
     markdown = ""
     mappings = []
     asset_media_types: dict[str, str] = {}
     for page_number, page in enumerate(pages):
-        page_markdown = page["markdown"]
+        page_markdown = normalized_pages[page_number]
         replacements: dict[str, str] = {}
         for image_index, image in enumerate(page.get("images", []) or []):
             if not isinstance(image, dict):
@@ -384,7 +407,10 @@ def main() -> int:
             "namespace": "ai.mistral",
         }
     ]
+    referenced_assets = referenced_asset_names(markdown)
     for path in sorted(assets.iterdir()):
+        if normalization_profile == "wiki-v1" and path.name not in referenced_assets:
+            continue
         if path.is_file():
             members.append(
                 {
@@ -401,6 +427,16 @@ def main() -> int:
         "source_map": "data/source-map.json",
         "members": members,
         "tool": {"name": "mistralai", "version": version("mistralai")},
+        **(
+            {
+                "additional_tools": [
+                    {"name": "blobforge-wiki-normalizer", "version": "1.0.0"}
+                ],
+                "markdown_features": ["raw-html", "semantic-html-table-v1"],
+            }
+            if normalization_profile == "wiki-v1"
+            else {}
+        ),
         "models": [
             {
                 "provider": "mistral-ai",
@@ -419,6 +455,16 @@ def main() -> int:
             "confidence_scores_granularity": "block",
             "include_image_base64": True,
             "recipe_digest": recipe_digest,
+            **(
+                {"provider_request_digest": provider_request_digest}
+                if "provider_request_digest" in parameters
+                else {}
+            ),
+            **(
+                {"normalization_profile": normalization_profile}
+                if normalization_profile is not None
+                else {}
+            ),
         },
         "diagnostics": [
             {
@@ -432,6 +478,16 @@ def main() -> int:
                     f"{native.get('usage_info', {})}; list-price estimate=${expected_cost:.6f}."
                 ),
             },
+            *(
+                [
+                    {
+                        "severity": "info",
+                        "message": f"Wiki normalization applied: {normalization_stats}.",
+                    }
+                ]
+                if normalization_stats is not None
+                else []
+            ),
         ],
     }
     (output / "bundle.json").write_text(

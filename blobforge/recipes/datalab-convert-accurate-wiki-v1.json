@@ -1,0 +1,38 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 2,
+    "name": "blobforge-datalab-adapter",
+    "version": "0.1.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "base_recipe": {
+    "digest": "blake3:c1dc8c06bf29a7a5f1639a4a0bdfc8be1250745d5f6e13438c68b1e38df9bc6f",
+    "path": "datalab-convert-accurate-v1.json"
+  },
+  "engine": "datalab-convert-wiki",
+  "generation": 1,
+  "markdown": {
+    "assets": "omit-unreferenced-after-normalization",
+    "features": [
+      "raw-html",
+      "semantic-html-table-v1"
+    ],
+    "tables": "strict-semantic-html-from-provider-pipe-grid-v1"
+  },
+  "normalization": {
+    "ambiguous_content": "retain",
+    "captions": "remove-only-exact-paragraph-duplicates-of-image-alt-text",
+    "footer_images": "remove-only-recurring-final-small-dimensionally-consistent-images-with-shared-semantic-alt-tokens",
+    "profile": "wiki-v1",
+    "version": "1.0.0"
+  },
+  "publication": {
+    "mapping": "verified-provider-page-delimiters-after-normalization-v1",
+    "unsupported_precision": "page-only"
+  },
+  "schema": "dev.tionis.blobforge.recipe/v2"
+}

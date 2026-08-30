@@ -76,7 +76,7 @@ def run_converter(
         conversion = activity(
             activity_id="activity:convert",
             kind="document-extraction",
-            tools=[bundle.tool],
+            tools=list(bundle.tools),
             models=list(bundle.models),
             inputs=["source:document"],
             outputs=["text.md", "provenance.json"]
@@ -115,6 +115,8 @@ def run_converter(
             extra_members=extra_members,
             source_map=bundle.source_map,
             outline=effective_outline,
+            markdown_variant=bundle.markdown_variant,
+            markdown_features=bundle.markdown_features,
         )
         validated = validate_mdaf(result.path)
         if validated.identity != result.identity:

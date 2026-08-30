@@ -15,8 +15,11 @@ and paths.
 The page view places the source PDF beside raw Markdown from every candidate.
 Only exact single-page mapping intervals are accepted; a span covering multiple
 pages is rejected instead of being duplicated into misleading page evidence.
-Reviewers score text, reading order, hierarchy, lists, tables, assets,
-references, source mapping, and wiki utility from 1-5 and can write page notes.
+New v2 campaigns score text, inline formatting, reading order, hierarchy,
+lists, tables, assets, references, source mapping, and wiki utility from 1-5
+and can write page notes. Inline formatting covers semantically meaningful
+bold, emphasis, code, superscript, and related spans. Stored v1 campaigns keep
+their original nine dimensions and remain independently valid.
 An inline guide anchors 1 as unusable, 3 as acceptable, and 5 as
 publication-ready. Explicit N/A distinguishes an absent or unassessable feature
 from a missing score.
@@ -151,6 +154,147 @@ uv run blobforge review-bundle SOURCE.pdf \
 
 Keep the key outside any bundle sent to a reviewer. Unblind only after scores
 are exported.
+
+## Adding the Datalab candidate
+
+The first Datalab recipe uses accurate paginated Markdown with images and no
+paid bbox add-ons. Planning is provider-free:
+
+```bash
+uv run blobforge evaluate datalab SOURCE.pdf \
+  --max-pages 8 --max-cost-usd 0.10 \
+  --confirm-api-rights --plan \
+  --output .blobforge-migration/evaluations/rulebooks/storypath-ultra-tasty-bit-03.datalab.mdaf
+```
+
+Unlike Mistral's published fixed per-page price, Datalab returns exact
+list/final cents only after conversion and exposes no preflight quote. The
+eight-page cap bounds the first trial; the adapter checks the returned billed
+amount against the requested ceiling and captures the response before
+packaging. See `datalab_api_adapter.md` for the replay and accounting contract.
+
+## Hosted campaign result
+
+The canonical four-candidate review-v2 campaign contains Marker 1, Docling,
+Mistral OCR 4.1, and Datalab Convert accurate across all eight Storypath pages:
+
+```text
+.blobforge-migration/evaluations/reviews/storypath-hosted-v1/index.html
+.blobforge-migration/evaluations/reviews/storypath-hosted-v1.key.json
+```
+
+Campaign identity:
+
+```text
+blake3:4f10cea83474b0a728199b05707d5eb3188bb0854bc798759c9aeb2cf5a900cc
+```
+
+The complete export was validated before unblinding: all 320 rating slots are
+complete, comprising 252 numeric values and 68 N/A values. A=Marker 1.10.2,
+B=Mistral OCR 4.1, C=Datalab Convert accurate, and D=Docling 2.122.0. Mistral
+leads wiki utility (5.0) and assets (4.857). Marker and Docling lead lists
+(5.0), while Docling trails inline formatting (3.0). Datalab's image
+descriptions bleed into primary text and one whole-page raster was extracted;
+its current 3.0 wiki-utility result is a recipe blocker. See
+`converter_benchmark_results.md` for the complete dimension table and defects.
+
+The separate large-book local campaign compared Marker 1 and Docling on eight
+table/stat-block-heavy London Falling pages:
+
+```text
+.blobforge-migration/evaluations/reviews/london-falling-local-v1/index.html
+```
+
+Campaign identity:
+
+```text
+blake3:f31eabad8aacc5f4b10ebb96976d5a5491048252a6813df593d74458cab26d67
+```
+
+The reviewer stopped numeric scoring because both candidates failed the table
+acceptance purpose. Unblinding after that verdict maps A to Marker and B to
+Docling. Docling's table screenshots are readable but not usable structured
+wiki content; Marker also fails to recover usable tables. This is retained as
+qualitative blinded evidence rather than assigning arbitrary relative scores.
+
+## Four-way London Falling table campaign
+
+The hosted challenger uses an eight-page fixture so the paid exposure remains
+the same as the Storypath canary. Review pages map to the original PDF as
+`1→12, 2→23, 3→31, 4→38, 5→64, 6→78, 7→90, 8→92`. Each page was raster-checked
+against its original before submission. The campaign compares Marker 1,
+Docling, Mistral OCR, and Datalab accurate:
+
+```text
+.blobforge-migration/evaluations/reviews/
+  london-falling-tables-hosted-v1/index.html
+  london-falling-tables-hosted-v1/REVIEW_NOTES.md
+  london-falling-tables-hosted-v1.key.json
+```
+
+Campaign identity:
+
+```text
+blake3:9a366ab22d1557b1f665b7c76f08ab90db14b670ad0c4d823ed043a8a6b0d3a1
+```
+
+Score table semantics by correct headers, rows, columns, and cell associations.
+A table screenshot can receive asset credit but is not structured table output.
+Record duplicated content, invented/missing cells, and generated descriptions
+inside body text. The public bundle has no engine names; keep the mode-`0600`
+key unopened until the complete review export is saved.
+
+The reviewer completed fixture pages 1-3 and reported that the remaining pages
+repeated the same outcome. The partial export validates at 80 numeric ratings,
+36 N/A values, and 116/320 slots. It was unblinded only after that stopping
+decision: A=Marker, B=Mistral, C=Datalab, and D=Docling. Across the rated pages,
+table means are 1.0/5.0/4.0/1.0 respectively. Mistral and Datalab both score 4.0
+for wiki utility; Marker and Docling score 1.0. The five unrated pages remain
+qualitative evidence and are not assigned copied scores after unblinding.
+
+The result establishes Mistral as the provisional complex-table backend and
+Datalab as the challenger. It also establishes a post-processing requirement:
+use ordinary Markdown tables only for rectangular grids and a sanitized
+semantic HTML table when faithful output requires `colspan` or `rowspan`. See
+`table_output_strategy.md` for the representation and consumer-validation gate.
+
+The follow-up composite recipes replay the same paid responses without API
+keys. A fresh two-candidate campaign compares only the normalized Mistral and
+Datalab outputs and includes strict rendered table previews alongside raw
+Markdown:
+
+```text
+.blobforge-migration/evaluations/reviews/
+  london-falling-tables-wiki-v2/index.html
+  london-falling-tables-wiki-v2.key.json
+```
+
+Its campaign identity is
+`blake3:efd4e84ff559de4e497fb51ae406b288f7de91224bb223288bc84fb0af8853ce`.
+The reviewer rated the first two pages and stopped after the same structural
+difference was clear. Strict validation accepted 26 numeric ratings, 14 N/A
+values, and 40/160 slots. No scores were reconstructed for pages 3-8.
+Unblinding maps A to Mistral-wiki and B to Datalab-wiki. Both scored 5.0 for
+text, reading order, source mapping, and the one rated asset. Mistral scored 5.0
+for tables and wiki utility versus Datalab's 3.0 and 4.0; Datalab scored 5.0 for
+hierarchy versus Mistral's 3.0. Mistral converted the relevant tables
+consistently, while Datalab had only one correct HTML table with spans and left
+inconsistent grids unchanged. This selects Mistral-wiki for complex tables.
+
+Datalab's retained image alt text contains the unexplained Chinese adjective
+`阴森` in an otherwise English description. It exists in the native provider
+response; the normalizer removed only the exact duplicated body paragraph and
+did not invent or translate the alt text.
+
+The cached Storypath responses were subsequently replayed through both wiki
+profiles without provider keys. Mistral removed exactly the 16 typed running
+footers criticized in the original review and made no other Markdown-content
+change: headings, outline hierarchy, links/assets, lists, emphasis, and prose
+remain equal. Datalab's Markdown remained byte-identical because its defects do
+not satisfy the intentionally conservative evidence rules. Both composites
+pass deterministic replay and Vulcan import. No additional blinded campaign is
+needed for an unchanged candidate and an exact removal of already-adjudicated
+page furniture.
 
 ## Importing a result
 

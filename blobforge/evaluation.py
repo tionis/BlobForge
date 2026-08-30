@@ -10,6 +10,10 @@ from pathlib import Path
 
 from .mdaf import validate_mdaf
 
+SEMANTIC_TABLE_TAG_RE = re.compile(
+    r"</?(?:table|caption|thead|tbody|tr|th|td)(?:\s+[^>]*)?>", re.IGNORECASE
+)
+
 
 @dataclass(frozen=True)
 class ArtifactMetrics:
@@ -46,14 +50,17 @@ def measure(path: str | Path) -> ArtifactMetrics:
             if selector.get("type") == "interval" and selector.get("unit") == "page":
                 pages.update(range(int(selector["start"]), int(selector["end"])))
     producer = manifest["producer"]
+    visible_text = SEMANTIC_TABLE_TAG_RE.sub(" ", text)
+    markdown_table_rows = len(re.findall(r"^\s*\|.*\|\s*$", text, re.MULTILINE))
+    html_table_rows = len(re.findall(r"<tr(?:\s[^>]*)?>", text, re.IGNORECASE))
     return ArtifactMetrics(
         path=str(artifact),
         identity=validated.identity,
         producer=f"{producer['name']} {producer['version']}",
         text_bytes=len(text_bytes),
-        words=len(re.findall(r"\b\w+\b", text, re.UNICODE)),
+        words=len(re.findall(r"\b\w+\b", visible_text, re.UNICODE)),
         headings=len(re.findall(r"^#{1,6}\s+", text, re.MULTILINE)),
-        table_rows=len(re.findall(r"^\s*\|.*\|\s*$", text, re.MULTILINE)),
+        table_rows=markdown_table_rows + html_table_rows,
         assets=sum(member.get("role") == "asset" for member in manifest["members"]),
         mappings=len(mappings),
         mapped_pages=len(pages),

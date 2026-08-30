@@ -1,5 +1,348 @@
 # Work Log
 
+## 2026-08-30 (Evaluated-state Commit Checkpoint)
+
+- **Scope:** Prepared the complete Datalab adapter, hosted wiki composites,
+  table/cleanup normalization, review UI, real evaluation decisions, tests, and
+  documentation as one requested checkpoint before beginning list/routing
+  improvements. Ignored corpora, provider caches, credentials, generated MDAFs,
+  and review keys/results remain outside Git.
+- **Verification:** Reused the immediately preceding hermetic 262-test plus
+  5-subtest pass, deterministic provider-cache replays, Vulcan imports, and
+  `git diff --check`. A secret-pattern scan of the staged patch found no
+  credentials. The first sandboxed `git add` could not create `.git/index.lock`;
+  the approved repository-scoped retry succeeded. Removed three Markdown
+  trailing-space status suffixes reported by the staged diff check.
+
+## 2026-08-30 (Storypath Wiki-profile Regression)
+
+- **Execution:** Replayed the already-paid eight-page Storypath Mistral and
+  Datalab responses with both provider keys explicitly removed. No API request
+  occurred. Produced Mistral-wiki
+  `blake3:5b1074c707e16069c8ea0172cd90557f57c4eee32c77ff4c886c0d96bca35568`
+  and Datalab-wiki
+  `blake3:646bb02b391704d6f27af4e52eb0bc8ba01efc3c7c9d78a879bbd2d821ba36ea`.
+- **Mistral regression:** Removed 16 provider-typed footer blocks and nothing
+  else. The exact line diff accounts for all 166 removed UTF-8 bytes. Heading
+  sequences, outline title/level pairs, image links, asset members, lists,
+  emphasis, and body prose remain unchanged; 8 mappings and 19 outline nodes
+  remain.
+- **Datalab regression:** Removed zero descriptions, footer images, or tables.
+  Final Markdown is byte-identical to raw Datalab because no defect met the
+  conservative evidence thresholds. This preserves honesty but leaves its
+  reviewed prose defects intact.
+- **Determinism/consumer:** Second keyless replays were byte-identical. Both
+  pass Vulcan validation and imported into a temporary vault as 20 notes with
+  2/4 assets. The imports preserve the expected hierarchy and assets.
+- **Decision:** Did not create another human campaign. It would compare an
+  unchanged Datalab candidate and a Mistral candidate differing only by running
+  footers already criticized in the blinded review. Mistral-wiki strictly
+  supersedes raw Mistral on this canary and is the hosted quality-tier leader;
+  Marker 1 remains the local/privacy fallback and retains its list-syntax edge.
+- **Tooling:** Used keyless guarded evaluator replays, `cmp`, Vulcan validation
+  and import, backend-neutral comparison, exact `difflib` inspection, ZIP/JSON
+  invariant auditing, `apply_patch`, `rg`, and `sed`. The one-off image-link
+  audit regex emitted a harmless nested-set `FutureWarning`; its equality
+  result was still valid and all other audit invariants passed.
+
+## 2026-08-30 (Wiki-normalized Table Review Decision)
+
+- **Ingestion:** Preserved the supplied review-v2 export exactly and ran it
+  through strict `review-summarize` validation against campaign
+  `blake3:efd4e84ff559de4e497fb51ae406b288f7de91224bb223288bc84fb0af8853ce`.
+  Validation accepted 2/8 pages, 26 numeric ratings, 14 N/A values, and 40/160
+  slots. The remaining pages were intentionally not assigned copied scores.
+- **Unblinding:** A is Mistral OCR 4.1 plus wiki normalizer; B is Datalab
+  accurate plus wiki normalizer. Both score 5.0 for text, reading order, source
+  mapping, and the one applicable asset rating. Mistral leads tables 5.0 to 3.0
+  and wiki utility 5.0 to 4.0; Datalab leads hierarchy 5.0 to 3.0.
+- **Decision:** Selected Mistral-wiki as the complex-table recipe. It applies
+  semantic HTML consistently across the reviewed table set. Datalab converts
+  only parseable rectangular grids; its other inconsistent pipe tables remain
+  unchanged by design, so it remains a hierarchy-strong challenger rather than
+  the table fallback.
+- **Caption evidence:** Traced the reported `阴森` token to Datalab's native
+  generated image alt text. The normalizer removed the exact duplicated body
+  paragraph but retained the alt text; it did not introduce the token. Provider
+  captions remain unverified evidence.
+- **Files/tooling:** Added the ignored result and unblinded summary beside the
+  campaign, then updated the roadmap, table strategy, normalization design,
+  review guide, benchmark results, work log, and repository findings. Used
+  `apply_patch`, the strict summarizer, `sed`, `unzip`, and `rg`; no provider or
+  production request was made.
+
+## 2026-08-30 (Review Table Contrast Repair)
+
+- **Reported defect:** The semantic-table preview inherited BlobForge's light
+  foreground color while table cells used a light browser/background color,
+  producing white-on-white content in much of the table.
+- **Repair:** Scoped the preview to an explicit light palette: white body cells
+  with `#17202a` text, `#e4edf5` headers with `#111820` text, and `#8a98a8`
+  borders. This does not affect candidate Markdown, ratings, campaign identity,
+  or the rest of the dark review UI.
+- **Existing campaign:** Patched the generated, still-current
+  `london-falling-tables-wiki-v2/index.html` in place so localStorage ratings
+  keyed by campaign
+  `blake3:efd4e84ff559de4e497fb51ae406b288f7de91224bb223288bc84fb0af8853ce`
+  remain usable. The generator carries the same fix for future campaigns.
+- **Verification:** Review tests pass 7/7, the generated JavaScript passes
+  `node --check`, and the delivered bundle contains the explicit foreground and
+  background declarations.
+
+## 2026-08-30 (Wiki-normalized Hosted Table Recipes)
+
+- **Architecture:** Extended the converter bundle ABI with multiple exact tools
+  and explicit Markdown variant/features. The shared builder remains the sole
+  MDAF packager. Composite recipes carry their own artifact recipe digest while
+  using the frozen raw-provider recipe digest as the paid-response cache key.
+- **Normalization:** Added a strict semantic table grid/serializer and
+  evidence-specific wiki profiles. Mistral rebuilds pages from typed blocks,
+  suppresses typed header/footer blocks and tightly bounded bottom images, and
+  converts typed tables. Datalab removes only exact duplicated caption
+  paragraphs and sufficiently recurring, small, dimensionally consistent final
+  images with shared semantic alt tokens. Both retain ambiguous content and
+  package only final referenced assets.
+- **Real cache replay:** With `MISTRAL_API_KEY` and `DATALAB_API_KEY` explicitly
+  removed, replayed the already-paid eight-page London Falling responses. No
+  provider request occurred. Mistral removed 8 headers, 13 footers, and 5 footer
+  images and converted 34 tables; Datalab isolated 8 exact descriptions,
+  removed 7 footer images, and converted 18 tables.
+- **Artifacts:** Produced ignored evaluation MDAFs
+  `blake3:1a6b3dad11b78eb1c2912bab9f87b6c23aeb77dde383a33c011bc183f8866534`
+  (Mistral) and
+  `blake3:bbed7f449c82e4c53f7aa552f1431ab434fe840f5c8b9d5c5159b6effc4b3fab`
+  (Datalab). Both retain 8/8 mappings and one relevant asset. A second keyless
+  replay was byte-identical for each.
+- **Consumer gate:** Independent Vulcan validation accepts both artifacts.
+  Actual imports into an initialized temporary vault created 51/48 notes and
+  one asset each, preserving `<table>` and `colspan`. Updated comparison metrics
+  to count semantic HTML rows without counting tag names as words.
+- **Review:** Added a review UI semantic-table preview that reconstructs only a
+  fixed element/attribute allowlist through DOM methods, never provider
+  `innerHTML`. Generated blinded campaign
+  `blake3:efd4e84ff559de4e497fb51ae406b288f7de91224bb223288bc84fb0af8853ce`
+  for the two normalized artifacts; the private key remains mode `0600` and
+  should stay unopened until review export. The earlier ignored v1 bundle was
+  superseded before review because its table preview did not yet allow the
+  serializer's safe inline tags; no scores were collected against it.
+- **Verification:** Focused normalization, adapter, runner, evaluation, and
+  review tests pass. The first full run inherited production coordinator
+  variables and produced 16 legacy worker-test network failures after 246 tests
+  and 5 subtests passed; the affected 35 tests pass with coordinator variables
+  removed. The initial uv run also needed its read-only home cache redirected
+  to `/tmp`. A first `blobforge compare` typo was corrected to `compare-mdaf`.
+  Node syntax validation passes for the generated review script. A headless
+  Firefox screenshot attempt stalled on the embedded local PDF viewer and was
+  terminated without an image; browser rendering remains the human review
+  gate. Direct `node`/jsdom execution was unavailable because jsdom is not
+  installed in this checkout. The final hermetic full suite passes 262 tests
+  plus 5 subtests, and `git diff --check` passes.
+
+## 2026-08-30 (Hosted Table Review Decision)
+
+- **Input/coverage:** Transcribed the three rated pages from the supplied
+  review-v2 export and preserved its page-specific qualitative defects in the
+  benchmark documentation. Strict `review-summarize` validation verified the
+  campaign/seed assignment and accepted 3/8 reviewed pages, 80 numeric ratings,
+  36 N/A values, and 116/320 slots. Page-one assets were intentionally blank,
+  not N/A. The reviewer reported that pages 4-8 repeated the result; no numeric
+  values were copied or reconstructed after unblinding.
+- **Unblinding/result:** A is Marker 1.10.2, B is Mistral OCR 4.1, C is Datalab
+  Convert accurate, and D is Docling 2.122.0. Mistral/Datalab table means are
+  5.0/4.0 and wiki utility 4.0/4.0. Marker/Docling both score 1.0 for tables and
+  wiki utility. Datalab leads hierarchy at 5.0; Mistral leads the hosted asset
+  candidates, while Marker alone extracts only the relevant image on the two
+  rated asset pages.
+- **Defects:** Recorded Mistral repeated page headers; Datalab image-description
+  bleed; irrelevant footer logos from Mistral, Datalab, and Docling; and
+  Docling's redundant table screenshots. These corroborate the earlier
+  Storypath defects and become structural cleanup fixtures, never global
+  replacements.
+- **Architecture decision:** Added `docs/table_output_strategy.md`. Pipe-table
+  Markdown remains the default for rectangular grids. Tables needing merged
+  cells should use a tightly allowlisted, escaped semantic HTML subset with
+  `colspan`/`rowspan`, conditional on a Vulcan/import/renderer preservation and
+  safety fixture. Table normalization precedes final outline and UTF-8 source
+  spans; invalid grids retain evidence/assets but are not reported as
+  successful structured extraction.
+- **Tooling/state:** Used the strict review summarizer, `jq`, read-only MDAF
+  specification and Vulcan consumer inspection, `rg`, `sed`, and `apply_patch`.
+  No provider request, artifact, source, campaign, or production service was
+  changed.
+
+## 2026-08-30 (Four-way London Falling Table Challenger)
+
+- **Fixture:** Extracted original London Falling pages 12, 23, 31, 38, 64, 78,
+  90, and 92 into an eight-page, 1,992,639-byte PDF using Poppler 25.03.0.
+  Recorded source/fixture digests, tool versions, and page map in an ignored
+  provenance JSON. Rendered every source/fixture page pair at 72 DPI and proved
+  all eight PNG pairs byte-identical.
+- **Hosted guards/execution:** Both credential-presence plans passed without a
+  request. With the user's explicit API-rights confirmation, submitted the
+  exact fixture under Mistral's 8-page/$0.04 and Datalab's 8-page/$0.10 guards.
+  Mistral completed in 7.5s at a $0.032 list estimate; Datalab completed end to
+  end in 25.2s, reported 19.14s provider runtime, and billed $0.06. Responses
+  were cached before packaging and credentials were never printed or persisted.
+- **Determinism repair:** Mistral replayed byte-identically. Datalab's first
+  replay had identical parsed response JSON but a different native member
+  digest because live provider key order differed from the sorted cache. Added
+  canonical `sort_keys=True` native serialization and a live/replay native-byte
+  regression assertion. Preserved the unreviewed live-order artifact under
+  `/tmp`, rebuilt from cache with both keys removed, and proved byte identity at
+  canonical MDAF
+  `blake3:3a4551a34a4ba805287e16ac9a1a4b4794d48bcb720dec05ca28b7046076dafa`.
+  No provider request was repeated.
+- **Local controls:** Staged the same fixture on Enterprise. The first SSH
+  attempts lacked remote `uv` in `PATH`; reran with the explicit user-local
+  path. Docling completed in 192.8s. Marker completed in 736.1s and reached
+  roughly 10.5 GiB RSS, reinforcing one-large-Marker-job scheduling on 32-GiB
+  hosts. Retrieved both MDAFs without changing their bytes.
+- **Validation/metrics:** Independent Vulcan validation accepts every artifact
+  with 8/8 mappings. Marker/Docling/Mistral/Datalab respectively produced
+  133,915/391,233/45,750/96,977 Markdown bytes, 6,096/21,404/5,867/6,554 words,
+  303/235/299/299 apparent table rows, and 4/18/6/8 assets. These are review
+  inputs, not quality scores.
+- **Review:** Generated fresh random-seed review-v2 campaign
+  `blake3:9a366ab22d1557b1f665b7c76f08ab90db14b670ad0c4d823ed043a8a6b0d3a1`.
+  Its public bundle passed an engine-name scan, contains page-map/rubric notes,
+  and its private key is mode `0600` and remains uninspected.
+- **Verification/tooling:** Focused Datalab tests pass 5/5; the hermetic full
+  suite passes 249 tests plus 5 subtests. Used Poppler, BLAKE3/SHA-256, `cmp`,
+  guarded `uv` evaluators, SSH/rsync, Vulcan, JSON semantic comparison,
+  `apply_patch`, and the review generator. An initial keyless replay inside the
+  filesystem sandbox could not open the existing home-cache lock; the approved
+  cache-access retry succeeded with both provider keys removed. No production
+  service, source PDF, or prior artifact was modified.
+
+## 2026-08-30 (Hosted Review Result and Table Gate)
+
+- **Input/validation:** Transcribed the complete numeric ratings from the
+  supplied Storypath review-v2 export, retaining the reviewer's qualitative
+  defects in the benchmark record. An initial normalization command failed on
+  an integer/string page-key typo and was corrected without changing any
+  artifact or campaign. `blobforge review-summarize` then verified the private
+  seed assignment, campaign digest, pages, dimensions, candidates, and all
+  values: 8 reviewed pages, 252 ratings, 68 N/A values, and 320/320 slots.
+- **Unblinding:** A is Marker 1.10.2, B is Mistral OCR 4.1, C is Datalab Convert
+  accurate, and D is Docling 2.122.0. Mistral leads wiki utility (5.0) and
+  assets (4.857), with perfect text, formatting, reading-order, and mapping
+  scores. Marker and Docling lead list syntax; Docling's formatting is 3.0 and
+  Datalab's wiki utility is 3.0.
+- **Failure evidence:** Recorded Mistral footer noise and intermittent
+  non-Markdown list symbols; Marker's residual `Y` dingbats, rogue marker, and
+  inconsistent crops; Docling's formatting loss/lower-resolution assets; and
+  Datalab's body-text description bleed, nonstandard bullets, and whole-page
+  raster extraction.
+- **Large-book table gate:** The reviewer found both blinded London Falling
+  candidates unusable for tables and therefore did not manufacture numeric
+  distinctions. Validated the campaign key after that verdict: A is Marker and
+  B is Docling. Docling's table images retain limited human readability but no
+  structured cell semantics; Marker also fails. Added a hosted table-focused
+  challenger and modular cleanup stages to the roadmap.
+- **Tooling/state:** Used `rg`, `sed`, `uv`, the strict review summarizer, `jq`,
+  and `apply_patch`. Read only the two mode-`0600` campaign keys after the
+  corresponding blinded judgments. No provider request, source, artifact, or
+  production service was changed.
+
+## 2026-08-30 (First Hosted Canaries and Large-Book Review Inputs)
+
+- **Credentials/plans:** Confirmed the two variable names in the git-ignored
+  `.env` without printing values. Both guarded plans reported ready. Keys were
+  sourced only inside provider commands and never entered arguments, logs,
+  recipes, caches, artifacts, or tracked files.
+- **Mistral:** Submitted the authorized eight-page Storypath PDF under the
+  $0.04 ceiling. OCR completed in 6.9s, reported 8 pages / 9,909,035 bytes, and
+  has a $0.032 list-price estimate. The successful response was cached before
+  packaging. A keyless replay exposed native JSON insertion-order drift; added
+  sorted native serialization, preserved the initial unscored artifact and
+  campaign under `/tmp`, and rebuilt without a second request. Repeated keyless
+  packages are byte-identical at MDAF identity
+  `blake3:cb906843d778f3328175fa869251e39520015d1aec8bddef59b9cab5915112e8`.
+- **Datalab:** Submitted the same PDF to Convert accurate with an eight-page
+  bound and $0.10 returned-cost ceiling. Provider runtime was 13.12s and exact
+  billed cost was $0.06. The live response omitted the documented
+  `list_cost_cents`, parse-quality score, and model versions. The cached result
+  enabled compatibility fixes for optional list cost and MDAF's
+  `mutable-alias` vocabulary without repurchase. The failed partial MDAF was
+  moved to `/tmp`; canonical keyless replays are byte-identical at identity
+  `blake3:2071347f7728035763d51c2de451dd6fde7c0542fb9e30891f3abc5e4982522f`.
+- **Validation/metrics:** BlobForge and Vulcan accept both hosted MDAFs with
+  8/8 exact page mappings and 19 outline nodes. Mistral has 26,262 Markdown
+  bytes, 4,266 words, and 2 assets; Datalab has 27,484 bytes, 4,465 words, and 4
+  assets. Counts remain non-quality evidence.
+- **Enterprise completion:** Collected the 98-page Marker artifact after
+  3,260.3s. Vulcan accepts its 98 mappings, 487 outline nodes, 1,584 table rows,
+  and 89 assets. It has 819,143 Markdown bytes / 65,546 words versus Docling's
+  1,723,253 / 115,960, requiring human adjudication rather than a count-based
+  conclusion.
+- **Review campaigns:** Generated fresh random-seed review-v2 campaigns without
+  inspecting their private assignments. Storypath hosted campaign
+  `blake3:4f10cea83474b0a728199b05707d5eb3188bb0854bc798759c9aeb2cf5a900cc`
+  compares four structured engines on pages 1-8. London Falling campaign
+  `blake3:f31eabad8aacc5f4b10ebb96976d5a5491048252a6813df593d74458cab26d67`
+  compares Marker/Docling on pages 12, 23, 31, 38, 64, 78, 90, and 92. Public
+  files passed an engine-name blinding scan.
+- **Backfill acceptance:** The independently running frozen enrichment backfill
+  reached 1,377 converted with no other current status. A separate read-only
+  `migrate enrich-verify` pass reread every derivative and catalog lineage:
+  1,377 checked, 1,377 valid, zero invalid. Phase 1's complete enrichment
+  backfill gate is closed.
+- **Tooling:** Used guarded plans/execution, private cache locks, `uv`, pytest,
+  `vulcan`, `cmp`, ZIP member hashing, SSH/rsync, JSON schema inspection,
+  `apply_patch`, and generated review checks. The hermetic suite passes 249
+  tests plus 5 subtests; compilation and `git diff --check` pass. No production
+  coordinator or source PDF was mutated; no provider request was repeated.
+
+## 2026-08-29 (Hosted Evaluator Readiness and Enterprise Stress Test)
+
+- **Credential safety:** Checked only credential presence, never values. Neither
+  `MISTRAL_API_KEY` nor `DATALAB_API_KEY` is exported, present in the repository
+  `.env`, standard shell configuration, or the enterprise SSH environment.
+  Both guarded plans therefore report `Ready: no`; no provider request was
+  made and no credits were consumed. The operator was asked to place the two
+  assignments in the git-ignored/build-excluded `.env`.
+- **Datalab adapter:** Verified Datalab's current official Convert v1 contract,
+  response fields, modes, limits, polling, one-hour retention, bbox add-on
+  billing, and post-response cost breakdown. Added a locked isolated evaluator
+  and canonical accurate-mode recipe at
+  `blake3:c1dc8c06bf29a7a5f1639a4a0bdfc8be1250745d5f6e13438c68b1e38df9bc6f`.
+  It bounds pages and file size before submission, requires rights and a
+  returned-cost ceiling, stores the same-origin polling URL immediately,
+  captures success before packaging, replays offline, validates exact page
+  delimiters, rewrites magic-checked raster assets, preserves native billing,
+  and reports list/billed/derived discount separately. Accurate replaced the
+  initially drafted balanced mode before any API call because quality, not
+  throughput, is the first rulebook gate.
+- **Review contract:** Introduced review v2 with `inline-formatting` while
+  retaining exact v1 validation. A real one-page, three-candidate generated
+  smoke campaign contains ten dimensions. Existing result files and campaigns
+  were not changed.
+- **Enterprise setup:** Read-only inspection found Debian 13, 16 logical CPUs,
+  31 GiB RAM/swap, 524 GiB free disk, Podman, Poppler, and the relevant corpus.
+  Staged a secret-free checkout, installed uv 0.12.7 in the user account, and
+  synchronized the pinned core, Docling, and Marker 1 CPU environments.
+- **Enterprise canaries:** Storypath Docling completed in 115.0 seconds and
+  Marker 1 in 100.8 seconds. Their converter payloads are byte-identical to the
+  earlier outputs; only current outline provenance changes logical MDAF
+  identity. The 98-page London Falling Docling run completed in 1,015.9 seconds
+  and independently passed Vulcan with 98 mappings, 467 outline nodes, 1,311
+  table rows, and 163 assets. It was retained in the ignored local evaluation
+  workspace with identity `blake3:64df8d1435e52c090e651caecbe814b631392525aab20bfb2ec56ea0de0cd747`.
+  It used roughly 3.0-3.5 GiB RSS. The overlapping
+  Marker stress run remained healthy beyond 45 minutes, reached roughly 13.8
+  GiB RSS, and was still running at this log point. Use one large Marker job at
+  a time on 32-GiB hosts.
+- **Backfill:** The frozen enrichment recipe advanced from 1,132 to 1,148
+  converted, with 227 pending and 2 processing at the last check. Historical
+  rejected-recipe rows were excluded from these figures.
+- **Verification/tooling:** Focused adapter/review tests, compilation,
+  `git diff --check`, dry-run plans, a generated review-v2 smoke, BlobForge
+  validation, independent Vulcan validation, and the hermetic full suite pass;
+  the latter reports 249 tests plus 5 subtests. Used `rg`, `find`, `sed`,
+  `sqlite3`, `uv`, `pytest`, SSH, rsync, process/memory inspection, official
+  Datalab documentation, and `apply_patch`. No source, production coordinator,
+  provider account, or existing artifact was mutated.
+
 ## 2026-08-29 (Supplemental Blinded Inline-Formatting Evidence)
 
 - **Observation:** The reviewer clarified that they noticed the emphasis

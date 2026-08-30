@@ -16,9 +16,11 @@ from typing import Any, Iterable
 from .mdaf import blake3_file, validate_mdaf
 from .mdaf.digest import blake3_bytes, canonical_json_bytes
 
-REVIEW_FORMAT = "dev.tionis.blobforge.review/v1"
+REVIEW_FORMAT_V1 = "dev.tionis.blobforge.review/v1"
+REVIEW_FORMAT_V2 = "dev.tionis.blobforge.review/v2"
+REVIEW_FORMAT = REVIEW_FORMAT_V2
 REVIEW_SUMMARY_FORMAT = "dev.tionis.blobforge.review-summary/v1"
-DEFAULT_DIMENSIONS = (
+V1_DIMENSIONS = (
     "text",
     "reading-order",
     "hierarchy",
@@ -29,8 +31,20 @@ DEFAULT_DIMENSIONS = (
     "source-mapping",
     "wiki-utility",
 )
+DEFAULT_DIMENSIONS = (
+    "text",
+    "inline-formatting",
+    *V1_DIMENSIONS[1:],
+)
+DIMENSIONS_BY_FORMAT = {
+    REVIEW_FORMAT_V1: V1_DIMENSIONS,
+    REVIEW_FORMAT_V2: DEFAULT_DIMENSIONS,
+}
 DIMENSION_GUIDANCE = {
     "text": "Complete and accurate words, punctuation, symbols, and paragraphs.",
+    "inline-formatting": (
+        "Correct bold, emphasis, code, superscript, and other meaningful inline styling."
+    ),
     "reading-order": "Narrative order across columns, sidebars, captions, headers, and footers.",
     "hierarchy": "Sensible Markdown levels for titles, sections, subsections, and callouts.",
     "lists": "Correct bullets, numbering, indentation, nesting, and continuation paragraphs.",
@@ -92,7 +106,8 @@ def summarize_review_result(
     """Validate a blinded export against its private key and summarize it."""
     result = _json_object(result_path)
     key = _json_object(key_path)
-    if result.get("format") != REVIEW_FORMAT or key.get("format") != REVIEW_FORMAT:
+    review_format = result.get("format")
+    if review_format != key.get("format") or review_format not in DIMENSIONS_BY_FORMAT:
         raise ValueError("review result and key must use the supported review format")
     digest = result.get("campaign_digest")
     if not isinstance(digest, str) or digest != key.get("campaign_digest"):
@@ -114,7 +129,7 @@ def summarize_review_result(
     pages = key.get("pages")
     candidates = key.get("candidates")
     if (
-        dimensions != list(DEFAULT_DIMENSIONS)
+        dimensions != list(DIMENSIONS_BY_FORMAT[review_format])
         or not isinstance(pages, list)
         or not all(isinstance(page, int) for page in pages)
         or not isinstance(candidates, list)
@@ -428,6 +443,7 @@ table{{width:100%;border-collapse:collapse;margin-top:1rem}}th,td{{border:1px so
 .score{{display:flex;align-items:center;gap:.3rem}}textarea{{width:100%;min-height:8rem;margin-top:1rem}}small{{color:var(--muted);display:block;font-weight:normal;margin-top:.2rem}}
 .guide{{margin-bottom:1rem;background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:.7rem}}.guide summary{{cursor:pointer;color:var(--accent);font-weight:600}}.guide ol{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.35rem 1.2rem}}
 .assets{{border-top:1px solid var(--line);padding:.7rem;display:grid;gap:.6rem}}.assets h3{{font-size:.85rem;margin:0;color:var(--muted)}}.assets img{{display:block;max-width:100%;max-height:320px;margin:auto;background:white;border:1px solid var(--line)}}.unavailable{{color:var(--muted);font-size:.85rem}}
+.table-previews{{border-top:1px solid var(--line);padding:.7rem;overflow:auto}}.table-previews h3{{font-size:.85rem;margin:0 0 .6rem;color:var(--muted)}}.table-previews table{{border-collapse:collapse;margin:.6rem 0;width:100%;font-size:.82rem;background:#fff;color:#17202a}}.table-previews th,.table-previews td{{border:1px solid #8a98a8;padding:.3rem;vertical-align:top;text-align:left;background:#fff;color:#17202a}}.table-previews th{{background:#e4edf5;color:#111820}}.table-previews caption{{color:#17202a}}
 @media(max-width:900px){{main{{display:block}}.source{{position:relative;top:0;height:55vh;border-right:0;border-bottom:1px solid var(--line)}}}}
 </style></head><body>
 <script id="review-data" type="application/json">{embedded}</script>
@@ -441,7 +457,9 @@ let scores={{}};try{{scores=JSON.parse(localStorage.getItem(stateKey)||'{{}}')}}
 for(const page of data.pages){{const o=document.createElement('option');o.value=page.index;o.textContent=page.label;pageSelect.append(o)}}
 document.documentElement.style.setProperty('--count',data.candidates.length);
 function save(){{try{{localStorage.setItem(stateKey,JSON.stringify(scores));document.querySelector('#status').textContent='saved locally';return true}}catch(_error){{document.querySelector('#status').textContent='autosave unavailable; use Export scores';return false}}}}
-function render(){{const page=String(pageSelect.value),entry=data.pages.find(x=>String(x.index)===page);document.querySelector('#pdf').src='source.pdf#page='+entry.label;const columns=document.querySelector('#columns');columns.replaceChildren();for(const c of data.candidates){{const box=document.createElement('article');box.className='candidate';const h=document.createElement('h2');h.textContent='Candidate '+c.label;const pre=document.createElement('pre');pre.textContent=c.pages[page]||'[no mapped text]';box.append(h,pre);const assets=document.createElement('section');assets.className='assets';const title=document.createElement('h3');title.textContent='Extracted assets on this page';assets.append(title);const pageAssets=c.assets[page]||[];if(!pageAssets.length){{const empty=document.createElement('span');empty.className='unavailable';empty.textContent='No linked extracted asset';assets.append(empty)}}for(const asset of pageAssets){{if(asset.previewable){{const img=document.createElement('img');img.src=asset.path;img.alt='Blinded extracted asset';img.loading='lazy';assets.append(img)}}else{{const unavailable=document.createElement('span');unavailable.className='unavailable';unavailable.textContent='Linked asset is not a safe raster preview';assets.append(unavailable)}}}}box.append(assets);columns.append(box)}}for(const cell of document.querySelectorAll('.scores')){{cell.replaceChildren();for(const c of data.candidates){{const wrap=document.createElement('label');wrap.className='score';wrap.append('Candidate '+c.label+' ');const select=document.createElement('select');select.innerHTML='<option value="">—</option>'+[1,2,3,4,5].map(x=>`<option value="${{x}}">${{x}}</option>`).join('')+'<option value="na">N/A</option>';select.value=scores[page]?.ratings?.[cell.dataset.dimension]?.[c.label]||'';select.onchange=()=>{{scores[page]??={{}};scores[page].ratings??={{}};scores[page].ratings[cell.dataset.dimension]??={{}};scores[page].ratings[cell.dataset.dimension][c.label]=select.value;save()}};wrap.append(select);cell.append(wrap)}}const notes=document.querySelector('#notes');notes.value=scores[page]?.notes||'';notes.oninput=()=>{{scores[page]??={{}};scores[page].notes=notes.value;save()}};const position=data.pages.findIndex(x=>String(x.index)===page),previous=position>0?String(data.pages[position-1].index):null;document.querySelector('#copy-previous').disabled=!previous||!scores[previous]?.ratings}}}}
+function safeTable(fragment){{const parsed=new DOMParser().parseFromString(fragment,'text/html'),source=parsed.body.firstElementChild,allowed=new Set(['TABLE','CAPTION','THEAD','TBODY','TFOOT','TR','TH','TD','STRONG','EM','CODE','SUB','SUP','BR']),scopes=new Set(['row','col','rowgroup','colgroup']);if(!source||source.tagName!=='TABLE'||parsed.body.children.length!==1)return null;function copy(node){{if(node.nodeType===Node.TEXT_NODE)return document.createTextNode(node.textContent);if(node.nodeType!==Node.ELEMENT_NODE||!allowed.has(node.tagName))return null;const target=document.createElement(node.tagName.toLowerCase());for(const attribute of node.attributes){{const name=attribute.name.toLowerCase(),value=attribute.value;if((name==='colspan'||name==='rowspan')&&/^\\d+$/.test(value)&&Number(value)>=1&&Number(value)<=1000)target.setAttribute(name,String(Number(value)));else if(name==='scope'&&node.tagName==='TH'&&scopes.has(value))target.setAttribute(name,value);else return null}}for(const child of node.childNodes){{const copied=copy(child);if(copied===null)return null;target.append(copied)}}return target}}return copy(source)}}
+function tablePreviews(markdown){{const fragments=markdown.match(/<table(?:\\s[^>]*)?>[\\s\\S]*?<\\/table>/gi)||[],tables=fragments.map(safeTable).filter(Boolean);if(!tables.length)return null;const section=document.createElement('section');section.className='table-previews';const title=document.createElement('h3');title.textContent='Rendered semantic tables (strict allowlist)';section.append(title,...tables);return section}}
+function render(){{const page=String(pageSelect.value),entry=data.pages.find(x=>String(x.index)===page);document.querySelector('#pdf').src='source.pdf#page='+entry.label;const columns=document.querySelector('#columns');columns.replaceChildren();for(const c of data.candidates){{const box=document.createElement('article');box.className='candidate';const h=document.createElement('h2');h.textContent='Candidate '+c.label,markdown=c.pages[page]||'[no mapped text]';const pre=document.createElement('pre');pre.textContent=markdown;box.append(h,pre);const previews=tablePreviews(markdown);if(previews)box.append(previews);const assets=document.createElement('section');assets.className='assets';const title=document.createElement('h3');title.textContent='Extracted assets on this page';assets.append(title);const pageAssets=c.assets[page]||[];if(!pageAssets.length){{const empty=document.createElement('span');empty.className='unavailable';empty.textContent='No linked extracted asset';assets.append(empty)}}for(const asset of pageAssets){{if(asset.previewable){{const img=document.createElement('img');img.src=asset.path;img.alt='Blinded extracted asset';img.loading='lazy';assets.append(img)}}else{{const unavailable=document.createElement('span');unavailable.className='unavailable';unavailable.textContent='Linked asset is not a safe raster preview';assets.append(unavailable)}}}}box.append(assets);columns.append(box)}}for(const cell of document.querySelectorAll('.scores')){{cell.replaceChildren();for(const c of data.candidates){{const wrap=document.createElement('label');wrap.className='score';wrap.append('Candidate '+c.label+' ');const select=document.createElement('select');select.innerHTML='<option value="">—</option>'+[1,2,3,4,5].map(x=>`<option value="${{x}}">${{x}}</option>`).join('')+'<option value="na">N/A</option>';select.value=scores[page]?.ratings?.[cell.dataset.dimension]?.[c.label]||'';select.onchange=()=>{{scores[page]??={{}};scores[page].ratings??={{}};scores[page].ratings[cell.dataset.dimension]??={{}};scores[page].ratings[cell.dataset.dimension][c.label]=select.value;save()}};wrap.append(select);cell.append(wrap)}}const notes=document.querySelector('#notes');notes.value=scores[page]?.notes||'';notes.oninput=()=>{{scores[page]??={{}};scores[page].notes=notes.value;save()}};const position=data.pages.findIndex(x=>String(x.index)===page),previous=position>0?String(data.pages[position-1].index):null;document.querySelector('#copy-previous').disabled=!previous||!scores[previous]?.ratings}}}}
 pageSelect.onchange=render;document.querySelector('#copy-previous').onclick=()=>{{const position=data.pages.findIndex(x=>String(x.index)===String(pageSelect.value));if(position<1)return;const page=String(data.pages[position].index),previous=String(data.pages[position-1].index);if(!scores[previous]?.ratings)return;if(scores[page]?.ratings&&!confirm('Replace this page’s ratings with the previous page?'))return;scores[page]??={{}};scores[page].ratings=JSON.parse(JSON.stringify(scores[previous].ratings));const stored=save();render();document.querySelector('#status').textContent=stored?'previous ratings copied and saved locally':'previous ratings copied for this session; export to retain'}};const importFile=document.querySelector('#import-file');document.querySelector('#import').onclick=()=>importFile.click();importFile.onchange=async()=>{{const file=importFile.files[0];if(!file)return;try{{const imported=JSON.parse(await file.text());if(imported.format!==data.format||imported.campaign_digest!==data.campaign_digest||!imported.scores||typeof imported.scores!=='object'||Array.isArray(imported.scores))throw new Error('wrong campaign or invalid result');scores=imported.scores;const stored=save();render();document.querySelector('#status').textContent=stored?'scores imported and saved locally':'scores imported for this session; export to retain'}}catch(error){{document.querySelector('#status').textContent='import failed: '+error.message}}finally{{importFile.value=''}}}};document.querySelector('#export').onclick=()=>{{const output={{format:data.format,campaign_digest:data.campaign_digest,exported_at:new Date().toISOString(),scores}};const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(output,null,2)+'\\n'],{{type:'application/json'}}));a.download='review-'+data.campaign_digest.slice(7,19)+'.json';a.click();URL.revokeObjectURL(a.href)}};render();
 </script></body></html>"""
 
@@ -452,8 +470,9 @@ def build_review_bundle(
     output_dir: str | Path,
     *,
     pages: str | None = None,
-    seed: str = "blobforge-review-v1",
+    seed: str = "blobforge-review-v2",
     key_output: str | Path | None = None,
+    review_format: str = REVIEW_FORMAT,
 ) -> ReviewBundleResult:
     source = Path(source_path).resolve()
     destination = Path(output_dir).resolve()
@@ -461,6 +480,9 @@ def build_review_bundle(
         raise ValueError(f"source is not a file: {source}")
     if destination.exists():
         raise ValueError(f"review destination already exists: {destination}")
+    if review_format not in DIMENSIONS_BY_FORMAT:
+        raise ValueError(f"unsupported review format: {review_format}")
+    dimensions = DIMENSIONS_BY_FORMAT[review_format]
     artifacts = [_artifact(Path(path)) for path in artifact_paths]
     if len(artifacts) < 2:
         raise ValueError("a blinded review requires at least two artifacts")
@@ -502,21 +524,21 @@ def build_review_bundle(
             }
         )
     campaign_body = {
-        "format": REVIEW_FORMAT,
+        "format": review_format,
         "source_digest": source_digest,
         "artifact_identities": sorted(item["identity"] for item in artifacts),
         "pages": list(selected_pages),
-        "dimensions": list(DEFAULT_DIMENSIONS),
+        "dimensions": list(dimensions),
         "seed_sha256": "sha256:" + hashlib.sha256(seed.encode("utf-8")).hexdigest(),
     }
     campaign_digest = blake3_bytes(canonical_json_bytes(campaign_body))
     public = {
-        "format": REVIEW_FORMAT,
+        "format": review_format,
         "campaign_digest": campaign_digest,
         "pages": [
             {"index": page, "label": page + 1} for page in selected_pages
         ],
-        "dimensions": list(DEFAULT_DIMENSIONS),
+        "dimensions": list(dimensions),
         "candidates": candidates,
     }
     key = {

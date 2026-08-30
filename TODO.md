@@ -22,7 +22,7 @@ view; detailed research tasks remain in the sections below.
   43-rulebook corpus; record API rights and retain a hidden holdout.
 - [ ] Freeze the scoring rubric before examining candidate outputs.
 - [x] Implement deterministic blinded page-review bundles with a source-PDF
-  view, nine stable scoring dimensions, local notes/scores, JSON export, and a
+  view, ten stable v2 scoring dimensions, local notes/scores, JSON export, and a
   separate private unblinding key.
 
 ### Phase 1: Legacy PDF enrichment
@@ -60,7 +60,7 @@ view; detailed research tasks remain in the sections below.
 - [x] Add per-document duration and peak-memory recording, then define
   size-aware concurrency for the complete CPU backfill.
 - [x] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
-- [ ] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
+- [x] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
   source, base-artifact, recipe, and derived-artifact identities.
 
 ### Phase 2: Conversion recipes
@@ -75,6 +75,10 @@ view; detailed research tasks remain in the sections below.
 - [x] Freeze the Mistral OCR 4.1 evaluation recipe and add a locked, atomic,
   source/recipe-keyed provider-response checkpoint with strict page/usage
   validation, deterministic assets, usage diagnostics, and offline replay.
+- [x] Add a bounded Datalab Convert `accurate` evaluation recipe with durable
+  submitted/complete response capture, exact page-delimiter validation, safe
+  asset rewriting, API-limit checks, returned cost accounting, and offline
+  replay; real-response validation remains the promotion gate.
 - [ ] Promote Mistral beyond evaluation by adding shared worker checkpoint
   storage, an actual-billing/credits attempt ledger, and validated block-to-byte
   region mappings; the provider still exposes no immutable checkpoint digest.
@@ -105,9 +109,42 @@ view; detailed research tasks remain in the sections below.
   import/coverage summaries.
 - [x] Add explicit previous-page rating copy without carrying notes or silently
   marking a merely viewed page as reviewed.
-- [ ] Define review format v2 with an `inline-formatting` dimension for bold,
+- [x] Define review format v2 with an `inline-formatting` dimension for bold,
   emphasis, code, superscripts, and other semantically meaningful spans while
   retaining v1 result validation.
+- [x] Complete and strictly validate the four-candidate hosted Storypath review.
+  Mistral leads wiki utility and assets; Marker leads standards-compliant lists;
+  Datalab description bleed and Docling's inline-formatting loss are material
+  current-recipe defects.
+- [x] Qualitatively adjudicate the London Falling local table campaign. Marker
+  and Docling both produce unusable table structure; Docling's table images are
+  readable but not useful as structured wiki data.
+- [x] Build a table-focused challenger trial using Mistral and Datalab on the
+  London Falling adjudication pages (or an exact page-extracted fixture), then
+  evaluate semantic cells rather than rendered resemblance.
+- [x] Strictly validate and unblind the decision-complete London Falling table
+  campaign: three numeric pages plus the reviewer's qualitative finding that
+  pages 4-8 repeat the result; never reconstruct scores for unrated pages.
+- [x] Implement and validate the table-output strategy: deterministic pipe
+  Markdown for simple grids, allowlisted semantic HTML for required
+  `rowspan`/`colspan`, and a Vulcan/renderer compatibility fixture.
+- [x] Add table-aware cleanup fixtures for Mistral repeated headers, Datalab
+  description bleed, and irrelevant recurring hosted-provider footer logos;
+  all cleanup uses structural evidence rather than global deletion.
+- [ ] Add an evidence-backed Docling table-screenshot suppression fixture;
+  screenshots may remain secondary evidence but not duplicate primary tables.
+- [x] Complete the decision-sufficient blinded Mistral-wiki/Datalab-wiki
+  composite review campaign using two independently rated pages and the
+  reviewer's finding that the same structural difference continues; do not
+  reconstruct scores for pages 3-8. Campaign:
+  `blake3:efd4e84ff559de4e497fb51ae406b288f7de91224bb223288bc84fb0af8853ce`.
+- [x] Replay the cached Storypath hosted responses through both wiki profiles
+  without API keys. Prove Mistral removes only 16 typed footer blocks while
+  preserving headings, outline titles, images, and body formatting; record that
+  Datalab's conservative profile leaves its known prose defects unchanged.
+- [ ] Add modular header/footer suppression, context-aware dingbat/list
+  normalization, and asset-description isolation, with regression fixtures
+  derived from the hosted Storypath defects.
 - [ ] Add a font/layout-evidenced normalization test for dingbat list glyphs;
   never globally replace ordinary `Y` text.
 - [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,
@@ -220,6 +257,17 @@ view; detailed research tasks remain in the sections below.
   credits over successive quota periods while recording list cost, billed
   usage, and credits separately. Add Google Layout/AWS Textract controls only
   if hard-page results justify them.
+- [x] Execute the guarded eight-page Mistral ($0.04 ceiling) and Datalab
+  accurate ($0.10 returned-cost ceiling) canaries once `MISTRAL_API_KEY` and
+  `DATALAB_API_KEY` are visible to the evaluator process; retain exact native
+  responses and prove byte-identical replay with both keys unset.
+- [x] Finish and retain the enterprise London Falling Marker 1 stress artifact,
+  compare it with the independently validated 98-page Docling artifact, and
+  build a review-v2 campaign over selected table/stat-block pages.
+- [x] Score and unblind the complete four-candidate Storypath hosted campaign;
+  retain the London Falling campaign as qualitative blinded evidence after both
+  candidates failed its acceptance purpose rather than inventing numeric
+  distinctions between unusable table outputs.
 - [x] Make the Mistral evaluator safe for bounded paid trials: cache successful
   responses before packaging, serialize identical requests, reject corrupt
   cache entries without repurchase, and preserve exact native usage/evidence.

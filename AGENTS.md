@@ -38,6 +38,168 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** Storypath keyless cache replay establishes Mistral-wiki as a
+  strict improvement over raw Mistral on this prose canary. Artifact
+  `blake3:5b1074c707e16069c8ea0172cd90557f57c4eee32c77ff4c886c0d96bca35568`
+  removes exactly 16 provider-typed running-footer blocks / 166 UTF-8 bytes and
+  nothing else: heading sequence, outline title/levels, image links/assets,
+  lists, emphasis, prose, 8 mappings, and 19 outline nodes remain. Datalab-wiki
+  `blake3:646bb02b391704d6f27af4e52eb0bc8ba01efc3c7c9d78a879bbd2d821ba36ea`
+  has byte-identical Markdown to raw Datalab because none of its description or
+  asset defects satisfies conservative structural rules. Both replay
+  deterministically and pass Vulcan validation/import. Do not spend reviewer
+  effort on an unchanged Datalab candidate or already-adjudicated Mistral
+  footer removal. Use Mistral-wiki as the hosted quality-tier leader for this
+  class; Marker 1 remains the local/privacy fallback and list-syntax leader.
+
+- **2026-08-30:** The wiki-normalized London Falling campaign is
+  decision-complete after two fully rated pages exposed the repeated structural
+  difference; do not copy scores onto pages 3-8. Strict validation accepted 26
+  ratings, 14 N/A values, and 40/160 slots. A=Mistral-wiki and B=Datalab-wiki.
+  Both score 5.0 for text, reading order, mapping, and the one applicable asset
+  rating. Mistral wins tables 5.0/3.0 and wiki utility 5.0/4.0; Datalab wins
+  hierarchy 5.0/3.0. Select Mistral-wiki for complex-table routing because it
+  consistently emits the reviewed semantic HTML; Datalab correctly leaves most
+  inconsistent grids unchanged and remains a hierarchy-strong challenger.
+  Datalab's unexplained `阴森` token originates in its native English image alt
+  text, not BlobForge normalization; provider descriptions are unverified
+  evidence.
+
+- **2026-08-30:** Semantic-table review previews must set foreground and
+  background colors together. The surrounding review UI is dark and its text
+  color otherwise inherits into light table cells, producing unreadable
+  white-on-white content. The current preview uses explicit light body/header
+  palettes scoped under `.table-previews`; preserve this invariant in future
+  themes and generated campaigns.
+
+- **2026-08-30:** Wiki-oriented Mistral and Datalab composites are now
+  evaluation-ready without repurchasing provider work. Artifact recipe identity
+  is separated from the frozen raw-provider digest used as the durable cache
+  key. Mistral wiki v1
+  (`blake3:52d29542b2171c154f877d59e4e16019b85296ac4d12a6de97d2080a81a18dba`)
+  uses typed blocks/geometry; Datalab wiki v1
+  (`blake3:fcc851f8e84d0c22e44200208ccd50d76319c5aec6d3bc1de6bc9b026d3ac502`)
+  uses only exact caption duplication and conservative recurring-image
+  evidence. Both serialize validated merged grids as allowlisted semantic HTML,
+  declare `raw-html`/`semantic-html-table-v1`, retain native responses, and
+  calculate page spans after cleanup. Keyless real-cache replay produced
+  deterministic London Falling artifacts
+  `blake3:1a6b3dad11b78eb1c2912bab9f87b6c23aeb77dde383a33c011bc183f8866534`
+  and
+  `blake3:bbed7f449c82e4c53f7aa552f1431ab434fe840f5c8b9d5c5159b6effc4b3fab`;
+  both pass Vulcan validation/import with 8/8 mappings, one referenced asset,
+  and preserved tables/colspans. The fresh blinded campaign is
+  `blake3:efd4e84ff559de4e497fb51ae406b288f7de91224bb223288bc84fb0af8853ce`.
+  Blank pipe cells are currently an evaluated colspan hypothesis, not ground
+  truth; human review and a hidden holdout remain production gates.
+
+- **2026-08-30:** The blinded London Falling hosted table result is
+  decision-complete with three numerically rated pages and a reviewer finding
+  that the remaining five repeat the outcome. Strict validation accepted 80
+  ratings, 36 N/A values, and 116/320 slots; do not extrapolate scores after
+  unblinding. A=Marker, B=Mistral, C=Datalab, D=Docling. Table means are
+  1.0/5.0/4.0/1.0 and wiki utility 1.0/4.0/4.0/1.0. Mistral is the provisional
+  complex-table backend; Datalab is the challenger after description isolation.
+  Mistral retains repeated headers; Datalab descriptions bleed; Mistral,
+  Datalab, and Docling retain irrelevant footer logos; Docling also emits table
+  screenshots. Complex merged headers need an output representation beyond
+  pipe Markdown. Use allowlisted semantic HTML tables for required
+  `colspan`/`rowspan` only after Vulcan and renderer compatibility tests, escape
+  provider content, and compute final source spans after deterministic table
+  serialization.
+
+- **2026-08-30:** The four-way London Falling table challenger is ready for
+  blinded review under campaign
+  `blake3:9a366ab22d1557b1f665b7c76f08ab90db14b670ad0c4d823ed043a8a6b0d3a1`.
+  Its 8-page fixture maps to original pages 12, 23, 31, 38, 64, 78, 90, and 92;
+  all page pairs are raster-identical at 72 DPI. Marker/Docling/Mistral/Datalab
+  took 736.1/192.8/7.5/25.2 seconds and emitted 303/235/299/299 apparent table
+  rows, but counts are not fidelity. Mistral list cost was $0.032 and Datalab
+  billed $0.06. All artifacts pass Vulcan with 8/8 mappings. Datalab had the
+  same live-versus-cache JSON key-order drift previously found in Mistral;
+  always sort native response keys and regression-test native bytes. Canonical
+  Datalab identity is
+  `blake3:3a4551a34a4ba805287e16ac9a1a4b4794d48bcb720dec05ca28b7046076dafa`
+  and replays byte-identically without keys or repurchase.
+
+- **2026-08-30:** The complete hosted Storypath review-v2 export validates at
+  8/8 pages, 252 numeric ratings, 68 N/A values, and 320/320 completed slots.
+  Unblinding maps A=Marker 1.10.2, B=Mistral OCR 4.1, C=Datalab Convert
+  accurate, and D=Docling 2.122.0. Mistral is the canary quality leader: text
+  5.0, inline formatting 5.0, assets 4.857, and wiki utility 5.0. It still
+  retains repeated footers and occasionally emits non-Markdown list symbols.
+  Marker has excellent inline formatting and lists but retains some dingbats as
+  `Y`; Docling loses inline formatting; Datalab descriptions contaminate body
+  text, uses nonstandard bullets, and can extract a useless whole-page asset.
+  The blinded London Falling table verdict is that both local candidates are
+  unusable for structured wiki tables. Candidate B unblinds as Docling: its
+  screenshots preserve readability but not cell semantics. Test hosted
+  table-focused challengers before selecting table routing.
+
+- **2026-08-30:** The complete frozen `pdf-enrichment/v1` backfill is accepted.
+  Catalog state reached all 1,377 converted with no pending, processing, or
+  failed derivative. The independent read-only `migrate enrich-verify` pass
+  checked every archive/schema/source/base/recipe lineage: 1,377 valid and zero
+  invalid. Phase 1 is complete; subsequent recipe work must not rewrite these
+  immutable derivatives.
+
+- **2026-08-30:** The first hosted Storypath canaries are complete and cached.
+  Mistral OCR 4.1 processed 8 pages in 6.9s at a $0.032 list-price estimate and
+  packages as
+  `blake3:cb906843d778f3328175fa869251e39520015d1aec8bddef59b9cab5915112e8`.
+  Datalab Convert accurate reported 13.12s provider runtime and an exact $0.06
+  final charge, packaging as
+  `blake3:2071347f7728035763d51c2de451dd6fde7c0542fb9e30891f3abc5e4982522f`.
+  Its real response omitted documented list cost, parse-quality score, and
+  model versions, so those remain unavailable rather than inferred. Both pass
+  BlobForge/Vulcan with 8/8 mappings and produce byte-identical cache replays
+  with both keys unset. Mistral native response JSON must be serialized with
+  sorted keys: live SDK insertion order otherwise changed MDAF identity versus
+  cache replay. The first unscored output was superseded without repurchase.
+
+- **2026-08-30:** The canonical four-candidate Storypath review-v2 campaign is
+  `blake3:4f10cea83474b0a728199b05707d5eb3188bb0854bc798759c9aeb2cf5a900cc`.
+  It compares Marker 1, Docling, Mistral, and Datalab accurate across pages 1-8
+  without public engine names. The London Falling Marker/Docling review-v2
+  campaign is
+  `blake3:f31eabad8aacc5f4b10ebb96976d5a5491048252a6813df593d74458cab26d67`
+  on pages 12, 23, 31, 38, 64, 78, 90, and 92. Do not inspect either key before
+  complete score export.
+
+- **2026-08-30:** Enterprise Marker 1 completed 98-page London Falling in
+  3,260.3s with 819,143 Markdown bytes, 65,546 words, 487 outline nodes, 1,584
+  table rows, 89 assets, and 98 exact page mappings. Docling produced 1,723,253
+  bytes, 115,960 words, 467 nodes, 1,311 table rows, and 163 assets. The large
+  discrepancy may be retention, duplication, captions, or overcapture and must
+  be decided by the blinded campaign, never structural counts alone.
+
+- **2026-08-29:** The first Datalab hosted evaluator is frozen for quality
+  testing in `accurate` mode at recipe
+  `blake3:c1dc8c06bf29a7a5f1639a4a0bdfc8be1250745d5f6e13438c68b1e38df9bc6f`.
+  It caches submitted and complete Convert v1 responses, validates exact
+  pagination/assets/costs, and enforces the official 200 MB / 7,000-page limits.
+  Datalab exposes no pre-request quote or provider-side dollar cap: the local
+  page cap bounds exposure, while `final_cost_cents` can only be asserted after
+  purchase. Keep the first run inside the $5 trial. Both API keys remained
+  invisible to local and SSH subprocesses during the guarded plans, so no paid
+  Mistral or Datalab request occurred.
+
+- **2026-08-29:** The Debian 13 enterprise desktop is a viable 32-GiB CPU
+  evaluation worker. On the eight-page Storypath canary, Docling took 115.0s
+  and Marker 1 took 100.8s; their Markdown/assets/source maps/native evidence
+  exactly match the earlier runs. On 98-page London Falling, Docling completed
+  in 1,015.9s with 98 exact page mappings, 467 outline nodes, 1,311 table rows,
+  and 163 assets and passed independent Vulcan validation. Docling used about
+  3.0-3.5 GiB RSS. The concurrent Marker run completed in 3,260.3s and reached
+  about 13.8 GiB RSS. Concurrency fits but distorts timing and
+  reduces safety margin; schedule at most one large Marker job at a time on a
+  32-GiB worker.
+
+- **2026-08-29:** Review format v2 adds `inline-formatting` to the original nine
+  dimensions. New campaigns default to v2; stored v1 keys/results continue to
+  validate against their exact original dimension contract. A real generated
+  v2 smoke contains ten dimensions without changing earlier campaigns.
+
 - **2026-08-29:** The reviewer observed during the blinded Storypath review that
   one structured candidate preserved emphasis better, but omitted it from the
   browser export. Unblinding attributes that candidate to Marker 1. A subsequent

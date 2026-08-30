@@ -31,6 +31,15 @@ def test_frozen_recipe_identity():
         "blake3:982a97ca1d45f5a0ac30dd8c7507efb594688d1b949f406ef4620f3352e723c7"
     )
 
+    wiki_path = path.with_name("mistral-ocr-4.1-wiki-v1.json")
+    wiki_recipe = json.loads(wiki_path.read_text(encoding="utf-8"))
+    assert blake3_bytes(canonical_json_bytes(wiki_recipe)) == (
+        "blake3:52d29542b2171c154f877d59e4e16019b85296ac4d12a6de97d2080a81a18dba"
+    )
+    assert wiki_recipe["base_recipe"]["digest"] == blake3_bytes(
+        canonical_json_bytes(recipe)
+    )
+
 
 def _request(tmp_path, output, **parameters):
     source = tmp_path / "source.pdf"
@@ -122,6 +131,9 @@ def test_success_is_captured_then_replayed_without_api_key(tmp_path, monkeypatch
     assert adapter.main() == 0
     assert len(calls) == 1
     assert (first / "data/text.md").read_bytes() == (second / "data/text.md").read_bytes()
+    assert (first / "data/native/response.json").read_bytes() == (
+        second / "data/native/response.json"
+    ).read_bytes()
 
     text = (second / "data/text.md").read_text(encoding="utf-8")
     assert "assets/page-0000-000-same.jpg" in text
@@ -141,6 +153,75 @@ def test_success_is_captured_then_replayed_without_api_key(tmp_path, monkeypatch
         "recipe_digest": "blake3:" + "a" * 64,
     }
     assert any("cache hit" in item["message"] for item in bundle["diagnostics"])
+
+
+def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monkeypatch):
+    adapter = _load_adapter()
+    cache = tmp_path / "responses"
+    monkeypatch.setenv("BLOBFORGE_MISTRAL_RESPONSE_CACHE", str(cache))
+    monkeypatch.setenv("MISTRAL_API_KEY", "one-use-test-key")
+    monkeypatch.setattr(adapter, "_page_count", lambda _source: 2)
+    monkeypatch.setattr(adapter, "version", lambda _name: "2.9.4")
+    response = _response()
+    response["pages"][0]["dimensions"] = {"width": 788, "height": 1023}
+    response["pages"][0]["blocks"] = [
+        {"type": "header", "content": "REPEATED HEADER"},
+        {"type": "title", "content": "# Café"},
+        {
+            "type": "table",
+            "content": "| Name | | Value |\n| --- | --- | --- |\n| Ada | | 5 |",
+        },
+        {
+            "type": "image",
+            "content": "![figure](same.png)",
+            "top_left_y": 200,
+            "bottom_right_y": 800,
+        },
+        {"type": "footer", "content": "2 REPEATED HEADER"},
+    ]
+    response["pages"][1]["dimensions"] = {"width": 788, "height": 1023}
+    response["pages"][1]["blocks"] = [
+        {"type": "text", "content": "Second page"}
+    ]
+    calls = []
+    monkeypatch.setattr(
+        adapter,
+        "_perform_request",
+        lambda *_args: calls.append(True) or response,
+    )
+
+    raw = tmp_path / "raw"
+    monkeypatch.setattr(sys, "argv", ["adapter", str(_request(tmp_path, raw))])
+    assert adapter.main() == 0
+    assert calls == [True]
+
+    monkeypatch.delenv("MISTRAL_API_KEY")
+    wiki = tmp_path / "wiki"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "adapter",
+            str(
+                _request(
+                    tmp_path,
+                    wiki,
+                    recipe_digest="blake3:" + "b" * 64,
+                    provider_request_digest="blake3:" + "a" * 64,
+                    normalization_profile="wiki-v1",
+                )
+            ),
+        ],
+    )
+    assert adapter.main() == 0
+    assert calls == [True]
+    text = (wiki / "data/text.md").read_text(encoding="utf-8")
+    assert "REPEATED HEADER" not in text
+    assert "<table>" in text and 'colspan="2"' in text
+    bundle = json.loads((wiki / "bundle.json").read_text(encoding="utf-8"))
+    assert bundle["markdown_features"] == ["raw-html", "semantic-html-table-v1"]
+    assert bundle["additional_tools"][0]["name"] == "blobforge-wiki-normalizer"
+    assert bundle["parameters"]["provider_request_digest"] == "blake3:" + "a" * 64
 
 
 def test_ceiling_rejects_before_cache_or_api(tmp_path, monkeypatch):

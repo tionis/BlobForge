@@ -161,6 +161,13 @@ def test_review_bundle_is_blinded_source_backed_and_deterministic(tmp_path):
     assert "Copy previous ratings" in html
     assert "previous ratings copied and saved locally" in html
     assert "wrong campaign or invalid result" in html
+    assert "Rendered semantic tables (strict allowlist)" in html
+    assert "document.createElement(node.tagName.toLowerCase())" in html
+    assert "target.setAttribute(name" in html
+    assert "target.innerHTML" not in html
+    assert ".table-previews table" in html
+    assert "background:#fff;color:#17202a" in html
+    assert ".table-previews th{background:#e4edf5;color:#111820}" in html
     assert "engine-one-secret" not in html and "engine-two-secret" not in html
 
     # Input order cannot change the blinded campaign or label assignment.
@@ -227,7 +234,7 @@ def test_review_summary_validates_unblinds_and_reports_coverage(tmp_path):
     key = json.loads(bundle.key_path.read_text(encoding="utf-8"))
     labels = [candidate["label"] for candidate in key["candidates"]]
     result = {
-        "format": "dev.tionis.blobforge.review/v1",
+        "format": "dev.tionis.blobforge.review/v2",
         "campaign_digest": bundle.campaign_digest,
         "exported_at": "2026-08-29T00:00:00Z",
         "scores": {
@@ -248,9 +255,9 @@ def test_review_summary_validates_unblinds_and_reports_coverage(tmp_path):
         "reviewed_pages": 1,
         "ratings": 2,
         "n_a": 2,
-        "possible_slots": 36,
+        "possible_slots": 40,
         "completed_slots": 4,
-        "fraction": 0.111111,
+        "fraction": 0.1,
     }
     assert summary["candidates"][0]["dimensions"]["text"]["mean"] == 4
     assert summary["candidates"][1]["dimensions"]["text"]["mean"] == 5
@@ -277,3 +284,32 @@ def test_review_summary_validates_unblinds_and_reports_coverage(tmp_path):
     result_path.write_text(json.dumps(result), encoding="utf-8")
     with pytest.raises(ValueError, match="does not match"):
         summarize_review_result(result_path, bundle.key_path)
+
+
+def test_v1_review_result_remains_supported(tmp_path):
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"%PDF one")
+    first = _artifact(tmp_path, source, "one", "PAGE ONE\nPAGE TWO one")
+    second = _artifact(tmp_path, source, "two", "PAGE ONE\nPAGE TWO two")
+    bundle = build_review_bundle(
+        source,
+        [first.path, second.path],
+        tmp_path / "review-v1",
+        review_format="dev.tionis.blobforge.review/v1",
+    )
+    key = json.loads(bundle.key_path.read_text(encoding="utf-8"))
+    label = key["candidates"][0]["label"]
+    result_path = tmp_path / "result-v1.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "format": "dev.tionis.blobforge.review/v1",
+                "campaign_digest": bundle.campaign_digest,
+                "scores": {"0": {"ratings": {"text": {label: "5"}}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = summarize_review_result(result_path, bundle.key_path)
+    assert summary["coverage"]["possible_slots"] == 36
+    assert summary["coverage"]["ratings"] == 1
