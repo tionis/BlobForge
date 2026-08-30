@@ -227,6 +227,9 @@ view; detailed research tasks remain in the sections below.
   full-sync safety net without widening BlobForge's directory scope.
 - [x] Add an authenticated self-hosted root landing page with OIDC redirect,
   queue counts, and API navigation instead of FastAPI's default 404.
+- [x] Add bulk CLI source intake with recursive PDF discovery, dry-run/JSON
+  output, explicit recipe or unassigned selection, priority, tags, streaming
+  bodies, and revocable administrator-token authentication.
 - [x] Implement the Gandalf BlobForge role/service inventory, vaulted secrets,
   private Authentik SCIM backchannel, Caddy route, and quiesced Citadel backup;
   compile generated inventory and run a check-mode deployment before cutover.

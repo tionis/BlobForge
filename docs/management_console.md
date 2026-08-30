@@ -32,6 +32,29 @@ in browser memory. One pass derives SHA-256 and BLAKE3. The current compatibilit
 job key remains SHA-256 while BLAKE3 is stored as an alias; this does not yet
 complete the planned canonical-key cutover.
 
+The equivalent CLI intake is intended for bulk rulebook uploads. Create a
+revocable administrator token in the management console, keep it in the
+environment rather than shell history, and preview the exact batch first:
+
+```bash
+export BLOBFORGE_COORDINATOR_URL=https://blobforge.tionis.dev
+read -rsp 'BlobForge admin token: ' BLOBFORGE_COORDINATOR_TOKEN
+export BLOBFORGE_COORDINATOR_TOKEN
+printf '\n'
+uv run blobforge upload ~/rulebooks \
+  --recipe mistral-ocr-wiki \
+  --priority 2_high \
+  --tag rulebook \
+  --dry-run
+```
+
+Remove `--dry-run` to stream every PDF recursively. The recipe selector accepts
+an exact digest or an unambiguous active backend/display name. Use
+`--recipe datalab-convert-wiki` for the Datalab challenger. `--unassigned` is
+an explicit alternative, but hosted workers deliberately cannot claim those
+jobs. Upload separate directory/file groups when they need different
+priorities; `--json` produces machine-readable per-file results.
+
 Requeueing an active job clears its lease token, so a late completion from the
 old worker is rejected by lease fencing. A completed job cannot be generically
 requeued: requesting a different immutable recipe is the safe way to produce

@@ -11,6 +11,7 @@ Commands:
 - janitor: Run janitor to recover stale jobs
 """
 import os
+import mimetypes
 import secrets
 import sys
 import json
@@ -48,6 +49,9 @@ from .reprocessing import reprocess_mdaf
 from .routing import RoutingFeatures, route_pdf
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
+
+
+COORDINATOR_PRIORITIES = ("1_urgent", "2_high", "3_normal", "4_low")
 
 
 def _coordinator_client():
@@ -99,6 +103,147 @@ def cmd_ingest(args):
     else:
         print(f"Ingesting {len(args.paths)} paths with priority {args.priority}...")
     ingestor.ingest(args.paths, priority=args.priority, dry_run=args.dry_run)
+
+
+def _upload_files(paths):
+    """Resolve explicit files and recursively discover PDFs in directories."""
+    files = []
+    seen = set()
+    for raw in paths:
+        path = Path(raw).expanduser()
+        candidates = (
+            sorted(
+                candidate
+                for candidate in path.rglob("*")
+                if candidate.is_file() and candidate.suffix.lower() == ".pdf"
+            )
+            if path.is_dir()
+            else [path]
+        )
+        for candidate in candidates:
+            if not candidate.is_file():
+                raise ValueError(f"upload path is not a file or directory: {candidate}")
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                files.append(candidate)
+                seen.add(resolved)
+    if not files:
+        raise ValueError("no files found; directories are searched recursively for PDFs")
+    return files
+
+
+def _upload_recipe(coordinator, selector, media_type):
+    recipes = [
+        recipe for recipe in coordinator.list_recipes(media_type)
+        if recipe.get("enabled")
+        and int(recipe.get("worker_count") or 0) > 0
+        and "source" in recipe.get("input_kinds", ["source"])
+    ]
+    normalized = selector.lower()
+    if normalized.startswith("blake3:") or (
+        len(normalized) == 64
+        and all(char in "0123456789abcdef" for char in normalized)
+    ):
+        digest = _recipe_digest_arg(normalized)
+        tagged = digest if digest.startswith("blake3:") else f"blake3:{digest}"
+        matches = [
+            recipe for recipe in recipes
+            if recipe.get("recipe_digest") in {digest, tagged}
+        ]
+    else:
+        matches = [
+            recipe for recipe in recipes
+            if normalized in {
+                str(recipe.get("backend") or "").lower(),
+                str(recipe.get("display_name") or "").lower(),
+            }
+        ]
+    choices = ", ".join(
+        f"{item.get('backend')} ({item.get('recipe_digest')})" for item in recipes
+    ) or "none"
+    if not matches:
+        raise ValueError(
+            f"recipe {selector!r} is not available for {media_type}; "
+            f"available: {choices}"
+        )
+    if len(matches) != 1:
+        raise ValueError(
+            f"recipe selector {selector!r} is ambiguous; use an exact digest. "
+            f"Available: {choices}"
+        )
+    return str(matches[0]["recipe_digest"])
+
+
+def cmd_upload(args):
+    """Stream local sources to the self-hosted coordinator and queue them."""
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        return 1
+    coordinator.timeout = args.timeout
+    files = _upload_files(args.paths)
+    tags = list(dict.fromkeys(
+        tag.strip() for value in args.tag for tag in value.split(",") if tag.strip()
+    ))
+    outcomes = []
+    recipe_cache = {}
+    failures = 0
+    for path in files:
+        media_type = (
+            args.media_type
+            or mimetypes.guess_type(path.name)[0]
+            or "application/octet-stream"
+        )
+        recipe_digest = None
+        if not args.unassigned:
+            key = (args.recipe, media_type)
+            if key not in recipe_cache:
+                recipe_cache[key] = _upload_recipe(
+                    coordinator, args.recipe, media_type
+                )
+            recipe_digest = recipe_cache[key]
+        item = {
+            "path": str(path),
+            "media_type": media_type,
+            "priority": args.priority,
+            "tags": tags,
+            "recipe_digest": recipe_digest,
+        }
+        if args.dry_run:
+            item["status"] = "planned"
+        else:
+            try:
+                job = coordinator.upload_admin_source(
+                    str(path), filename=path.name, media_type=media_type,
+                    priority=args.priority, tags=tags,
+                    recipe_digest=recipe_digest,
+                )
+                item.update({
+                    "status": str(job.get("status") or "unknown"),
+                    "hash": str(job.get("hash") or ""),
+                })
+            except (CoordinatorError, OSError, ValueError) as exc:
+                failures += 1
+                item.update({"status": "error", "error": str(exc)})
+        outcomes.append(item)
+        if not args.json:
+            recipe = recipe_digest or "unassigned"
+            if item["status"] == "error":
+                print(f"ERROR {path}: {item['error']}")
+            elif args.dry_run:
+                print(f"PLAN  {path} -> {recipe} ({args.priority})")
+            else:
+                print(
+                    f"OK    {path} -> {item['hash']} [{item['status']}] "
+                    f"via {recipe}"
+                )
+    if args.json:
+        print(json.dumps({"files": outcomes, "failed": failures}, indent=2))
+    elif not args.dry_run:
+        print(f"Uploaded {len(outcomes) - failures}/{len(outcomes)} source(s).")
+    return 1 if failures else 0
 
 
 def cmd_cleanup_legacy(args):
@@ -1837,6 +1982,44 @@ def main():
     p_ingest.add_argument("--coordinator-url", help="Coordinator base URL")
     p_ingest.add_argument("--token", help="Admin token for the coordinator")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_upload = subparsers.add_parser(
+        "upload", help="Upload files to the self-hosted coordinator and queue them"
+    )
+    p_upload.add_argument(
+        "paths", nargs="+",
+        help="Files or directories; directories are searched recursively for PDFs",
+    )
+    p_upload.add_argument(
+        "--priority", default="3_normal", choices=COORDINATOR_PRIORITIES
+    )
+    p_upload.add_argument(
+        "--tag", action="append", default=[],
+        help="Tag to attach; repeat it or provide comma-separated tags",
+    )
+    p_upload.add_argument(
+        "--media-type", help="Override media type for every selected file"
+    )
+    assignment = p_upload.add_mutually_exclusive_group(required=True)
+    assignment.add_argument(
+        "--recipe",
+        help="Exact digest, or an unambiguous active backend/display name",
+    )
+    assignment.add_argument(
+        "--unassigned", action="store_true",
+        help="Queue without a recipe; hosted workers will not claim the job",
+    )
+    p_upload.add_argument("--dry-run", action="store_true")
+    p_upload.add_argument(
+        "--json", action="store_true", help="Emit machine-readable results"
+    )
+    p_upload.add_argument(
+        "--timeout", type=float, default=600.0,
+        help="Per-socket upload timeout in seconds",
+    )
+    p_upload.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_upload.add_argument("--token", help="Revocable admin token")
+    p_upload.set_defaults(func=cmd_upload)
 
     p_cleanup = subparsers.add_parser(
         "cleanup-legacy",

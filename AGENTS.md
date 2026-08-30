@@ -38,6 +38,16 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Administrators can bulk-ingest local rulebooks with
+  `blobforge upload`. Directory arguments recursively select PDFs; explicit
+  files may use other media types. Every batch must select an active exact
+  recipe by digest/backend/display name or explicitly opt into `--unassigned`.
+  Priority, repeatable/comma-separated tags, dry-run, JSON output, streaming
+  request bodies, partial-failure exit status, and configurable socket timeout
+  are supported. Use a revocable `bfa_` token through
+  `BLOBFORGE_COORDINATOR_TOKEN`, never a worker credential or a token embedded
+  in shell history.
+
 - **2026-08-31:** Citadel now runs the digest-pinned `f9ff3fe` coordinator and
   both concurrency-one hosted workers. Mistral is capped at EUR 12.75 and
   Datalab at the currently advertised USD 20 free tier per local monthly cycle;

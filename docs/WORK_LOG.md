@@ -1,5 +1,25 @@
 # Work Log
 
+## 2026-08-31 (Administrative CLI Intake)
+
+- **Objective:** Let administrators upload and prioritize local rulebook
+  batches without using the browser.
+- **Implementation:** Added `blobforge upload` with recursive directory PDF
+  discovery, explicit active recipe resolution by digest/backend/display name,
+  an explicit unassigned opt-in, shared priority/tags, dry-run and JSON modes,
+  and a ten-minute default socket timeout. Source bytes stream directly to the
+  existing authenticated management endpoint; they are never loaded wholly
+  into CLI memory. Partial batches report each failure and return nonzero.
+- **Safety:** The command requires a revocable admin token and either a recipe
+  or `--unassigned`. Hosted workers remain unable to claim unassigned jobs.
+  No rulebook was uploaded while implementing the client.
+- **Verification:** The focused CLI/client/server suite passes 37 tests, CLI
+  help exposes only the self-hosted priority vocabulary, and the complete
+  hermetic suite passes 311 tests plus 5 subtests. The first full-suite run
+  inherited legacy coordinator environment variables and attempted external
+  worker identity calls; rerunning with those variables explicitly absent
+  passed. No provider or production mutation occurred.
+
 ## 2026-08-31 (Recurring Hosted Quotas and Rulebook Intake)
 
 - **Objective:** Replace one-off canary windows with honest recurring Mistral

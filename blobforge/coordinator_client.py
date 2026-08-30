@@ -236,6 +236,36 @@ class CoordinatorClient:
         recipes = payload.get("recipes")
         return recipes if isinstance(recipes, list) else []
 
+    def upload_admin_source(
+        self,
+        local_path: str,
+        *,
+        filename: str,
+        media_type: str,
+        priority: str,
+        tags: Iterable[str] = (),
+        recipe_digest: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Stream one source through the administrative intake endpoint."""
+        query = {
+            "filename": filename,
+            "media_type": media_type,
+            "priority": priority,
+            "tags": ",".join(tags),
+        }
+        if recipe_digest:
+            query["recipe_digest"] = recipe_digest
+        return self._stream_file_request(
+            "POST",
+            f"{self.base_url}/api/v1/admin/uploads?{urlencode(query)}",
+            local_path,
+            {
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/json",
+                "Content-Type": media_type,
+            },
+        )
+
     def request_conversion(
         self, file_hash: str, recipe_digest: Optional[str] = None, *, backend: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -479,6 +509,66 @@ class CoordinatorClient:
                 raise CoordinatorError(f"Output upload failed ({response.status}): {detail or response.reason}", status=response.status)
         except (OSError, http.client.HTTPException) as exc:
             raise CoordinatorError(f"Output upload failed: {exc}") from exc
+        finally:
+            connection.close()
+
+    def _stream_file_request(
+        self, method: str, url: str, local_path: str, headers: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        if not self.base_url or not self.token:
+            raise CoordinatorError(
+                "BlobForge coordinator is not configured; set "
+                "BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN"
+            )
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise CoordinatorError("Coordinator returned an invalid upload URL")
+        connection_class = (
+            http.client.HTTPSConnection
+            if parsed.scheme == "https"
+            else http.client.HTTPConnection
+        )
+        connection = connection_class(parsed.hostname, parsed.port, timeout=self.timeout)
+        request_path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        size = os.path.getsize(local_path)
+        try:
+            connection.putrequest(method, request_path)
+            connection.putheader("Content-Length", str(size))
+            for name, value in headers.items():
+                connection.putheader(str(name), str(value))
+            connection.endheaders()
+            with open(local_path, "rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    connection.send(chunk)
+            response = connection.getresponse()
+            payload = response.read()
+            if response.status < 200 or response.status >= 300:
+                detail = payload.decode("utf-8", errors="replace")
+                try:
+                    decoded = json.loads(detail)
+                    detail = str(decoded.get("detail") or decoded.get("error") or detail)
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+                raise CoordinatorError(
+                    f"Source upload failed ({response.status}): "
+                    f"{detail or response.reason}",
+                    status=response.status,
+                )
+            try:
+                result = json.loads(payload.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise CoordinatorError(
+                    "Coordinator returned an invalid source-upload response"
+                ) from exc
+            if not isinstance(result, dict):
+                raise CoordinatorError(
+                    "Coordinator returned an invalid source-upload response"
+                )
+            return result
+        except CoordinatorError:
+            raise
+        except (OSError, http.client.HTTPException) as exc:
+            raise CoordinatorError(f"Source upload failed: {exc}") from exc
         finally:
             connection.close()
 

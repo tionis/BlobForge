@@ -327,3 +327,62 @@ def test_raw_upload_can_reuse_an_existing_transfer(tmp_path):
 
     requested.assert_not_called()
     streamed.assert_called_once_with(transfer["url"], str(pdf), transfer["headers"])
+
+
+def test_admin_source_upload_streams_body_and_metadata(tmp_path):
+    pdf = tmp_path / "rule book.pdf"
+    pdf.write_bytes(b"%PDF upload")
+    client = CoordinatorClient("https://coord.example", "bfa_admin-token")
+
+    class Response:
+        status = 200
+        reason = "OK"
+
+        @staticmethod
+        def read():
+            return json.dumps({"hash": "a" * 64, "status": "todo"}).encode()
+
+    class Connection:
+        instance = None
+
+        def __init__(self, host, port, timeout):
+            self.host, self.port, self.timeout = host, port, timeout
+            self.headers = {}
+            self.sent = b""
+            Connection.instance = self
+
+        def putrequest(self, method, path):
+            self.method, self.path = method, path
+
+        def putheader(self, name, value):
+            self.headers[name] = value
+
+        def endheaders(self):
+            pass
+
+        def send(self, chunk):
+            self.sent += chunk
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            pass
+
+    with patch("http.client.HTTPSConnection", Connection):
+        result = client.upload_admin_source(
+            str(pdf), filename=pdf.name, media_type="application/pdf",
+            priority="1_urgent", tags=["rulebook", "test"],
+            recipe_digest="blake3:" + "b" * 64,
+        )
+
+    connection = Connection.instance
+    assert result["status"] == "todo"
+    assert connection.method == "POST"
+    assert connection.host == "coord.example"
+    assert "filename=rule+book.pdf" in connection.path
+    assert "priority=1_urgent" in connection.path
+    assert "tags=rulebook%2Ctest" in connection.path
+    assert connection.headers["Authorization"] == "Bearer bfa_admin-token"
+    assert connection.headers["Content-Length"] == str(pdf.stat().st_size)
+    assert connection.sent == pdf.read_bytes()
