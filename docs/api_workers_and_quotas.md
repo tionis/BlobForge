@@ -14,6 +14,7 @@ Podman Quadlet per provider account, with:
 
 - a provider-specific worker credential and API key;
 - the lightweight hosted-worker image rather than a local ML image;
+- an unprivileged container UID with a provider-specific writable cache;
 - a persistent, backed-up response-checkpoint volume;
 - access to the coordinator over the host-local listener; and
 - conservative CPU, memory, process, and restart limits.

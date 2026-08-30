@@ -28,5 +28,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
     BLOBFORGE_MISTRAL_RESPONSE_CACHE=/var/cache/blobforge/mistral-responses
 
 VOLUME ["/var/cache/blobforge"]
+USER 10001
 ENTRYPOINT ["blobforge"]
 CMD ["recipe-worker"]

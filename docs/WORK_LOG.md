@@ -26,6 +26,11 @@
   real enrichment tests exposed that undeclared system dependency. Added
   `poppler-utils` to the CI setup rather than skipping the tests. The corrected
   release run and image digests are tracked in the deployment entry.
+- **Container hardening:** The Gandalf translation found that the hosted image
+  otherwise defaulted to container root. Set its runtime user to UID 10001;
+  deployments must give only that UID access to each provider-specific cache.
+  A local Podman rebuild succeeded and image inspection returned exactly
+  `10001` for the configured runtime user.
 
 ## 2026-08-30 (Hosted API Worker Quota Implementation)
 
