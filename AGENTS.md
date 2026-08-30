@@ -38,6 +38,17 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** Hosted provider recipes are explicit-assignment only. Their
+  worker capability sets `claim_unassigned=false`, which is persisted in
+  `worker_recipes` and enforced from registration during claims. Therefore a
+  newly started Mistral or Datalab worker cannot consume the 431 historical
+  unassigned PDFs; an administrator or routing policy must first select its
+  exact recipe. Claim payloads may narrow a stored capability but cannot
+  broaden its recipe, media/input kinds, provider account, or assignment mode.
+  Legacy workers that never registered capabilities retain protocol
+  compatibility. CLI recipe selectors accept both historical raw 64-hex IDs
+  and canonical `blake3:<64-hex>` recipe identities.
+
 - **2026-08-30:** The hosted API-worker quota design is implemented for
   Mistral OCR wiki-v3 and Datalab accurate wiki-v1. Both adapters implement a
   network-free provider-probe and durable provider-attempt ABI, carry the

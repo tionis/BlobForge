@@ -168,8 +168,8 @@ view; detailed research tasks remain in the sections below.
 - [ ] Deploy exact-recipe worker capabilities incrementally and verify that a
   multipurpose supervisor safely dispatches isolated adapters between jobs.
   The generic dispatcher, bounded Mistral wiki-v3 canary runtime, hosted-worker
-  image, and alternating-media unit canary are implemented; coordinator and
-  production canaries remain.
+  image, alternating-media unit canary, and explicit-only hosted claim fence
+  are implemented; coordinator and production canaries remain.
 - [x] Define the hosted API-worker deployment and quota architecture, including
   separate provider security boundaries, two-phase preflight/reservation,
   checkpoint-aware settlement, integer money accounting, provider cooldowns,

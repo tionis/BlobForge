@@ -26,6 +26,7 @@ class AdapterRecipe:
     input_kinds: tuple[str, ...] = ("source",)
     provider_account: str | None = None
     provider: str | None = None
+    claim_unassigned: bool = True
 
     def capability(self) -> dict[str, Any]:
         value = {
@@ -35,6 +36,7 @@ class AdapterRecipe:
             "media_types": list(self.media_types),
             "artifact_type": self.artifact_type,
             "input_kinds": list(self.input_kinds),
+            "claim_unassigned": self.claim_unassigned,
         }
         if self.provider_account is not None:
             value["provider_account"] = self.provider_account
@@ -107,6 +109,7 @@ def mistral_wiki_v3_recipe(
         input_kinds=("source", "artifact"),
         provider_account=provider_account,
         provider="mistral-ai",
+        claim_unassigned=False,
     )
 
 
@@ -172,4 +175,5 @@ def datalab_wiki_v1_recipe(
         input_kinds=("source",),
         provider_account=provider_account,
         provider="datalab",
+        claim_unassigned=False,
     )

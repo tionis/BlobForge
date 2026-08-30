@@ -83,6 +83,37 @@ def _database(tmp_path):
     return database
 
 
+def test_explicit_only_hosted_capability_never_claims_unassigned_work(tmp_path):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    capability = {**_capability(), "claim_unassigned": False}
+    registered = database.register_capabilities("hosted", [capability])
+    assert registered[0]["claim_unassigned"] is False
+
+    unassigned_key = "0" * 64
+    exact_key = "1" * 64
+    _enqueue(database, unassigned_key)
+    assert database.claim("hosted", ["3_normal"], [capability]) is None
+
+    _enqueue(database, exact_key)
+    database.request_conversion(exact_key, capability["recipe_digest"])
+    job = database.claim("hosted", ["3_normal"], [capability])
+    assert job is not None
+    assert job["hash"] == exact_key
+    assert database.get_job(unassigned_key)["status"] == "todo"
+
+
+def test_claim_cannot_broaden_registered_explicit_only_capability(tmp_path):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    explicit_only = {**_capability(), "claim_unassigned": False}
+    database.register_capabilities("hosted", [explicit_only])
+    _enqueue(database, "2" * 64)
+
+    broadened = {**explicit_only, "claim_unassigned": True}
+    assert database.claim("hosted", ["3_normal"], [broadened]) is None
+
+
 def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp_path):
     database = _database(tmp_path)
     _enqueue(database, "a" * 64)

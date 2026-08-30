@@ -55,8 +55,11 @@ def args(**values):
 
 def test_recipe_digest_argument_is_normalized_and_validated():
     assert cli._recipe_digest_arg("B" * 64) == RECIPE
+    assert cli._recipe_digest_arg("BLAKE3:" + "B" * 64) == "blake3:" + RECIPE
     with pytest.raises(ArgumentTypeError, match="64 hexadecimal"):
         cli._recipe_digest_arg("not-a-digest")
+    with pytest.raises(ArgumentTypeError, match="64 hexadecimal"):
+        cli._recipe_digest_arg("sha256:" + "b" * 64)
 
 
 def test_artifacts_json_includes_selected_recipe(coordinator, capsys):

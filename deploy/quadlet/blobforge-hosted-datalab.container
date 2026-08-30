@@ -14,7 +14,7 @@ ReadOnly=true
 ReadOnlyTmpfs=true
 NoNewPrivileges=true
 DropCapability=all
-Exec=recipe-worker --provider datalab --coordinator-url http://127.0.0.1:8080 --provider-account datalab:primary --response-cache /var/lib/blobforge-provider/responses --max-pages 1000 --max-cost-usd 10 --confirm-api-rights
+Exec=recipe-worker --provider datalab --coordinator-url http://127.0.0.1:8080 --provider-account datalab:primary --response-cache /var/lib/blobforge-provider/responses --max-pages 20 --max-cost-usd 0.10 --confirm-api-rights
 
 [Service]
 Restart=on-failure

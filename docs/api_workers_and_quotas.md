@@ -24,6 +24,16 @@ local artifact-only upgrades between paid source conversions. Do not put
 unrelated provider keys in one container merely to obtain multipurpose
 dispatch: separate workers can still share the coordinator queue.
 
+Hosted capabilities are **explicit-assignment only**. Their
+`claim_unassigned=false` registration means they can lease a job only after an
+administrator or routing policy has selected that exact immutable recipe.
+They cannot consume the historical unassigned queue. The coordinator persists
+this property with the worker registration and treats the stored value as
+authoritative during every claim; a later claim request cannot broaden it.
+Local compatibility workers retain `claim_unassigned=true` unless their recipe
+opts out. Older clients that never register any capability remain supported,
+but production hosted workers must always register the versioned capability.
+
 ## Three different limits
 
 BlobForge must not collapse every restriction into one `quota` boolean:
@@ -186,7 +196,8 @@ ambiguous purchase outcomes require operator-visible reconciliation.
 2. Create `mistral:primary` with provider `mistral-ai` and `datalab:primary`
    with provider `datalab`, both at concurrency one in the quota console, then
    add explicit policy windows before starting workers.
-3. Deploy one Mistral canary Quadlet with a dedicated worker
+3. Deploy one Mistral canary Quadlet, disabled until the account and policy
+   exist, with a dedicated worker
    token, key environment file, and persistent checkpoint volume. The
    coordinator data and checkpoint volume must both be covered by recovery
    documentation and backup tests.
@@ -201,6 +212,11 @@ Running workers beside the coordinator is operationally reasonable: provider
 conversion is network-bound and the response cache benefits from local durable
 storage. Separate containers and fenced protocols preserve the option to move
 them to another host later without changing job or artifact identity.
+
+Initial worker-side safety ceilings should match the canary rather than the
+full corpus: 20 pages and USD 0.05 for Mistral, and 20 pages and USD 0.10 for
+Datalab. Coordinator policy windows are an additional aggregate limit, not a
+replacement for these immutable per-job adapter caps.
 
 Example Quadlets and secret templates are in `deploy/quadlet/`. The coordinator
 SQLite directory and provider response-cache volumes form one recovery

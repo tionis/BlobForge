@@ -201,6 +201,8 @@ def test_mistral_canary_runtime_is_exact_and_secret_free(tmp_path):
     assert "MISTRAL_API_KEY" not in recipe.environment
     assert recipe.deployment_status == "canary"
     assert recipe.input_kinds == ("source", "artifact")
+    assert recipe.claim_unassigned is False
+    assert recipe.capability()["claim_unassigned"] is False
 
     cached = mistral_wiki_v3_recipe(
         max_pages=250,
@@ -223,6 +225,7 @@ def test_mistral_canary_runtime_is_exact_and_secret_free(tmp_path):
     assert datalab.provider == "datalab"
     assert datalab.provider_account == "datalab:primary"
     assert datalab.input_kinds == ("source",)
+    assert datalab.claim_unassigned is False
 
 
 def test_hosted_worker_reserves_and_settles_before_completion(tmp_path):

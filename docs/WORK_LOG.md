@@ -1,5 +1,27 @@
 # Work Log
 
+## 2026-08-30 (Hosted Worker Production Claim Fence)
+
+- **Objective:** Close the queue-selection and recipe-selector gaps discovered
+  in the production-readiness inspection before publishing or starting hosted
+  workers.
+- **Implementation:** Added a persisted `claim_unassigned` capability with an
+  additive SQLite migration. Mistral and Datalab set it false, so their claims
+  match only jobs already assigned to the exact recipe. Claim-time metadata is
+  constrained to the worker's stored registration, preventing a later payload
+  from broadening recipe, media/input kinds, provider account, or assignment
+  mode. The no-capability legacy protocol remains compatible. CLI recipe
+  arguments now accept canonical tagged BLAKE3 identities as well as historical
+  raw hexadecimal identifiers. Quadlet examples use 20-page canary ceilings of
+  USD 0.05 for Mistral and USD 0.10 for Datalab.
+- **Tools and verification:** Inspected repository and Gandalf guidance with
+  `rg` and `sed`, edited with `apply_patch`, ran `git diff --check`, and ran the
+  focused CLI/provider/coordinator/worker suite, then the complete hermetic
+  suite. All 35 focused tests and 298 full-suite tests plus 5 subtests pass,
+  including explicit-only selection, stored-capability anti-broadening, tagged
+  digest parsing, and legacy worker compatibility. Container publication
+  verification follows in the release step.
+
 ## 2026-08-30 (Hosted API Worker Quota Implementation)
 
 - **Objective:** Implement provider workers that can safely share the Citadel

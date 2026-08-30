@@ -102,6 +102,13 @@ Datalab accurate wiki-v1 canaries. They run under separate provider-account
 credentials and quota ledgers. Adding audio later means another exact `AdapterRecipe`;
 the claim/dispatch loop does not need to become media-specific.
 
+Mistral and Datalab advertise `claim_unassigned=false`. The coordinator stores
+that capability and only offers those workers jobs already assigned to the
+exact recipe. This protects the retained unassigned migration queue when a
+provider worker starts. Registered capabilities are authoritative for recipe,
+media/input kinds, provider account, and assignment mode; claim payloads may
+narrow but cannot broaden them.
+
 Run a bounded hosted canary worker with:
 
 ```bash

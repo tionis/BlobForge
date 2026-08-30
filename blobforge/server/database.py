@@ -120,6 +120,7 @@ class Database:
                     input_kinds_json TEXT NOT NULL DEFAULT '["source"]',
                     provider_account TEXT,
                     provider TEXT,
+                    claim_unassigned INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(worker_id, recipe_digest)
                 );
                 CREATE TABLE IF NOT EXISTS workers (
@@ -246,6 +247,7 @@ class Database:
             for name, declaration in (
                 ("provider_account", "TEXT"),
                 ("provider", "TEXT"),
+                ("claim_unassigned", "INTEGER NOT NULL DEFAULT 1"),
             ):
                 if name not in worker_recipe_columns:
                     db.execute(
@@ -994,6 +996,9 @@ class Database:
                 raise ValueError("provider capabilities need provider and provider_account")
         elif provider is not None:
             raise ValueError("provider requires provider_account")
+        claim_unassigned = capability.get("claim_unassigned", True)
+        if not isinstance(claim_unassigned, bool):
+            raise ValueError("capability claim_unassigned must be a boolean")
         return {
             "recipe_digest": digest,
             "backend": backend,
@@ -1003,6 +1008,7 @@ class Database:
             "artifact_type": str(capability.get("artifact_type") or "mdaf/v1"),
             "provider_account": provider_account,
             "provider": provider,
+            "claim_unassigned": claim_unassigned,
         }
 
     def register_capabilities(self, worker_id: str, capabilities: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -1021,10 +1027,11 @@ class Database:
                      json.dumps(value["media_types"]), value["artifact_type"], timestamp,
                      json.dumps(value["input_kinds"]), value["provider_account"], value["provider"]))
                 db.execute("""INSERT INTO worker_recipes(worker_id,recipe_digest,last_seen,
-                    input_kinds_json,provider_account,provider) VALUES(?,?,?,?,?,?)""",
+                    input_kinds_json,provider_account,provider,claim_unassigned)
+                    VALUES(?,?,?,?,?,?,?)""",
                            (worker_id, value["recipe_digest"], timestamp,
                             json.dumps(value["input_kinds"]), value["provider_account"],
-                            value["provider"]))
+                            value["provider"], int(value["claim_unassigned"])))
         return normalized
 
     def recipes(self, media_type: str | None = None) -> list[dict[str, Any]]:
@@ -1214,27 +1221,59 @@ class Database:
         if not normalized:
             return None
         with self.transaction() as db:
-            registered_artifact_inputs = {
-                str(row["recipe_digest"])
+            registered = {
+                str(row["recipe_digest"]): row
                 for row in db.execute(
-                    "SELECT recipe_digest,input_kinds_json FROM worker_recipes "
-                    "WHERE worker_id=?",
+                    """SELECT wr.recipe_digest,wr.input_kinds_json,
+                    wr.claim_unassigned,r.backend,r.recipe_json,r.media_types_json,
+                    r.artifact_type,wr.provider_account,wr.provider
+                    FROM worker_recipes wr JOIN recipes r USING(recipe_digest)
+                    WHERE wr.worker_id=?""",
                     (worker_id,),
                 )
-                if "artifact" in json.loads(row["input_kinds_json"])
             }
-            normalized = [
-                {
-                    **value,
-                    "input_kinds": [
-                        kind
-                        for kind in value["input_kinds"]
-                        if kind != "artifact"
-                        or value["recipe_digest"] in registered_artifact_inputs
-                    ],
-                }
-                for value in normalized
-            ]
+            if registered:
+                constrained = []
+                for value in normalized:
+                    registered_value = registered.get(value["recipe_digest"])
+                    if registered_value is None:
+                        continue
+                    registered_media_types = json.loads(
+                        registered_value["media_types_json"]
+                    )
+                    registered_input_kinds = json.loads(
+                        registered_value["input_kinds_json"]
+                    )
+                    media_types = [
+                        item
+                        for item in value["media_types"]
+                        if item in registered_media_types
+                    ]
+                    input_kinds = [
+                        item
+                        for item in value["input_kinds"]
+                        if item in registered_input_kinds
+                    ]
+                    if not media_types or not input_kinds:
+                        continue
+                    constrained.append(
+                        {
+                            **value,
+                            "backend": str(registered_value["backend"]),
+                            "recipe": json.loads(registered_value["recipe_json"]),
+                            "media_types": media_types,
+                            "input_kinds": input_kinds,
+                            "artifact_type": str(registered_value["artifact_type"]),
+                            "provider_account": registered_value[
+                                "provider_account"
+                            ],
+                            "provider": registered_value["provider"],
+                            "claim_unassigned": bool(
+                                registered_value["claim_unassigned"]
+                            ),
+                        }
+                    )
+                normalized = constrained
             normalized = [value for value in normalized if value["input_kinds"]]
             if not normalized:
                 return None
@@ -1245,10 +1284,15 @@ class Database:
             for capability in normalized:
                 media_placeholders = ",".join("?" for _ in capability["media_types"])
                 input_placeholders = ",".join("?" for _ in capability["input_kinds"])
+                recipe_predicate = (
+                    "(j.recipe_digest IS NULL OR j.recipe_digest=?)"
+                    if capability["claim_unassigned"]
+                    else "j.recipe_digest=?"
+                )
                 predicates.append(
                     f"(s.media_type IN ({media_placeholders}) "
                     f"AND j.input_kind IN ({input_placeholders}) "
-                    "AND (j.recipe_digest IS NULL OR j.recipe_digest=?))"
+                    f"AND {recipe_predicate})"
                 )
                 capability_params.extend(capability["media_types"])
                 capability_params.extend(capability["input_kinds"])
@@ -1265,7 +1309,8 @@ class Database:
                 JOIN sources s USING(source_key) WHERE j.source_key=?""", (key,)).fetchone()
             selected = next(value for value in normalized if media_type in value["media_types"] and
                             input_kind in value["input_kinds"] and
-                            (requested_recipe is None or requested_recipe == value["recipe_digest"]))
+                            (requested_recipe == value["recipe_digest"] or
+                             (requested_recipe is None and value["claim_unassigned"])))
             db.execute("""UPDATE jobs SET status='processing',worker_id=?,lease_token=?,lease_expires_at=?,
                 recipe_digest=COALESCE(recipe_digest,?),recipe_json=COALESCE(recipe_json,?),
                 not_before=NULL,blocked_reason=NULL,updated_at=? WHERE source_key=?""",

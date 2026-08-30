@@ -70,8 +70,15 @@ def _apply_coordinator_overrides(args):
 
 def _recipe_digest_arg(value):
     digest = value.lower()
-    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        raise argparse.ArgumentTypeError("recipe digest must be 64 hexadecimal characters")
+    hexadecimal = digest.removeprefix("blake3:")
+    if (
+        (":" in digest and not digest.startswith("blake3:"))
+        or len(hexadecimal) != 64
+        or any(char not in "0123456789abcdef" for char in hexadecimal)
+    ):
+        raise argparse.ArgumentTypeError(
+            "recipe digest must be 64 hexadecimal characters, optionally prefixed with blake3:"
+        )
     return digest
 
 
