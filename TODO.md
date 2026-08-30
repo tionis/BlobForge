@@ -186,7 +186,10 @@ view; detailed research tasks remain in the sections below.
   volumes, and recovery coverage; example Quadlets are implemented, but image
   publication, Gandalf integration, backup inclusion, and live canaries remain.
 - [ ] Run production canaries with rollback to retained legacy artifacts before
-  expanding any selected recipe.
+  expanding any selected recipe. The first Mistral cache-hit attempt preserved
+  the legacy artifact and made no provider call, but exposed a read-only uv
+  cache path; publish the corrected hosted image and repeat Mistral before
+  staging Datalab.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
   immutable artifact identities.
 

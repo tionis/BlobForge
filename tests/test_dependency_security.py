@@ -72,3 +72,13 @@ def test_release_and_container_provenance_are_wired():
     assert "ARG BLOBFORGE_BUILD_REVISION=unknown" in container_text
     assert 'BLOBFORGE_BUILD_REVISION="${BLOBFORGE_BUILD_REVISION}"' in container_text
     assert "BLOBFORGE_BUILD_REVISION=${{ github.sha }}" in workflow_text
+
+
+def test_hosted_worker_runtime_is_non_root_and_writes_uv_cache_only_to_tmpfs():
+    container_text = (ROOT / "Containerfile.hosted-worker").read_text(
+        encoding="utf-8"
+    )
+
+    assert "USER 10001" in container_text
+    assert "UV_CACHE_DIR=/tmp/uv-cache" in container_text
+    assert "WORKDIR /app" in container_text

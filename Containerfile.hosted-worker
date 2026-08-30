@@ -25,6 +25,7 @@ COPY --from=builder /app /app
 ENV PATH="/app/.venv/bin:$PATH" \
     BLOBFORGE_BUILD_REVISION="${BLOBFORGE_BUILD_REVISION}" \
     PYTHONUNBUFFERED=1 \
+    UV_CACHE_DIR=/tmp/uv-cache \
     BLOBFORGE_MISTRAL_RESPONSE_CACHE=/var/cache/blobforge/mistral-responses
 
 VOLUME ["/var/cache/blobforge"]

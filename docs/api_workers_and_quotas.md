@@ -1,6 +1,6 @@
 # Hosted API Workers and Quota Accounting
 
-Status: implemented; Citadel production canaries pending
+Status: implemented; Citadel production canaries in progress
 
 Date: 2026-08-30
 
@@ -9,12 +9,14 @@ Date: 2026-08-30
 Hosted conversion adapters run as ordinary fenced BlobForge workers, not inside
 the coordinator process. They may be deployed on the same VPS as the
 coordinator, but each provider credential is a separate security and failure
-boundary. The initial Citadel deployment should therefore use one rootless
+boundary. The initial Citadel deployment should therefore use one system
 Podman Quadlet per provider account, with:
 
 - a provider-specific worker credential and API key;
 - the lightweight hosted-worker image rather than a local ML image;
 - an unprivileged container UID with a provider-specific writable cache;
+- uv's disposable runtime cache explicitly rooted on the writable `/tmp`
+  tmpfs, never under the read-only application tree;
 - a persistent, backed-up response-checkpoint volume;
 - access to the coordinator over the host-local listener; and
 - conservative CPU, memory, process, and restart limits.
@@ -224,3 +226,10 @@ SQLite directory and provider response-cache volumes form one recovery
 boundary. A database restore without checkpoints can preserve charges but lose
 replay data; checkpoints without the database can preserve provider output but
 lose settlement. Back up and restore-test both before unattended paid work.
+
+The first Citadel cache-hit canary caught a runtime-boundary error before
+provider access: non-root `uv run` defaulted to `/app/.cache/uv`, but `/app` is
+read-only. Hosted images must set `UV_CACHE_DIR=/tmp/uv-cache`; deployment may
+repeat that environment setting as defense in depth. A release probe must run
+an evaluator-project `uv run` as UID 10001 with a read-only root filesystem,
+not merely invoke the already-installed BlobForge entry point.

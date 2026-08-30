@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** The first Citadel Mistral cache-hit canary failed before its
+  quota probe or provider access because the unprivileged hosted container ran
+  `uv run` with its default cache at `/app/.cache/uv` while `/app` was
+  read-only. The legacy artifact remained available, Datalab stayed disabled,
+  and no paid request occurred. Hosted images must set
+  `UV_CACHE_DIR=/tmp/uv-cache`, retain the writable `/tmp` tmpfs, and verify an
+  evaluator-project `uv run` under UID 10001 with a read-only root filesystem.
+
 - **2026-08-30:** Hosted provider recipes are explicit-assignment only. Their
   worker capability sets `claim_unassigned=false`, which is persisted in
   `worker_recipes` and enforced from registration during claims. Therefore a

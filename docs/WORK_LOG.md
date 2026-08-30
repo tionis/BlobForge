@@ -1,5 +1,28 @@
 # Work Log
 
+## 2026-08-30 (First Citadel Hosted-Worker Canary)
+
+- Deployed the security-patched coordinator and disabled Mistral/Datalab
+  Quadlets through Gandalf after a successful quiesced backup. Production
+  retained 1,808 sources/jobs, 1,377 artifacts, and 431 unassigned `todo` jobs;
+  SQLite `quick_check` passed and both worker services were stopped.
+- Configured concurrency-one provider accounts and immutable canary windows:
+  three requests / 30 pages, with USD 0.15 Mistral and USD 0.30 Datalab
+  aggregate estimated and billed-exposure ceilings. Seeded the exact already
+  paid eight-page Storypath response checkpoints into the backed-up provider
+  cache.
+- Queued only Mistral wiki-v3 and enabled only its exact-recipe worker. The
+  attempt failed before quota reservation or provider access because non-root
+  `uv run` tried to create `/app/.cache/uv` on the read-only application tree.
+  The retained legacy artifact was not overwritten, Datalab remained stopped,
+  and the Mistral worker was stopped immediately.
+- Set the hosted image's disposable uv cache to `/tmp/uv-cache`, documented the
+  runtime boundary, and added a static container-contract regression. A local
+  Podman build then ran both evaluator projects through `uv run` as UID 10001
+  with a read-only root and a 128 MiB `/tmp` tmpfs; each created only
+  `/tmp/uv-cache` and loaded pinned pypdf 6.14.2. The published digest must
+  repeat this contract before the canary is retried.
+
 ## 2026-08-30 (Hosted Worker Production Claim Fence)
 
 - **Objective:** Close the queue-selection and recipe-selector gaps discovered
