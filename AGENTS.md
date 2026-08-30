@@ -38,6 +38,21 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** Citadel's bounded hosted-provider rollout is complete for the
+  success path. Mistral and Datalab each converted the same two production
+  rulebooks: an eight-page durable-cache replay and a real nine-page cache
+  miss. All four reservations committed without retries; cache hits recorded
+  zero exposure, Mistral recorded USD 0.036 list price with billed/credits
+  honestly unknown, and Datalab reported USD 0.07 billed. Each new MDAF passed
+  fail-closed production validation with page mappings and exact composite
+  recipe provenance while the legacy siblings remained immutable. The catalog
+  now has 1,381 artifacts and retains the 1,377 done / 431 todo split. Both
+  provider units are disabled after the canaries. The post-canary quiesced
+  backup completed in 16 seconds and the isolated full restore test in 221
+  seconds. Do not enable unattended paid batches until exhaustion/override,
+  cooldown, crash-after-checkpoint, ambiguous-outcome, and packaging-failure
+  canaries pass.
+
 - **2026-08-30:** The first Citadel Mistral cache-hit canary failed before its
   quota probe or provider access because the unprivileged hosted container ran
   `uv run` with its default cache at `/app/.cache/uv` while `/app` was

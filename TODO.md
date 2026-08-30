@@ -181,15 +181,18 @@ view; detailed research tasks remain in the sections below.
   settlement, cooldown, deferred-job, reconciliation, and usage-summary APIs.
 - [x] Add an admin quota console and a single-use, exact-recipe job overage
   control requiring a reason, expiry, and explicit maximum allowance.
-- [ ] Deploy separate concurrency-one Mistral and Datalab Quadlets on Citadel
+- [x] Deploy separate concurrency-one Mistral and Datalab Quadlets on Citadel
   with dedicated worker credentials, provider keys, persistent checkpoint
-  volumes, and recovery coverage; example Quadlets are implemented, but image
-  publication, Gandalf integration, backup inclusion, and live canaries remain.
-- [ ] Run production canaries with rollback to retained legacy artifacts before
-  expanding any selected recipe. The first Mistral cache-hit attempt preserved
-  the legacy artifact and made no provider call, but exposed a read-only uv
-  cache path; publish the corrected hosted image and repeat Mistral before
-  staging Datalab.
+  volumes, and recovery coverage. The digest-pinned hosted image, Gandalf
+  integration, disabled-by-default units, provider caches, and quiesced
+  backup/restore test are verified in production.
+- [x] Run cache-hit and bounded cache-miss production canaries for both hosted
+  recipes with rollback to retained legacy artifacts. Two rulebooks now retain
+  legacy, Mistral, and Datalab MDAFs; four reservations committed without
+  retries, and both workers returned to stopped steady state.
+- [ ] Exercise quota exhaustion, a bounded overage, provider cooldown,
+  crash-after-checkpoint, ambiguous-outcome reconciliation, and
+  packaging-failure recovery before enabling unattended paid batches.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
   immutable artifact identities.
 

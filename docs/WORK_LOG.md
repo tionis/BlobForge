@@ -3196,3 +3196,33 @@
   Citadel reported a healthy container at that exact revision. Public probes
   confirmed a no-store/CSP HTML 404 and a recoverable HTML 400 for an invalid
   OIDC callback; the health endpoint remains green.
+
+## 2026-08-30 (Citadel Hosted-Provider Production Canaries)
+
+- **Objective:** Close the hosted-worker production-readiness issues, deploy
+  quota-fenced Mistral and Datalab workers, convert a bounded set of priority
+  rulebooks, and prove the enlarged recovery boundary.
+- **Implementation:** Published hosted image
+  `sha256:89f3e7202ba280a3e66938054ce492bf274c6ca7953e41f1bfb74c89288c3256`
+  after adding an unprivileged writable uv cache, pypdf 6.14.2 preflight,
+  explicit-only recipe claiming, and lifecycle-aware PID-1/subprocess shutdown.
+  Gandalf deploys separate concurrency-one provider Quadlets, dedicated worker
+  credentials and API keys, immutable 3-request/30-page quota windows,
+  per-job ceilings, and provider caches inside `/srv/blobforge`.
+- **Canaries:** Replayed the eight-page *Shadows and Mirrors* checkpoints for
+  both providers at zero request/page/money exposure. Then converted the full
+  nine-page *Massive Monsters* rulebook through both exact recipes. Datalab
+  committed one request/nine pages and USD 0.07 billed after reserving its USD
+  0.10 ceiling. Mistral committed one request/nine pages and USD 0.036 list
+  price; billed cash and credits remain unknown. All jobs completed at retry
+  zero, all four MDAFs independently validated, and every artifact has exact
+  page mappings and recipe provenance. The two original legacy artifacts were
+  not changed or replaced.
+- **Verification:** Production ended at 1,381 artifacts, 1,377 `done` jobs,
+  431 `todo` jobs, four committed quota rows, zero active provider workers,
+  and SQLite `quick_check=ok`. Public `/api/v1/health` reports the SQLite/filesystem
+  backend healthy. Mistral and Datalab each stopped with result success,
+  `ExecMainStatus=0`, and `NRestarts=0`. The post-canary quiesced Restic backup
+  completed in 16 seconds; the isolated full restore test completed in 221
+  seconds with result success. Gandalf's mandatory suite passed 758 tests plus
+  4 subtests and 13 Bunny tests before each staged steady-state change.

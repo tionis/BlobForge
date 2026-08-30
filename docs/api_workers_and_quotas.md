@@ -1,6 +1,6 @@
 # Hosted API Workers and Quota Accounting
 
-Status: implemented; Citadel production canaries in progress
+Status: implemented; bounded Citadel success-path canaries complete
 
 Date: 2026-08-30
 
@@ -241,3 +241,35 @@ the supervisor can settle a cache hit, release a pre-purchase lease, or retain
 an ambiguous purchase for reconciliation before deregistering. A Podman stop
 probe must observe exit code zero and the deregistration path before the image
 is promoted.
+
+## Citadel production evidence
+
+The 2026-08-30 rollout used digest-pinned hosted image
+`sha256:89f3e7202ba280a3e66938054ce492bf274c6ca7953e41f1bfb74c89288c3256`
+with one provider enabled at a time. Both workers registered exact-recipe-only
+capabilities, ran as UID 10001 with a read-only root filesystem, and stopped
+with exit status zero and no restart. The coordinator retained every legacy
+artifact throughout the campaign.
+
+The eight-page *Shadows and Mirrors* source replayed the durable Mistral and
+Datalab checkpoints. Both quota entries committed as cache hits with zero
+requests, pages, or money exposure. The resulting MDAFs validated independently
+inside the production coordinator and published eight page mappings.
+
+The nine-page *Massive Monsters* source then exercised a real cache miss for
+each provider. Datalab reserved its USD 0.10 safety ceiling, completed one
+request and nine pages, and reported USD 0.07 billed. Mistral reserved and
+settled nine pages at USD 0.036 list price; its actual billed cash and credits
+remain unknown rather than being inferred. Both artifacts passed fail-closed
+MDAF validation with nine page mappings and exact composite-recipe provenance.
+The catalog ended with four new hosted artifacts, all four reservations in
+`committed`, no retries, SQLite `quick_check=ok`, and the original 1,377 done /
+431 todo job split.
+
+After the campaign both provider units were returned to disabled/inactive
+steady state. A quiesced Restic snapshot including SQLite, immutable objects,
+and both response caches completed in 16 seconds. An isolated full restore
+completed in 221 seconds and passed its recovery verification. Unattended paid
+batches remain gated on the failure-mode canaries in the rollout sequence:
+quota exhaustion/override, cooldown, crash after checkpoint, ambiguous outcome,
+and packaging failure.
