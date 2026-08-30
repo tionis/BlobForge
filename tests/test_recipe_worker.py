@@ -7,7 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from blobforge.converters import ConverterRunResult, ProviderProbe
+from blobforge.converters import (
+    ConverterRunResult,
+    ProviderProbe,
+)
 from blobforge.recipe_runtime import (
     AdapterRecipe,
     datalab_wiki_v1_recipe,
@@ -366,6 +369,45 @@ def test_packaging_upload_failure_keeps_committed_provider_settlement(tmp_path):
     assert coordinator.quota_settled[0][1]["state"] == "committed"
     assert coordinator.failed[0][0] == "packaging-failure"
     assert coordinator.completed == []
+
+
+def test_converter_failure_keeps_attached_provider_settlement(tmp_path):
+    base = _recipe("hosted-v1", "application/pdf")
+    recipe = AdapterRecipe(
+        **{**base.__dict__, "provider": "test-provider", "provider_account": "test:primary"}
+    )
+    coordinator = FakeCoordinator([_job("adapter-failure", recipe, "application/pdf")])
+    probe = ProviderProbe(
+        "test-provider", "test:primary", "checkpoint:adapter-failure", False,
+        1, 8, 32_000,
+        {"contract": "dev.tionis.blobforge.provider-probe/v1", "provider": "test-provider",
+         "account_key": "test:primary", "checkpoint_key": "checkpoint:adapter-failure",
+         "cache_hit": False, "requests": 1, "pages": 8,
+         "estimated_micro_usd": 32_000},
+    )
+    report = {
+        "contract": "dev.tionis.blobforge.provider-attempt/v1",
+        "reservation_id": "qres-paid", "provider": "test-provider",
+        "account_key": "test:primary", "currency": "USD",
+        "checkpoint_key": "checkpoint:adapter-failure", "state": "committed",
+        "cache_hit": False, "requests": 1, "pages": 8,
+        "estimated_micro_usd": 32_000, "list_micro_usd": 32_000,
+        "billed_micro_usd": None, "credits_micro_usd": None,
+    }
+
+    def convert(*_args, **kwargs):
+        Path(kwargs["attempt_report_path"]).write_text(json.dumps(report))
+        raise RuntimeError("post-provider failure")
+
+    worker = RecipeWorker(
+        coordinator, [recipe], converter=convert,
+        prober=lambda *_args, **_kwargs: probe, heartbeat_interval=3600,
+    )
+    worker.register()
+    outcome = worker.process_once()
+    assert not outcome.success
+    assert coordinator.quota_settled[0][1]["state"] == "committed"
+    assert coordinator.failed[0][0] == "adapter-failure"
 
 
 def test_hosted_worker_returns_deferred_outcome_without_failure():

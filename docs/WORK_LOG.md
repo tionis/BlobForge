@@ -1,5 +1,38 @@
 # Work Log
 
+## 2026-08-31 (Mistral Degenerate-Table Packaging Failure)
+
+- **Incident:** The uploaded *Storypath Ultra Core Manual* reached Mistral
+  normalization but failed packaging when a provider-typed table contained no
+  body row. `markdown_table_to_html` correctly rejected the fragment, while
+  the Mistral caller incorrectly promoted that local representation limitation
+  into a whole-job failure.
+- **Correction:** Mistral normalization now retains the original Markdown for
+  provider-typed table blocks that are not valid rectangular pipe grids. Valid
+  grids still receive deterministic semantic HTML. This implements the frozen
+  recipe's existing `ambiguous_content=retain` contract and changes only an
+  execution path that previously emitted no artifact; successful inputs and
+  their statistics remain byte-identical, so the recipe digest is retained.
+- **Settlement correction:** The adapter wrote its committed provider-attempt
+  report before normalization, but `run_converter` raised inside the worker's
+  temporary-directory context. Context cleanup deleted the report before the
+  outer worker exception handler could read it, causing the reservation to be
+  conservatively but incorrectly settled as ambiguous. Converter execution
+  errors now validate and carry any provider-attempt report before cleanup;
+  the worker also settles the on-disk report inside the temporary-directory
+  context for every converter or packaging exception.
+- **Production evidence:** The failed 257-page source has durable Mistral cache
+  checkpoint `sha256:b949db6f...`, whose envelope names the same
+  `qres_1b67e099ab9729032a87fdd1` reservation. The cached response is 6,416,026
+  bytes and uses the expected v1 cache contract. Its EUR 1.028 reservation is
+  currently ambiguous, and the exact source remains failed under wiki-v3.
+- **Verification and recovery gate:** Forty-one focused converter, worker,
+  Mistral, and table-normalization tests pass, including subprocess failure
+  retention of a committed report. The complete hermetic suite passes 316
+  tests plus 5 subtests. Deploy the repaired hosted image while its worker is
+  idle, then retry through the checkpoint-resume path and verify the original
+  reservation commits without a replacement provider request.
+
 ## 2026-08-31 (Administrative CLI Intake)
 
 - **Objective:** Let administrators upload and prioritize local rulebook

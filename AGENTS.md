@@ -38,6 +38,26 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** A quota-managed adapter can commit provider work and then
+  fail during local normalization. Its attempt report lives beneath the recipe
+  worker's temporary directory, so an exception that escapes that context
+  deletes the file before the outer handler can inspect it. `run_converter`
+  must validate and attach the report to `ConverterExecutionError` before
+  unwinding; the worker must settle any on-disk report before leaving its temp
+  context and prefer attached evidence in its outer fallback. The
+  exact Storypath failure has a durable 6,416,026-byte Mistral checkpoint tied
+  to its original ambiguous reservation, so recovery must resume and commit
+  that reservation without another paid request.
+
+- **2026-08-31:** Mistral can label a caption, a header/separator-only fragment,
+  or an inconsistent pipe block as `table`. Semantic HTML conversion must
+  remain strict, but Mistral wiki normalization must retain an invalid grid as
+  original Markdown under `ambiguous_content=retain`; never fail the entire
+  package or invent cells. This is a compatible frozen-recipe repair because
+  the old path emitted no artifact and valid-table outputs/statistics are
+  unchanged. Retry production failures only after confirming the durable
+  provider checkpoint, so repair does not repurchase OCR.
+
 - **2026-08-31:** Administrators can bulk-ingest local rulebooks with
   `blobforge upload`. Directory arguments recursively select PDFs; explicit
   files may use other media types. Every batch must select an active exact

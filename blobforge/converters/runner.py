@@ -63,6 +63,39 @@ class AdapterCancelled(RuntimeError):
     """The worker requested termination of an isolated adapter subprocess."""
 
 
+class ConverterExecutionError(RuntimeError):
+    """An adapter failed after it may have recorded a provider attempt."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider_attempt: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.provider_attempt = provider_attempt
+
+
+def _load_provider_attempt(
+    report_path: Path | None,
+    reservation_id: str | None,
+    *,
+    required: bool,
+) -> Mapping[str, Any] | None:
+    if report_path is None:
+        return None
+    if not report_path.is_file():
+        if required:
+            raise FileNotFoundError(report_path)
+        return None
+    provider_attempt = json.loads(report_path.read_text(encoding="utf-8"))
+    if provider_attempt.get("contract") != PROVIDER_ATTEMPT_CONTRACT:
+        raise ValueError("unsupported provider attempt contract")
+    if provider_attempt.get("reservation_id") != reservation_id:
+        raise ValueError("provider attempt reservation does not match")
+    return provider_attempt
+
+
 def _adapter_environment(environment: Mapping[str, str] | None) -> dict[str, str]:
     value = os.environ.copy()
     if environment:
@@ -246,8 +279,11 @@ def run_converter(
             cancel_event=cancel_event,
         )
         if completed.returncode:
-            raise RuntimeError(
-                f"converter exited {completed.returncode}: {completed.stderr[-4000:]}"
+            raise ConverterExecutionError(
+                f"converter exited {completed.returncode}: {completed.stderr[-4000:]}",
+                provider_attempt=_load_provider_attempt(
+                    report_path, reservation_id, required=False
+                ),
             )
         bundle = load_bundle(bundle_root)
         text = bundle.text_path.read_text(encoding="utf-8")
@@ -385,13 +421,9 @@ def run_converter(
         validated = validate_mdaf(result.path)
         if validated.identity != result.identity:
             raise RuntimeError("MDAF changed during post-build validation")
-        provider_attempt = None
-        if report_path is not None:
-            provider_attempt = json.loads(report_path.read_text(encoding="utf-8"))
-            if provider_attempt.get("contract") != PROVIDER_ATTEMPT_CONTRACT:
-                raise ValueError("unsupported provider attempt contract")
-            if provider_attempt.get("reservation_id") != reservation_id:
-                raise ValueError("provider attempt reservation does not match")
+        provider_attempt = _load_provider_attempt(
+            report_path, reservation_id, required=True
+        )
         return ConverterRunResult(
             artifact_path=result.path,
             identity=result.identity,

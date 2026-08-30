@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from blobforge.converters import AdapterCancelled, run_converter
+from blobforge.converters import (
+    AdapterCancelled,
+    ConverterExecutionError,
+    run_converter,
+)
 from blobforge.mdaf import blake3_bytes, canonical_json_bytes
 from blobforge.recipe_lifecycle import RECIPE_MEMBER_PATH
 
@@ -48,6 +52,48 @@ def test_converter_cancellation_terminates_isolated_adapter(tmp_path):
     pid = int(pid_path.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+def test_failed_converter_retains_provider_attempt_before_temp_cleanup(tmp_path):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF synthetic")
+    adapter = tmp_path / "failed-adapter.py"
+    adapter.write_text(
+        """
+import json, pathlib, sys
+request = json.loads(pathlib.Path(sys.argv[1]).read_text())
+pathlib.Path(request["attempt_report_path"]).write_text(json.dumps({
+  "contract": "dev.tionis.blobforge.provider-attempt/v1",
+  "reservation_id": request["reservation_id"],
+  "provider": "test-provider",
+  "account_key": "test:primary",
+  "currency": "USD",
+  "checkpoint_key": "checkpoint:test",
+  "state": "committed",
+  "cache_hit": False,
+  "requests": 1,
+  "pages": 8,
+  "estimated_micro_usd": 32000,
+  "list_micro_usd": 32000,
+  "billed_micro_usd": None,
+  "credits_micro_usd": None
+}), encoding="utf-8")
+raise RuntimeError("post-provider packaging failure")
+""",
+        encoding="utf-8",
+    )
+    report = tmp_path / "provider-attempt.json"
+    with pytest.raises(ConverterExecutionError) as raised:
+        run_converter(
+            [sys.executable, str(adapter)],
+            source,
+            tmp_path / "failed.mdaf",
+            attempt_report_path=report,
+            reservation_id="qres_test",
+        )
+    assert raised.value.provider_attempt is not None
+    assert raised.value.provider_attempt["state"] == "committed"
+    assert raised.value.provider_attempt["reservation_id"] == "qres_test"
 
 
 def test_converter_bundle_is_packaged_by_shared_builder(tmp_path):

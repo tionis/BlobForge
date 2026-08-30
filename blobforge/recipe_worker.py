@@ -16,6 +16,7 @@ from typing import Callable, Sequence
 
 from .converters import (
     AdapterCancelled,
+    ConverterExecutionError,
     ConverterRunResult,
     ProviderProbe,
     probe_provider,
@@ -275,18 +276,36 @@ class RecipeWorker:
                         diagnostics: list[dict] = []
                         identity = str(result.identity)
                     else:
-                        result = self.converter(
-                            recipe.command,
-                            source,
-                            artifact,
-                            parameters=recipe.parameters,
-                            recipe=recipe.recipe,
-                            timeout_seconds=self.timeout_seconds,
-                            environment=recipe.environment,
-                            attempt_report_path=quota_report_path,
-                            reservation_id=quota_reservation_id,
-                            cancel_event=self.stop_event,
-                        )
+                        try:
+                            result = self.converter(
+                                recipe.command,
+                                source,
+                                artifact,
+                                parameters=recipe.parameters,
+                                recipe=recipe.recipe,
+                                timeout_seconds=self.timeout_seconds,
+                                environment=recipe.environment,
+                                attempt_report_path=quota_report_path,
+                                reservation_id=quota_reservation_id,
+                                cancel_event=self.stop_event,
+                            )
+                        except Exception:
+                            # Settle durable provider evidence before leaving
+                            # the temporary-directory context that owns it.
+                            if (
+                                quota_reservation_id
+                                and quota_report_path
+                                and quota_report_path.is_file()
+                            ):
+                                report = json.loads(
+                                    quota_report_path.read_text(encoding="utf-8")
+                                )
+                                quota_report_state = str(report.get("state") or "")
+                                self.coordinator.settle_quota(
+                                    quota_reservation_id, report
+                                )
+                                quota_settled = True
+                            raise
                         elapsed_seconds = result.elapsed_seconds
                         diagnostics = list(result.diagnostics)
                         identity = result.identity
@@ -344,7 +363,12 @@ class RecipeWorker:
         except Exception as exc:
             if quota_reservation_id and not quota_settled:
                 try:
-                    if quota_report_path and quota_report_path.is_file():
+                    if (
+                        isinstance(exc, ConverterExecutionError)
+                        and exc.provider_attempt is not None
+                    ):
+                        report = exc.provider_attempt
+                    elif quota_report_path and quota_report_path.is_file():
                         report = json.loads(
                             quota_report_path.read_text(encoding="utf-8")
                         )

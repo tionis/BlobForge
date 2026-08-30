@@ -60,6 +60,26 @@ def test_mistral_normalization_fails_closed_without_native_evidence():
         normalize_mistral_pages([{"markdown": "unstructured"}])
 
 
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "| Heading | Value |\n| --- | --- |",
+        "Table 4: Storypath tiers",
+        "| One | Two |\n| --- | --- |\n| only one cell |",
+    ],
+)
+def test_mistral_retains_provider_typed_non_grid_tables(fragment):
+    pages, stats = normalize_mistral_pages(
+        [{
+            "dimensions": {"width": 788, "height": 1023},
+            "blocks": [{"type": "table", "content": fragment}],
+        }]
+    )
+
+    assert pages == [fragment]
+    assert stats["tables_converted"] == 0
+
+
 def test_datalab_normalization_isolates_exact_captions_and_recurring_furniture():
     pages = []
     dimensions = {}

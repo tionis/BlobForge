@@ -161,8 +161,16 @@ def normalize_mistral_pages(
             if not value:
                 continue
             if block_type == "table":
-                value = markdown_table_to_html(value)
-                stats["tables_converted"] += 1
+                try:
+                    value = markdown_table_to_html(value)
+                except ValueError:
+                    # Mistral may type captions, empty grids, or a header plus
+                    # separator as tables. They are not semantic grids and the
+                    # recipe's ambiguous-content contract requires retaining
+                    # their original Markdown instead of failing packaging.
+                    pass
+                else:
+                    stats["tables_converted"] += 1
             elif normalize_lists and block_type == "list":
                 value, removed = strip_markdown_list_decorations(value)
                 stats["list_decorations_removed"] += removed

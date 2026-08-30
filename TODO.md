@@ -132,6 +132,11 @@ view; detailed research tasks remain in the sections below.
 - [x] Add table-aware cleanup fixtures for Mistral repeated headers, Datalab
   description bleed, and irrelevant recurring hosted-provider footer logos;
   all cleanup uses structural evidence rather than global deletion.
+- [x] Retain provider-typed Mistral table fragments that are not valid
+  rectangular pipe grids instead of failing the entire cached conversion.
+- [x] Carry committed provider-attempt reports across adapter failure and
+  temporary-directory cleanup so post-purchase packaging failures do not become
+  false ambiguous quota records.
 - [ ] Add an evidence-backed Docling table-screenshot suppression fixture;
   screenshots may remain secondary evidence but not duplicate primary tables.
 - [x] Complete the decision-sufficient blinded Mistral-wiki/Datalab-wiki

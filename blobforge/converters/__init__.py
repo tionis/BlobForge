@@ -3,6 +3,7 @@
 from .contract import CONTRACT, ConversionBundle, ConversionRequest, load_bundle
 from .runner import (
     AdapterCancelled,
+    ConverterExecutionError,
     ConverterRunResult,
     ProviderProbe,
     probe_provider,
@@ -12,6 +13,7 @@ from .runner import (
 __all__ = [
     "CONTRACT",
     "AdapterCancelled",
+    "ConverterExecutionError",
     "ConversionBundle",
     "ConversionRequest",
     "ConverterRunResult",
