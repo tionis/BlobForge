@@ -1,6 +1,6 @@
 .git
 .github
-.venv
+**/.venv
 .pytest_cache
 .ruff_cache
 bunny/node_modules
@@ -12,7 +12,9 @@ __pycache__
 .*.env
 .blobforge-migration
 dist
-evaluators
+evaluators/*
+!evaluators/mistral/
+!evaluators/mistral/**
 references
 assets
 tests

@@ -38,6 +38,25 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-30:** Mistral wiki-v2 freezes evidence-backed list normalization at
+  recipe `blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026`.
+  A keyless Storypath replay produced valid MDAF
+  `blake3:aedfe70488c3a376371e64e368dd51b2c3e224d1cf8aa4cea8ad1a23e30e4f0d`,
+  removed 20 decorative glyphs following existing Markdown list markers, and
+  recovered 10 items from consecutive provider-typed glyph-leading text
+  blocks. It preserves lone ambiguous blocks, inline `At ♦` mechanics, and
+  headings containing `• TO ••`; never globally replace ordinary `Y` or glyphs.
+  Advisory routing policy v1 resolves eligible born-digital rulebook canaries
+  to that exact digest with rights, applicability, language/layout, spend, and
+  canary gates. The new isolated recipe worker can advertise and alternate
+  multiple recipe/media capabilities, but only Mistral wiki-v2 is currently a
+  deployable canary. The coordinator recomputes applied decisions and audits
+  their actor, features, policy identity, recipe, estimate, status, and
+  rationale; it also recomputes tagged BLAKE3 capability recipe JSON and does
+  not treat offline/revoked workers as route availability. Local/privacy
+  routing, holdout, billing, provider checkpoint, and production rollback gates
+  remain.
+
 - **2026-08-30:** Storypath keyless cache replay establishes Mistral-wiki as a
   strict improvement over raw Mistral on this prose canary. Artifact
   `blake3:5b1074c707e16069c8ea0172cd90557f57c4eee32c77ff4c886c0d96bca35568`

@@ -44,6 +44,7 @@ from .local_import import import_legacy_sources, import_stage
 from .mdaf import blake3_bytes
 from .mdaf.digest import canonical_json_bytes
 from .review import build_review_bundle, summarize_review_result
+from .routing import RoutingFeatures, route_pdf
 from .coordinator_client import CoordinatorClient, CoordinatorError
 from .utils import rewrite_asset_paths, utc_now_iso
 
@@ -696,6 +697,7 @@ def cmd_evaluate_converter(args):
     repository = Path(__file__).resolve().parent.parent
     provider_engine = {
         "mistral-wiki": "mistral",
+        "mistral-wiki-v2": "mistral",
         "datalab-wiki": "datalab",
     }.get(args.engine, args.engine)
     project = repository / "evaluators" / provider_engine
@@ -713,7 +715,7 @@ def cmd_evaluate_converter(args):
         "model": args.model,
     }
     environment = None
-    if args.engine in {"mistral", "mistral-wiki"}:
+    if args.engine in {"mistral", "mistral-wiki", "mistral-wiki-v2"}:
         raw_recipe_path = (
             repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
         )
@@ -723,18 +725,24 @@ def cmd_evaluate_converter(args):
             / "blobforge"
             / "recipes"
             / (
-                "mistral-ocr-4.1-wiki-v1.json"
-                if args.engine == "mistral-wiki"
-                else "mistral-ocr-4.1-v1.json"
+                "mistral-ocr-4.1-wiki-v2.json"
+                if args.engine == "mistral-wiki-v2"
+                else (
+                    "mistral-ocr-4.1-wiki-v1.json"
+                    if args.engine == "mistral-wiki"
+                    else "mistral-ocr-4.1-v1.json"
+                )
             )
         )
         recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
         parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
-        if args.engine == "mistral-wiki":
+        if args.engine in {"mistral-wiki", "mistral-wiki-v2"}:
             parameters["provider_request_digest"] = blake3_bytes(
                 canonical_json_bytes(raw_recipe)
             )
-            parameters["normalization_profile"] = "wiki-v1"
+            parameters["normalization_profile"] = (
+                "wiki-v2" if args.engine == "mistral-wiki-v2" else "wiki-v1"
+            )
         parameters["api_rights_confirmed"] = args.confirm_api_rights
         response_cache = Path(
             args.response_cache
@@ -755,7 +763,7 @@ def cmd_evaluate_converter(args):
             print(f"Pages:        {pages:,}")
             print(f"Bytes:        {Path(args.path).stat().st_size:,}")
             print(f"Recipe:       {parameters['recipe_digest']}")
-            if args.engine == "mistral-wiki":
+            if args.engine in {"mistral-wiki", "mistral-wiki-v2"}:
                 print(f"Provider key: {parameters['provider_request_digest']}")
             print(f"List price:   ${estimated_cost:.3f}")
             print(f"Page ceiling: {args.max_pages if args.max_pages is not None else 'missing'}")
@@ -892,6 +900,48 @@ def cmd_evaluate_converter(args):
     return 0
 
 
+def cmd_route_plan(args):
+    """Evaluate the versioned PDF rulebook routing policy without mutating jobs."""
+    path = Path(args.path)
+    decision = route_pdf(
+        RoutingFeatures(
+            media_type="application/pdf",
+            source_class="born-digital-pnp-rulebook",
+            page_count=pdf_pages(path),
+            native_text_ratio=args.native_text_ratio,
+            language=args.language,
+            quality_tier=args.quality_tier,
+            layout_class=args.layout_class,
+            complex_tables=args.complex_tables,
+            equations=args.equations,
+            external_processing_allowed=args.confirm_api_rights,
+            max_cost_usd=args.max_cost_usd,
+        ),
+        allow_canary=args.allow_canary,
+        recipe_override=args.recipe_override,
+    )
+    print(json.dumps(decision.as_json(), ensure_ascii=False, indent=2, sort_keys=True))
+    if args.apply_job:
+        if not decision.eligible:
+            return 2
+        if not _apply_coordinator_overrides(args):
+            return 1
+        coordinator = _coordinator_client()
+        if coordinator is None:
+            print("Error: coordinator URL and token are required", file=sys.stderr)
+            return 1
+        request_body = dict(decision.features)
+        request_body.update(
+            {
+                "allow_canary": args.allow_canary,
+                "recipe_override": args.recipe_override,
+            }
+        )
+        applied = coordinator.route_conversion(args.apply_job, request_body)
+        print(json.dumps({"applied": applied}, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if decision.eligible else 2
+
+
 def cmd_corpus_inventory(args):
     """Freeze an evaluation corpus with BLAKE3/SHA-256/page metadata."""
     result = build_manifest(args.path, args.output)
@@ -987,6 +1037,44 @@ def cmd_worker(args):
         idle_sleep=10,
         run_schedule=run_schedule
     )
+
+
+def cmd_recipe_worker(args):
+    """Start the exact-recipe, isolated MDAF worker."""
+    from .recipe_runtime import mistral_wiki_v2_recipe
+    from .recipe_worker import RecipeWorker
+
+    coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
+    coordinator_token = args.token or os.getenv("BLOBFORGE_COORDINATOR_TOKEN", "")
+    if not coordinator_url or not coordinator_token:
+        print("Error: a coordinator URL and enrolled worker token are required")
+        return 1
+    if not args.confirm_api_rights:
+        print("Error: hosted recipe workers require --confirm-api-rights")
+        return 1
+    if not args.cache_only and not os.getenv("MISTRAL_API_KEY"):
+        print("Error: MISTRAL_API_KEY is required unless --cache-only is selected")
+        return 1
+    try:
+        recipes = [
+            mistral_wiki_v2_recipe(
+                max_pages=args.max_pages,
+                max_cost_usd=args.max_cost_usd,
+                response_cache=args.response_cache,
+                api_rights_confirmed=args.confirm_api_rights,
+                cache_only=args.cache_only,
+            )
+        ]
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"Error: {exc}")
+        return 1
+    worker = RecipeWorker(
+        CoordinatorClient(coordinator_url, coordinator_token),
+        recipes,
+        timeout_seconds=args.timeout,
+        heartbeat_interval=args.heartbeat_interval,
+    )
+    return worker.run(run_once=args.run_once, idle_sleep=args.idle_sleep)
 
 
 def cmd_serve(args):
@@ -1899,6 +1987,7 @@ def main():
             "docling",
             "mistral",
             "mistral-wiki",
+            "mistral-wiki-v2",
             "datalab",
             "datalab-wiki",
         ),
@@ -1927,6 +2016,39 @@ def main():
         help="Confirm the source may be submitted to the selected hosted API",
     )
     p_evaluate.set_defaults(func=cmd_evaluate_converter)
+
+    p_route = subparsers.add_parser(
+        "route-plan",
+        help="Resolve a born-digital rulebook to an exact recipe without changing jobs",
+    )
+    p_route.add_argument("path", help="Source PDF")
+    p_route.add_argument("--language", default="und", help="BCP 47 primary language")
+    p_route.add_argument(
+        "--native-text-ratio",
+        type=float,
+        default=1.0,
+        help="Measured fraction of pages with usable native text",
+    )
+    p_route.add_argument("--quality-tier", default="quality")
+    p_route.add_argument("--layout-class", default="standard")
+    p_route.add_argument("--complex-tables", action="store_true")
+    p_route.add_argument("--equations", action="store_true")
+    p_route.add_argument("--max-cost-usd", type=float)
+    p_route.add_argument("--recipe-override", help="Exact tagged recipe digest")
+    p_route.add_argument("--apply-job", help="Apply and audit the decision for this source key")
+    p_route.add_argument("--coordinator-url")
+    p_route.add_argument("--token")
+    p_route.add_argument(
+        "--confirm-api-rights",
+        action="store_true",
+        help="Confirm this source may be sent to the hosted candidate",
+    )
+    p_route.add_argument(
+        "--allow-canary",
+        action="store_true",
+        help="Allow a candidate that has not passed the production holdout gate",
+    )
+    p_route.set_defaults(func=cmd_route_plan)
 
     p_corpus = subparsers.add_parser(
         "corpus", help="Create reproducible converter-evaluation corpora"
@@ -2037,6 +2159,33 @@ def main():
         help="Worker enrollment token created in the management UI. Can also be set with BLOBFORGE_COORDINATOR_TOKEN."
     )
     p_worker.set_defaults(func=cmd_worker)
+
+    p_recipe_worker = subparsers.add_parser(
+        "recipe-worker",
+        help="Start an isolated exact-recipe MDAF worker (canary)",
+    )
+    p_recipe_worker.add_argument("--run-once", action="store_true")
+    p_recipe_worker.add_argument("--coordinator-url")
+    p_recipe_worker.add_argument("--token")
+    p_recipe_worker.add_argument("--max-pages", type=int, required=True)
+    p_recipe_worker.add_argument("--max-cost-usd", type=float, required=True)
+    p_recipe_worker.add_argument("--timeout", type=int, default=86_400)
+    p_recipe_worker.add_argument("--heartbeat-interval", type=float, default=30.0)
+    p_recipe_worker.add_argument("--idle-sleep", type=float, default=10.0)
+    p_recipe_worker.add_argument(
+        "--response-cache",
+        default=os.environ.get(
+            "BLOBFORGE_MISTRAL_RESPONSE_CACHE",
+            str(Path.home() / ".cache" / "blobforge" / "mistral-responses"),
+        ),
+    )
+    p_recipe_worker.add_argument("--confirm-api-rights", action="store_true")
+    p_recipe_worker.add_argument(
+        "--cache-only",
+        action="store_true",
+        help="Never contact the provider; fail jobs whose response is not cached",
+    )
+    p_recipe_worker.set_defaults(func=cmd_recipe_worker)
 
     p_serve = subparsers.add_parser(
         "serve", help="Run the self-hosted SQLite/filesystem backend"

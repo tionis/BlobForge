@@ -48,6 +48,10 @@ jobs:
             suffix: -worker-cuda
             file: ./Containerfile
             platforms: linux/amd64
+          - flavor: hosted
+            suffix: -worker-hosted
+            file: ./Containerfile.hosted-worker
+            platforms: linux/amd64,linux/arm64
     permissions:
       contents: read
       packages: write

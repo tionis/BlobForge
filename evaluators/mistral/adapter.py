@@ -298,7 +298,7 @@ def main() -> int:
     if not re.fullmatch(r"blake3:[0-9a-f]{64}", provider_request_digest):
         raise ValueError("a canonical tagged provider_request_digest is required")
     normalization_profile = parameters.get("normalization_profile")
-    if normalization_profile not in {None, "wiki-v1"}:
+    if normalization_profile not in {None, "wiki-v1", "wiki-v2"}:
         raise ValueError("unsupported normalization_profile")
 
     cache_root_value = os.environ.get("BLOBFORGE_MISTRAL_RESPONSE_CACHE")
@@ -331,8 +331,11 @@ def main() -> int:
         encoding="utf-8",
     )
     normalization_stats = None
-    if normalization_profile == "wiki-v1":
-        normalized_pages, normalization_stats = normalize_mistral_pages(pages)
+    if normalization_profile in {"wiki-v1", "wiki-v2"}:
+        normalized_pages, normalization_stats = normalize_mistral_pages(
+            pages,
+            normalize_lists=normalization_profile == "wiki-v2",
+        )
     else:
         normalized_pages = [page["markdown"] for page in pages]
 
@@ -409,7 +412,10 @@ def main() -> int:
     ]
     referenced_assets = referenced_asset_names(markdown)
     for path in sorted(assets.iterdir()):
-        if normalization_profile == "wiki-v1" and path.name not in referenced_assets:
+        if (
+            normalization_profile in {"wiki-v1", "wiki-v2"}
+            and path.name not in referenced_assets
+        ):
             continue
         if path.is_file():
             members.append(
@@ -430,11 +436,18 @@ def main() -> int:
         **(
             {
                 "additional_tools": [
-                    {"name": "blobforge-wiki-normalizer", "version": "1.0.0"}
+                    {
+                        "name": "blobforge-wiki-normalizer",
+                        "version": (
+                            "2.0.0"
+                            if normalization_profile == "wiki-v2"
+                            else "1.0.0"
+                        ),
+                    }
                 ],
                 "markdown_features": ["raw-html", "semantic-html-table-v1"],
             }
-            if normalization_profile == "wiki-v1"
+            if normalization_profile in {"wiki-v1", "wiki-v2"}
             else {}
         ),
         "models": [

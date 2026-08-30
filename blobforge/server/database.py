@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from ..mdaf import blake3_bytes, canonical_json_bytes
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -285,6 +287,11 @@ class Database:
         media_types = sorted({str(value) for value in capability.get("media_types", []) if value})
         if not digest or not media_types:
             raise ValueError("each worker capability needs recipe_digest and media_types")
+        if (
+            digest.startswith("blake3:")
+            and blake3_bytes(canonical_json_bytes(recipe)) != digest
+        ):
+            raise ValueError("tagged recipe_digest does not match canonical recipe JSON")
         return {
             "recipe_digest": digest,
             "backend": backend,
@@ -313,7 +320,7 @@ class Database:
         with self.connect() as db:
             rows = list(db.execute("""SELECT r.*,COUNT(w.worker_id) worker_count FROM recipes r
                 LEFT JOIN worker_recipes wr USING(recipe_digest)
-                LEFT JOIN workers w ON w.worker_id=wr.worker_id AND w.revoked=0
+                LEFT JOIN workers w ON w.worker_id=wr.worker_id AND w.revoked=0 AND w.status!='offline'
                 GROUP BY r.recipe_digest
                 ORDER BY r.backend,r.recipe_digest"""))
         result = []

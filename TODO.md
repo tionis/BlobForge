@@ -142,9 +142,11 @@ view; detailed research tasks remain in the sections below.
   without API keys. Prove Mistral removes only 16 typed footer blocks while
   preserving headings, outline titles, images, and body formatting; record that
   Datalab's conservative profile leaves its known prose defects unchanged.
-- [ ] Add modular header/footer suppression, context-aware dingbat/list
-  normalization, and asset-description isolation, with regression fixtures
-  derived from the hosted Storypath defects.
+- [x] Add modular provider-typed header/footer suppression and context-aware
+  Unicode dingbat/list normalization, with regression fixtures and a keyless
+  Storypath replay that preserves inline dot mechanics.
+- [ ] Add asset-description isolation for prose cases that do not satisfy the
+  current exact-duplicate Datalab rule.
 - [ ] Add a font/layout-evidenced normalization test for dingbat list glyphs;
   never globally replace ordinary `Y` text.
 - [ ] Measure mapping coverage, page/geometry accuracy, confidence calibration,
@@ -156,12 +158,17 @@ view; detailed research tasks remain in the sections below.
 
 ### Phase 4: Routing and production rollout
 
-- [ ] Define versioned routing based on media type, scan ratio, layout,
-  language, tables/equations, quality tier, privacy, and cost ceiling.
-- [ ] Support explicit per-job recipe overrides and audit the routing decision
-  and rationale.
+- [x] Define advisory versioned routing based on media type, native-text ratio,
+  layout, language, tables/equations, quality tier, privacy, and cost ceiling;
+  fail closed outside the evaluated class and resolve only exact recipes.
+- [x] Support policy-constrained per-job recipe overrides and a coordinator
+  apply endpoint that recomputes and audits the actor, complete features,
+  policy identity, exact recipe, estimate, status, and rationale.
 - [ ] Deploy exact-recipe worker capabilities incrementally and verify that a
   multipurpose supervisor safely dispatches isolated adapters between jobs.
+  The generic dispatcher, bounded Mistral wiki-v2 canary runtime, hosted-worker
+  image, and alternating-media unit canary are implemented; coordinator and
+  production canaries remain.
 - [ ] Run production canaries with rollback to retained legacy artifacts before
   expanding any selected recipe.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
@@ -209,7 +216,8 @@ view; detailed research tasks remain in the sections below.
 - [ ] Add SQLite online-backup plus referenced-object manifests, restore
   verification, retention, and orphan/pending-object cleanup.
 - [ ] Replace the production PDF worker's legacy ZIP publisher with staged MDAF
-  generation/validation and add the isolated multipurpose adapter dispatcher.
+  generation/validation. The isolated multipurpose adapter dispatcher is now
+  implemented separately for incremental canary deployment.
 - [ ] Generalize filesystem ingestion beyond `.pdf`, including safe media-type
   detection, adapter selection, and source-type-specific limits.
 - [x] Run the complete 1,377-artifact plus 431 raw-source local import and audit.

@@ -40,6 +40,15 @@ def test_frozen_recipe_identity():
         canonical_json_bytes(recipe)
     )
 
+    wiki_v2_path = path.with_name("mistral-ocr-4.1-wiki-v2.json")
+    wiki_v2_recipe = json.loads(wiki_v2_path.read_text(encoding="utf-8"))
+    assert blake3_bytes(canonical_json_bytes(wiki_v2_recipe)) == (
+        "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026"
+    )
+    assert wiki_v2_recipe["base_recipe"]["digest"] == blake3_bytes(
+        canonical_json_bytes(recipe)
+    )
+
 
 def _request(tmp_path, output, **parameters):
     source = tmp_path / "source.pdf"
@@ -177,6 +186,10 @@ def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monk
             "top_left_y": 200,
             "bottom_right_y": 800,
         },
+        {"type": "list", "content": "- ◆ Existing item"},
+        {"type": "text", "content": "♦ First recovered item"},
+        {"type": "text", "content": "♦ Second recovered item"},
+        {"type": "text", "content": "At ♦, preserve the mechanic."},
         {"type": "footer", "content": "2 REPEATED HEADER"},
     ]
     response["pages"][1]["dimensions"] = {"width": 788, "height": 1023}
@@ -222,6 +235,33 @@ def test_wiki_profile_reuses_raw_cache_and_declares_normalization(tmp_path, monk
     assert bundle["markdown_features"] == ["raw-html", "semantic-html-table-v1"]
     assert bundle["additional_tools"][0]["name"] == "blobforge-wiki-normalizer"
     assert bundle["parameters"]["provider_request_digest"] == "blake3:" + "a" * 64
+
+    wiki_v2 = tmp_path / "wiki-v2"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "adapter",
+            str(
+                _request(
+                    tmp_path,
+                    wiki_v2,
+                    recipe_digest="blake3:" + "c" * 64,
+                    provider_request_digest="blake3:" + "a" * 64,
+                    normalization_profile="wiki-v2",
+                )
+            ),
+        ],
+    )
+    assert adapter.main() == 0
+    assert calls == [True]
+    v2_text = (wiki_v2 / "data/text.md").read_text(encoding="utf-8")
+    assert "- Existing item" in v2_text
+    assert "- First recovered item" in v2_text
+    assert "- Second recovered item" in v2_text
+    assert "At ♦, preserve the mechanic." in v2_text
+    v2_bundle = json.loads((wiki_v2 / "bundle.json").read_text(encoding="utf-8"))
+    assert v2_bundle["additional_tools"][0]["version"] == "2.0.0"
 
 
 def test_ceiling_rejects_before_cache_or_api(tmp_path, monkeypatch):

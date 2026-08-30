@@ -1,0 +1,29 @@
+FROM ghcr.io/astral-sh/uv:latest AS uv
+
+FROM python:3.12-slim AS builder
+
+COPY --from=uv /uv /uvx /bin/
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+COPY blobforge/ ./blobforge/
+COPY evaluators/mistral/pyproject.toml evaluators/mistral/uv.lock ./evaluators/mistral/
+COPY evaluators/mistral/adapter.py ./evaluators/mistral/adapter.py
+RUN uv sync --frozen --no-dev \
+    && uv sync --frozen --project evaluators/mistral
+
+FROM python:3.12-slim
+
+ARG BLOBFORGE_BUILD_REVISION=unknown
+
+COPY --from=uv /uv /uvx /bin/
+WORKDIR /app
+COPY --from=builder /app /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    BLOBFORGE_BUILD_REVISION="${BLOBFORGE_BUILD_REVISION}" \
+    PYTHONUNBUFFERED=1 \
+    BLOBFORGE_MISTRAL_RESPONSE_CACHE=/var/cache/blobforge/mistral-responses
+
+VOLUME ["/var/cache/blobforge"]
+ENTRYPOINT ["blobforge"]
+CMD ["recipe-worker"]

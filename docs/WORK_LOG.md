@@ -1,5 +1,51 @@
 # Work Log
 
+## 2026-08-30 (List-normalized Recipe, Routing, and MDAF Worker)
+
+- **Checkpoint:** Committed the complete preceding hosted evaluation and wiki
+  normalization state as `625bb45` after staged diff and credential-pattern
+  checks. Generated corpora, caches, MDAFs, and private review material were
+  not committed.
+- **List recipe:** Added Mistral wiki-v2 at exact recipe
+  `blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026`.
+  Unit fixtures cover existing Markdown lists, provider-typed text runs, lone
+  ambiguous glyphs, inline mechanics, and headings. A keyless real Storypath
+  cache replay produced validated MDAF `blake3:aedfe704...`, removed 20
+  redundant decorations, recovered 10 items, and retained `At ♦` / `• TO ••`.
+- **Routing:** Added a canonical advisory PDF-rulebook policy and read-only
+  `route-plan` command. It records all evaluated feature inputs, revision,
+  policy BLAKE3, exact recipe, estimate, status, and rationale; rights, spend,
+  applicability, unknown overrides, equations, and canary promotion all fail
+  closed. The eight-page canary resolved at $0.032 under a $0.04 ceiling. An
+  optional coordinator apply endpoint recomputes the decision, requires an
+  active exact-recipe worker, and stores the complete decision plus actor as a
+  `job.route` audit event.
+- **Workers/build:** Added an exact-recipe subprocess worker with capability
+  arrays, media-specific staging, lease renewal, fenced upload/completion,
+  failure context, and unknown-claim release. A fake-coordinator test dispatched
+  audio then PDF through one process. Added a bounded Mistral canary runtime,
+  cache-only mode, hosted-worker container, and GHCR build flavor.
+- **Tools/verification so far:** Used `git`, `rg`, `sed`, `find`, `uv`, pytest,
+  the shared MDAF validator, ZIP inspection, and `apply_patch`. Focused tests
+  pass 28/28. The initial pytest invocation failed only because uv's default
+  home cache was read-only; all subsequent runs used `/tmp/blobforge-uv-cache`.
+  An attempted nonexistent `blobforge mdaf validate` CLI subcommand was
+  replaced by the supported `validate_mdaf` library call.
+- **Final verification:** The full hermetic suite passes 275 tests. `uv build`
+  produced the sdist/wheel and the wheel contains the policy JSON, exact recipe,
+  runtime, and worker. A second keyless Storypath replay is byte-for-byte equal
+  to the first wiki-v2 MDAF. Rootless Podman built
+  `Containerfile.hosted-worker` as local image
+  `6e5d53d3d5bceab9e1b4b7aaa4a46358ba7aa3b6cbfbd87cf24a7d1f670cd7c0`;
+  a container smoke test loaded the embedded recipe and reproduced its exact
+  digest. Docker verification was unavailable because this account cannot use
+  `/var/run/docker.sock`; Podman provided the equivalent build/run check.
+- **Commit preparation:** Reviewed the final worktree scope, distribution
+  contents, diff whitespace, and credential patterns before creating the
+  requested follow-up commit. Local provider caches, generated MDAFs, review
+  materials, build output, and the locally tagged Podman image remain outside
+  the commit.
+
 ## 2026-08-30 (Evaluated-state Commit Checkpoint)
 
 - **Scope:** Prepared the complete Datalab adapter, hosted wiki composites,

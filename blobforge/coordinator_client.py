@@ -14,7 +14,7 @@ import socket
 import urllib.error
 import urllib.request
 from urllib.parse import urlencode, urlsplit
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 class CoordinatorError(RuntimeError):
@@ -245,6 +245,16 @@ class CoordinatorClient:
             "POST",
             f"/api/v1/jobs/{file_hash}/convert",
             body,
+        ) or {}
+
+    def route_conversion(
+        self, file_hash: str, routing_features: Mapping[str, Any]
+    ) -> Dict[str, Any]:
+        """Recompute, apply, and audit a versioned exact-recipe decision."""
+        return self._request(
+            "POST",
+            f"/api/v1/jobs/{file_hash}/route",
+            dict(routing_features),
         ) or {}
 
     def raw_upload_url(

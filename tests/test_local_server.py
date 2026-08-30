@@ -9,6 +9,8 @@ from authlib.integrations.base_client.errors import OAuthError
 import blobforge.server.app as server_app
 from blobforge.server.app import create_app
 from blobforge.server.config import ServerSettings
+from blobforge.mdaf import blake3_bytes, canonical_json_bytes
+from blobforge.recipe_runtime import mistral_wiki_v2_recipe
 
 
 def _zip_bytes() -> bytes:
@@ -415,7 +417,8 @@ async def test_recipe_management_labels_and_retires_worker_recipe(tmp_path):
         worker_tokens={},
     ))
     admin = {"Authorization": "Bearer client-secret"}
-    digest = "blake3:" + "a" * 64
+    recipe_json = {"engine": "marker", "schema_version": 1}
+    digest = blake3_bytes(canonical_json_bytes(recipe_json))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
@@ -423,12 +426,22 @@ async def test_recipe_management_labels_and_retires_worker_recipe(tmp_path):
             "/api/v1/admin/workers", headers=admin, json={"worker_id": "recipe-worker"}
         )).json()["token"]
         worker = {"Authorization": f"Bearer {credential}"}
+        rejected = await client.post("/api/v1/workers/register", headers=worker, json={
+            "worker_id": "recipe-worker",
+            "capabilities": [{
+                "backend": "marker",
+                "recipe_digest": "blake3:" + "a" * 64,
+                "recipe": {"engine": "marker"},
+                "media_types": ["application/pdf"],
+            }],
+        })
+        assert rejected.status_code == 400
         registered = await client.post("/api/v1/workers/register", headers=worker, json={
             "worker_id": "recipe-worker",
             "capabilities": [{
                 "backend": "marker",
                 "recipe_digest": digest,
-                "recipe": {"engine": "marker", "schema_version": 1},
+                "recipe": recipe_json,
                 "media_types": ["application/pdf"],
                 "artifact_type": "mdaf/v1",
             }],
@@ -520,6 +533,93 @@ async def test_multipurpose_worker_claims_capability_and_backend_can_be_selected
         recipes = (await client.get("/api/v1/recipes", headers=client_headers,
                                     params={"media_type": "application/pdf"})).json()["recipes"]
         assert [item["backend"] for item in recipes] == ["marker"]
+
+
+@pytest.mark.anyio
+async def test_versioned_route_is_recomputed_exact_and_fully_audited(tmp_path):
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={"hosted": "worker-secret"},
+    ))
+    source_key = "a" * 64
+    app.state.database.enqueue(source_key, {
+        "media_type": "application/pdf",
+        "priority": "3_normal",
+        "original_name": "rulebook.pdf",
+    })
+    runtime = mistral_wiki_v2_recipe(
+        max_pages=100,
+        max_cost_usd=1.0,
+        response_cache=tmp_path / "cache",
+        api_rights_confirmed=True,
+    )
+    digest = runtime.recipe_digest
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        registration = await client.post(
+            "/api/v1/workers/register",
+            headers={"Authorization": "Bearer worker-secret"},
+            json={
+                "worker_id": "hosted",
+                "capabilities": [runtime.capability()],
+            },
+        )
+        assert registration.status_code == 200
+        body = {
+            "page_count": 8,
+            "native_text_ratio": 1.0,
+            "language": "en",
+            "quality_tier": "quality",
+            "layout_class": "standard",
+            "external_processing_allowed": True,
+            "max_cost_usd": 0.04,
+            "allow_canary": True,
+        }
+        routed = await client.post(
+            f"/api/v1/jobs/{source_key}/route",
+            headers={"Authorization": "Bearer client-secret"},
+            json=body,
+        )
+        assert routed.status_code == 200
+        assert routed.json()["decision"]["recipe_digest"] == digest
+        assert app.state.database.get_job(source_key)["recipe_digest"] == digest
+        event = app.state.database.audit_events(1)[0]
+        assert event["action"] == "job.route"
+        assert event["detail"]["features"]["page_count"] == 8
+        assert event["detail"]["policy_digest"].startswith("blake3:")
+
+        denied = await client.post(
+            f"/api/v1/jobs/{source_key}/route",
+            headers={"Authorization": "Bearer client-secret"},
+            json={**body, "external_processing_allowed": False},
+        )
+        assert denied.status_code == 409
+        assert denied.json()["detail"]["eligible"] is False
+
+        malformed = await client.post(
+            f"/api/v1/jobs/{source_key}/route",
+            headers={"Authorization": "Bearer client-secret"},
+            json={**body, "allow_canary": "yes"},
+        )
+        assert malformed.status_code == 400
+
+        deregistered = await client.post(
+            "/api/v1/workers/deregister",
+            headers={"Authorization": "Bearer worker-secret"},
+            json={"worker_id": "hosted"},
+        )
+        assert deregistered.status_code == 200
+        unavailable = await client.post(
+            f"/api/v1/jobs/{source_key}/route",
+            headers={"Authorization": "Bearer client-secret"},
+            json=body,
+        )
+        assert unavailable.status_code == 409
+        assert "no active worker" in " ".join(
+            unavailable.json()["detail"]["rationale"]
+        )
 
 
 @pytest.mark.anyio

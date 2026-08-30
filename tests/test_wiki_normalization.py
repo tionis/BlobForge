@@ -50,6 +50,8 @@ def test_mistral_normalization_uses_typed_blocks_and_geometry():
         "footers_removed": 1,
         "footer_images_removed": 1,
         "tables_converted": 1,
+        "list_decorations_removed": 0,
+        "text_list_items_recovered": 0,
     }
 
 
@@ -85,6 +87,29 @@ def test_datalab_normalization_isolates_exact_captions_and_recurring_furniture()
         "footer_images_removed": 4,
         "tables_converted": 4,
     }
+
+
+def test_mistral_v2_list_normalization_uses_block_evidence():
+    pages, stats = normalize_mistral_pages(
+        [
+            {
+                "dimensions": {"width": 788, "height": 1023},
+                "blocks": [
+                    {"type": "list", "content": "- ◆ **First:** text"},
+                    {"type": "text", "content": "◆ **Second:** text"},
+                    {"type": "text", "content": "◆ **Third:** text"},
+                    {"type": "text", "content": "At ♦, keep this mechanic."},
+                ],
+            }
+        ],
+        normalize_lists=True,
+    )
+    assert pages == [
+        "- **First:** text\n\n- **Second:** text\n\n- **Third:** text\n\n"
+        "At ♦, keep this mechanic."
+    ]
+    assert stats["list_decorations_removed"] == 1
+    assert stats["text_list_items_recovered"] == 2
 
 
 def test_datalab_keeps_nonrecurring_small_image_and_nonexact_caption():

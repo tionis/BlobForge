@@ -381,6 +381,23 @@ still leads standards-compliant list syntax.
 
 ## Next evaluation gates
 
+### Storypath list-normalization canary
+
+Mistral wiki-v2 freezes context-aware list normalization at recipe
+`blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026`.
+A keyless replay of the same eight-page response produced validated MDAF
+`blake3:aedfe70488c3a376371e64e368dd51b2c3e224d1cf8aa4cea8ad1a23e30e4f0d`.
+It removed 20 decorative glyphs that followed existing Markdown list markers
+and recovered 10 items from two-or-more consecutive glyph-leading provider
+`text` blocks. Inspection confirmed that inline `At ♦` mechanics and headings
+containing `• TO ••` remain. This repairs the hosted Storypath list defects
+without a global glyph or font-character substitution.
+
+The first routing policy now selects this exact recipe only for explicitly
+authorized, sufficiently funded, born-digital English/undetermined-language
+rulebook canaries. It remains advisory until hidden-holdout and coordinator
+production canaries pass.
+
 - select and label representative hard pages and a hidden holdout;
 - capture peak RAM, artifact bytes, failures, and cancellation/resume behavior;
 - freeze local model directories and hashes;

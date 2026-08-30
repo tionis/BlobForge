@@ -26,6 +26,7 @@ from .database import Conflict, Database, now_ms, token_hash
 from .management_ui import ASSET_VERSION, CSS as MANAGEMENT_CSS, JS as MANAGEMENT_JS, console_html
 from .storage import CapabilitySigner, LocalStorage
 from .scim import create_scim_router
+from ..routing import RoutingFeatures, route_pdf
 
 
 PRIORITIES = {"1_urgent", "2_high", "3_normal", "4_low"}
@@ -659,6 +660,80 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         result = database.request_conversion(key, recipe)
         database.audit(principal_id(request), "job.convert", key, {"recipe_digest": recipe})
         return result
+
+    @app.post("/api/v1/jobs/{key}/route")
+    async def route_conversion(key: str, request: Request) -> dict[str, Any]:
+        """Recompute, apply, and fully audit one versioned routing decision."""
+        authorize(request, roles={"operator"})
+        body = await request.json()
+        try:
+            job = database.get_job(key)
+        except KeyError:
+            raise HTTPException(404, "source not found") from None
+        try:
+            for field in (
+                "allow_canary",
+                "complex_tables",
+                "equations",
+                "external_processing_allowed",
+            ):
+                if field in body and not isinstance(body[field], bool):
+                    raise ValueError(f"{field} must be a boolean")
+            if isinstance(body.get("page_count"), bool) or not isinstance(
+                body.get("page_count"), int
+            ):
+                raise ValueError("page_count must be an integer")
+            features = RoutingFeatures(
+                media_type=str(job["media_type"]),
+                source_class=str(
+                    body.get("source_class") or "born-digital-pnp-rulebook"
+                ),
+                page_count=body["page_count"],
+                native_text_ratio=float(body["native_text_ratio"]),
+                language=str(body.get("language") or "und"),
+                quality_tier=str(body.get("quality_tier") or "quality"),
+                layout_class=str(body.get("layout_class") or "standard"),
+                complex_tables=bool(body.get("complex_tables")),
+                equations=bool(body.get("equations")),
+                external_processing_allowed=bool(
+                    body.get("external_processing_allowed")
+                ),
+                max_cost_usd=(
+                    float(body["max_cost_usd"])
+                    if body.get("max_cost_usd") is not None
+                    else None
+                ),
+            )
+            decision = route_pdf(
+                features,
+                allow_canary=bool(body.get("allow_canary")),
+                recipe_override=(
+                    str(body["recipe_override"])
+                    if body.get("recipe_override")
+                    else None
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(400, f"invalid routing features: {exc}") from exc
+        decision_json = decision.as_json()
+        if not decision.eligible or not decision.recipe_digest:
+            raise HTTPException(409, detail=decision_json)
+        active = [
+            recipe
+            for recipe in database.recipes(str(job["media_type"]))
+            if recipe["recipe_digest"] == decision.recipe_digest
+            and recipe["enabled"]
+            and recipe["worker_count"]
+        ]
+        if not active:
+            decision_json["rationale"].append(
+                "no active worker advertises the selected exact recipe"
+            )
+            decision_json["eligible"] = False
+            raise HTTPException(409, detail=decision_json)
+        result = database.request_conversion(key, decision.recipe_digest)
+        database.audit(principal_id(request), "job.route", key, decision_json)
+        return {"decision": decision_json, **result}
 
     @app.post("/api/v1/jobs/{key}/download-url")
     async def download_url(key: str, request: Request) -> dict[str, str]:

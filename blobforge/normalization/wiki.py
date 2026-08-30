@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .lists import recover_typed_text_list_runs, strip_markdown_list_decorations
 from .tables import markdown_table_to_html
 
 IMAGE_BLOCK_RE = re.compile(r"^!\[([^]]*)\]\(([^)\s]+)\)$")
@@ -112,6 +113,8 @@ def _is_footer_image(block: Mapping[str, Any], page_height: float) -> bool:
 
 def normalize_mistral_pages(
     pages: Sequence[Mapping[str, Any]],
+    *,
+    normalize_lists: bool = False,
 ) -> tuple[list[str], dict[str, int]]:
     """Rebuild page Markdown from typed blocks, omitting proven page furniture."""
     normalized: list[str] = []
@@ -120,6 +123,8 @@ def normalize_mistral_pages(
         "footers_removed": 0,
         "footer_images_removed": 0,
         "tables_converted": 0,
+        "list_decorations_removed": 0,
+        "text_list_items_recovered": 0,
     }
     for page_number, page in enumerate(pages):
         dimensions = page.get("dimensions")
@@ -131,8 +136,12 @@ def normalize_mistral_pages(
         page_height = _number(dimensions.get("height"), "page height")
         if page_height <= 0:
             raise ValueError("Mistral page height must be positive")
+        list_replacements: dict[int, str] = {}
+        if normalize_lists:
+            list_replacements, recovered = recover_typed_text_list_runs(blocks)
+            stats["text_list_items_recovered"] += recovered
         output_blocks: list[str] = []
-        for block in blocks:
+        for block_index, block in enumerate(blocks):
             if not isinstance(block, dict):
                 raise ValueError(f"Mistral page {page_number} has a malformed block")
             block_type = block.get("type")
@@ -148,12 +157,15 @@ def normalize_mistral_pages(
             if block_type == "image" and _is_footer_image(block, page_height):
                 stats["footer_images_removed"] += 1
                 continue
-            value = content.strip()
+            value = list_replacements.get(block_index, content).strip()
             if not value:
                 continue
             if block_type == "table":
                 value = markdown_table_to_html(value)
                 stats["tables_converted"] += 1
+            elif normalize_lists and block_type == "list":
+                value, removed = strip_markdown_list_decorations(value)
+                stats["list_decorations_removed"] += removed
             output_blocks.append(value)
         normalized.append("\n\n".join(output_blocks))
     return normalized, stats
