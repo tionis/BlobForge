@@ -328,3 +328,49 @@ A fresh quiesced snapshot, service resume, isolated restore, SQLite integrity
 check, and post-restore worker/queue/quota assertions all passed. The workers
 may therefore remain online for explicitly assigned jobs, but must never be
 changed to claim unassigned work without a separate routing decision.
+
+### Subscription allowance reconciliation
+
+The OCR attempt response supplies usage units but no authoritative billed cash
+or included-subscription consumption. When `billed_micro_usd` is unknown, the
+current fail-safe ledger uses the reservation estimate for both estimated and
+billed quota dimensions. This prevents accidental overspend, but it can stop
+early when an account plan applies a discount or included usage. In the August
+2026 production window, 3,184 pages therefore counted as EUR 12.736 at the
+standard EUR 0.004/page estimate while Mistral's console reported EUR 0.96 of
+subscription usage.
+
+These are different accounting facts and remain separate. Settled reservations
+retain their list-price estimate; an operator must not rewrite them to
+distribute an account-level console total across jobs.
+
+An administrator can record a manual observation with
+`POST /api/v1/admin/provider-usage-snapshots`. The append-only record contains:
+
+- the exact provider account, account currency, and quota window;
+- provider-reported billed/subscription usage;
+- when the administrator observed it and the latest purchase the display is
+  known to cover;
+- the administrator identity and required evidence/reason.
+
+The first confirmed snapshot can atomically activate `provider_snapshot`
+accounting. BlobForge supersedes rather than edits the current policy, removes
+the list-estimate ceiling from the replacement while retaining its billed
+limit and non-money limits, and updates the recurring schedule so future
+windows use the same basis. The old policy and every reservation remain in the
+audit history.
+
+Authorization then calculates billed exposure as the provider-reported
+baseline plus full reservation estimates for every reserved, committed, or
+ambiguous purchase created after `coverage_through`. A snapshot cannot cover
+an unsettled older attempt. Observed time, coverage, and reported usage must
+advance monotonically within a window. The default snapshot freshness is six
+hours and can be configured from 15 minutes through seven days. A missing or
+stale snapshot prevents new paid reservations but does not prevent cache hits;
+recording a new snapshot releases quota-delayed jobs for recomputation.
+
+The manual flow requires `confirm=true` and is available in the management
+quota console. Set `coverage_through` only as late as the provider display is
+known to include: an optimistic cutoff could omit a purchase during provider
+reporting lag. Automated snapshots would still require a dedicated Mistral
+Admin API key rather than the inference key.

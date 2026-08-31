@@ -1,5 +1,67 @@
 # Work Log
 
+## 2026-08-31 (Manual Provider Usage Snapshot Accounting)
+
+- **Implementation:** Added append-only, account-currency provider usage
+  snapshots with administrator identity, evidence, observation time, exact
+  quota window, and an explicit provider-data coverage cutoff. Activating the
+  fallback atomically supersedes the current estimate-based policy, retains
+  its billed/non-money limits, removes only the list-estimate ceiling, updates
+  the recurring schedule, and releases quota-delayed jobs for recomputation.
+- **Fencing:** Billed exposure is the reported baseline plus full reservation
+  estimates for every purchase after the coverage cutoff. Snapshots reject
+  unsettled covered attempts, future/inconsistent timestamps, decreasing
+  coverage, and decreasing within-window usage. Missing or stale snapshots
+  block new purchases while cache hits remain eligible. Freshness defaults to
+  six hours and is bounded from 15 minutes through seven days.
+- **Administration:** Added the confirmed admin endpoint and management-console
+  dialog/table. The UI makes the coverage assertion and immutable policy
+  transition explicit. Management assets advance to `v5` so immutable browser
+  caches cannot retain the previous quota UI.
+- **Verification:** Focused quota/server coverage passes 30 tests and
+  JavaScript syntax validation passes. The first full run inherited this
+  shell's production coordinator variables and caused 16 known legacy-worker
+  network failures after 307 tests passed. The hermetic rerun with
+  `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` unset passed
+  323 tests plus 5 subtests. Production rollout results will be appended after
+  completion.
+
+## 2026-08-31 (Mistral Console/Quota Discrepancy Diagnosis)
+
+- **Finding:** BlobForge blocked the next Mistral jobs because all 17 committed
+  reservations have unknown provider billing. Its conservative fallback counts
+  3,184 pages at the configured standard list price of EUR 0.004/page: EUR
+  12.736 against the EUR 12.75 allowance. Mistral's admin console instead shows
+  EUR 0.96. That value is provider-reported subscription usage, which the OCR
+  response does not return; it is not evidence that BlobForge purchased only
+  240 pages. The observed ratio is exactly EUR 0.0003/page after console
+  rounding, but its cause must not be inferred as a stable price without the
+  provider billing record.
+- **Provider check:** Read-only requests from the hosted worker to Mistral's
+  billing usage and spend-limit endpoints both returned HTTP 401. The deployed
+  inference key is intentionally not an Admin API key, which Mistral requires
+  for organization billing metrics. Mistral currently documents the dedicated
+  Admin API and Backoffice-created keys as a Preview/Enterprise facility; it
+  does not document a usage-only key scope. A standard Studio API key cannot be
+  elevated into an Admin API key. No provider or production state changed.
+- **Production evidence:** A read-only SQLite audit found zero known billed or
+  credit amounts, EUR 12.736 estimated/list exposure, EUR 12.736 enforced
+  fallback exposure, no unsettled reservation, and quota-delayed jobs. The
+  active reset window remains the correct 2026-08-01 through 2026-09-01 UTC
+  interval; the discrepancy is the usage basis, not the boundary.
+- **Decision:** Keep immutable list-price estimates separate from subscription
+  consumption. Do not rewrite settled reservations, pretend unknown per-job
+  charges are zero, change the adapter to batch pricing, or inflate the policy
+  ceiling. Add append-only provider usage snapshots; quota authorization can
+  then use a fresh provider baseline plus conservative estimates for purchases
+  made after that snapshot. Automating the baseline requires a separately
+  stored Admin API key and an isolated read-only polling component; manual
+  console observations must be explicitly audited when the account cannot
+  create Admin API keys. Because the provider does not document endpoint-level
+  read-only scoping, never expose this credential to conversion adapters.
+- **Tools:** `rg`, `sed`, Ansible, Podman, read-only SQLite/Python probes, and
+  Mistral's official pricing, OCR, subscription, and Admin API documentation.
+
 ## 2026-08-31 (Calendar-Month Provider Quota Correction)
 
 - **Finding:** Both recurring production schedules were configured for local

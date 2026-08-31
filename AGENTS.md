@@ -38,6 +38,30 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Non-Enterprise provider usage reconciliation uses immutable
+  manual account snapshots, never fabricated per-job billing. A snapshot binds
+  reported usage to an exact quota window and declared coverage cutoff; quota
+  exposure is that baseline plus full estimates for later reservations. Reject
+  snapshots that cover unsettled attempts or move time, coverage, or usage
+  backwards. Snapshot activation supersedes the estimate-based policy,
+  preserves its billed/non-money limits and old audit row, clears the future
+  schedule's estimated ceiling, and releases quota-delayed jobs. New paid work
+  requires a fresh snapshot (six hours by default); cache hits do not.
+
+- **2026-08-31:** Mistral OCR responses report page usage but not authoritative
+  billed cash or subscription consumption. BlobForge consequently enforced its
+  conservative EUR 0.004/page list estimate: 3,184 committed pages became EUR
+  12.736, although the Mistral console showed EUR 0.96. The inference key gets
+  HTTP 401 from `/v1/admin/usage` and `/v1/admin/spend-limit`; organization
+  usage automation requires a dedicated Backoffice-created Admin API key, which
+  Mistral currently documents as Preview/Enterprise and does not document as
+  usage-only scoped. Preserve the immutable per-job list estimates. Add
+  append-only account usage snapshots and authorize against a fresh provider
+  baseline plus conservative post-snapshot reservations. Keep any Admin key in
+  an isolated poller, never a conversion adapter; never rewrite settled jobs,
+  substitute batch pricing for the synchronous endpoint, or inflate a policy
+  limit to emulate subscription usage.
+
 - **2026-08-31:** Mistral's allowance resets at 00:00 UTC on the first day of
   the calendar month; the next observed boundary is 2026-09-01 00:00 UTC,
   which is 02:00 CEST. Production schedules must use day 1 with timezone `UTC`,

@@ -62,6 +62,9 @@ class Conflict(RuntimeError):
     pass
 
 
+DEFAULT_SNAPSHOT_MAX_AGE_MS = 6 * 60 * 60 * 1000
+
+
 class Database:
     def __init__(self, path: Path, *, lease_seconds: int, max_retries: int):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +178,8 @@ class Database:
                     currency TEXT NOT NULL DEFAULT 'USD',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     concurrency_limit INTEGER NOT NULL DEFAULT 1,
+                    usage_basis TEXT NOT NULL DEFAULT 'reservation_estimate',
+                    snapshot_max_age_ms INTEGER NOT NULL DEFAULT 21600000,
                     cooldown_until INTEGER, cooldown_reason TEXT,
                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
                 );
@@ -222,6 +227,21 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS quota_usage_idx
                     ON quota_reservations(account_key,created_at,state);
+                CREATE TABLE IF NOT EXISTS provider_usage_snapshots (
+                    id TEXT PRIMARY KEY,
+                    account_key TEXT NOT NULL REFERENCES provider_accounts(account_key),
+                    window_start INTEGER NOT NULL, window_end INTEGER NOT NULL,
+                    observed_at INTEGER NOT NULL, coverage_through INTEGER NOT NULL,
+                    reported_billed_micro_usd INTEGER NOT NULL,
+                    currency TEXT NOT NULL, source TEXT NOT NULL,
+                    reason TEXT NOT NULL, actor TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(account_key,window_start,window_end,observed_at)
+                );
+                CREATE INDEX IF NOT EXISTS provider_usage_snapshot_lookup_idx
+                    ON provider_usage_snapshots(
+                        account_key,window_start,window_end,observed_at DESC
+                    );
                 CREATE TABLE IF NOT EXISTS scim_users (
                     id TEXT PRIMARY KEY, external_id TEXT UNIQUE, user_name TEXT NOT NULL UNIQUE,
                     display_name TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
@@ -312,6 +332,16 @@ class Database:
                     "ALTER TABLE provider_accounts ADD COLUMN currency "
                     "TEXT NOT NULL DEFAULT 'USD'"
                 )
+            if "usage_basis" not in provider_columns:
+                db.execute(
+                    "ALTER TABLE provider_accounts ADD COLUMN usage_basis "
+                    "TEXT NOT NULL DEFAULT 'reservation_estimate'"
+                )
+            if "snapshot_max_age_ms" not in provider_columns:
+                db.execute(
+                    "ALTER TABLE provider_accounts ADD COLUMN snapshot_max_age_ms "
+                    f"INTEGER NOT NULL DEFAULT {DEFAULT_SNAPSHOT_MAX_AGE_MS}"
+                )
             policy_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(quota_policies)")
             }
@@ -326,9 +356,11 @@ class Database:
                 db.execute("ALTER TABLE quota_policies ADD COLUMN superseded_by TEXT")
             if "supersession_reason" not in policy_columns:
                 db.execute("ALTER TABLE quota_policies ADD COLUMN supersession_reason TEXT")
+            db.execute("DROP INDEX IF EXISTS quota_policy_window_idx")
             db.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS quota_policy_window_idx "
-                "ON quota_policies(account_key,window_start,window_end)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS quota_policy_active_window_idx "
+                "ON quota_policies(account_key,window_start,window_end) "
+                "WHERE superseded_at IS NULL"
             )
 
     def bootstrap_workers(self, worker_tokens: Mapping[str, str]) -> None:
@@ -656,14 +688,16 @@ class Database:
         )
         existing = db.execute(
             """SELECT 1 FROM quota_policies
-            WHERE account_key=? AND window_start=? AND window_end=?""",
+            WHERE account_key=? AND window_start=? AND window_end=?
+            AND superseded_at IS NULL""",
             (account_key, start, end),
         ).fetchone()
         if existing:
             return str(
                 db.execute(
                     """SELECT id FROM quota_policies WHERE account_key=?
-                    AND window_start=? AND window_end=?""",
+                    AND window_start=? AND window_end=?
+                    AND superseded_at IS NULL""",
                     (account_key, start, end),
                 ).fetchone()[0]
             )
@@ -767,6 +801,255 @@ class Database:
             )
             row = db.execute("SELECT * FROM quota_policies WHERE id=?", (identifier,)).fetchone()
         return dict(row)
+
+    @staticmethod
+    def _latest_usage_snapshot(
+        db: sqlite3.Connection, policy: Mapping[str, Any], timestamp: int
+    ) -> sqlite3.Row | None:
+        return db.execute(
+            """SELECT * FROM provider_usage_snapshots
+            WHERE account_key=? AND window_start=? AND window_end=?
+            AND observed_at<=? ORDER BY observed_at DESC,created_at DESC LIMIT 1""",
+            (
+                policy["account_key"],
+                policy["window_start"],
+                policy["window_end"],
+                timestamp,
+            ),
+        ).fetchone()
+
+    def _policy_usage(
+        self,
+        db: sqlite3.Connection,
+        policy: Mapping[str, Any],
+        account: Mapping[str, Any],
+        timestamp: int,
+    ) -> dict[str, Any]:
+        row = db.execute(
+            """SELECT COALESCE(SUM(reserved_requests),0) requests,
+            COALESCE(SUM(reserved_pages),0) pages,
+            COALESCE(SUM(reserved_estimated_micro_usd),0) estimated_micro_usd,
+            COALESCE(SUM(COALESCE(billed_micro_usd,reserved_estimated_micro_usd)),0)
+                billed_exposure_micro_usd
+            FROM quota_reservations WHERE account_key=? AND created_at>=? AND created_at<?
+            AND state IN ('reserved','committed','ambiguous')""",
+            (policy["account_key"], policy["window_start"], policy["window_end"]),
+        ).fetchone()
+        usage = dict(row)
+        usage["billed_basis"] = "reservation_estimate"
+        usage["snapshot"] = None
+        if account["usage_basis"] != "provider_snapshot":
+            return usage
+        snapshot = self._latest_usage_snapshot(db, policy, timestamp)
+        if not snapshot:
+            usage["billed_basis"] = "snapshot_missing"
+            return usage
+        snapshot_value = dict(snapshot)
+        fresh_until = int(snapshot["observed_at"]) + int(account["snapshot_max_age_ms"])
+        snapshot_value["fresh_until"] = fresh_until
+        snapshot_value["fresh"] = timestamp <= fresh_until
+        usage["snapshot"] = snapshot_value
+        if not snapshot_value["fresh"]:
+            usage["billed_basis"] = "snapshot_stale"
+            return usage
+        post_snapshot = int(
+            db.execute(
+                """SELECT COALESCE(SUM(reserved_estimated_micro_usd),0)
+                FROM quota_reservations WHERE account_key=? AND created_at>?
+                AND created_at>=? AND created_at<?
+                AND state IN ('reserved','committed','ambiguous')""",
+                (
+                    policy["account_key"],
+                    snapshot["coverage_through"],
+                    policy["window_start"],
+                    policy["window_end"],
+                ),
+            ).fetchone()[0]
+        )
+        usage["billed_exposure_micro_usd"] = (
+            int(snapshot["reported_billed_micro_usd"]) + post_snapshot
+        )
+        usage["billed_basis"] = "provider_snapshot"
+        usage["post_snapshot_estimated_micro_usd"] = post_snapshot
+        return usage
+
+    def record_provider_usage_snapshot(
+        self,
+        account_key: str,
+        *,
+        reported_billed_micro_usd: int,
+        observed_at: int,
+        coverage_through: int,
+        reason: str,
+        actor: str,
+        activate_snapshot_accounting: bool,
+        snapshot_max_age_ms: int = DEFAULT_SNAPSHOT_MAX_AGE_MS,
+    ) -> dict[str, Any]:
+        account_key = account_key.strip().lower()
+        reported = self._quota_integer(
+            reported_billed_micro_usd, "reported_billed_micro_usd"
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in (
+            observed_at,
+            coverage_through,
+            snapshot_max_age_ms,
+        )):
+            raise ValueError("snapshot timestamps and maximum age must be integers")
+        timestamp = now_ms()
+        if observed_at > timestamp + 60_000:
+            raise ValueError("observed_at cannot be in the future")
+        if coverage_through > observed_at:
+            raise ValueError("coverage_through cannot be after observed_at")
+        if not 15 * 60_000 <= snapshot_max_age_ms <= 7 * 24 * 60 * 60 * 1000:
+            raise ValueError("snapshot_max_age_ms must be between 15 minutes and 7 days")
+        reason = reason.strip()
+        if not reason or len(reason) > 1000:
+            raise ValueError("reason must contain 1-1000 characters")
+        actor = actor.strip()
+        if not actor:
+            raise ValueError("actor is required")
+        identifier = "quse_" + secrets.token_hex(10)
+        replacement_policy_id = None
+        released_quota_delays = 0
+        with self.transaction() as db:
+            account = db.execute(
+                "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone()
+            if not account:
+                raise KeyError(account_key)
+            policies = list(
+                db.execute(
+                    """SELECT * FROM quota_policies WHERE account_key=?
+                    AND window_start<=? AND window_end>?
+                    AND superseded_at IS NULL ORDER BY window_end""",
+                    (account_key, observed_at, observed_at),
+                )
+            )
+            billed_policies = [row for row in policies if row["limit_billed_micro_usd"] is not None]
+            windows = {(int(row["window_start"]), int(row["window_end"])) for row in billed_policies}
+            if len(windows) != 1:
+                raise Conflict(
+                    "snapshot needs exactly one active billed quota window at observed_at"
+                )
+            window_start, window_end = next(iter(windows))
+            if not window_start <= coverage_through <= observed_at < window_end:
+                raise ValueError("snapshot coverage must be inside its quota window")
+            unsettled = db.execute(
+                """SELECT id FROM quota_reservations WHERE account_key=?
+                AND created_at>=? AND created_at<=? AND state IN ('reserved','ambiguous')
+                LIMIT 1""",
+                (account_key, window_start, coverage_through),
+            ).fetchone()
+            if unsettled:
+                raise Conflict(
+                    "cannot cover an unsettled reservation; reconcile or move coverage_through"
+                )
+            previous = db.execute(
+                """SELECT * FROM provider_usage_snapshots WHERE account_key=?
+                AND window_start=? AND window_end=?
+                ORDER BY observed_at DESC,created_at DESC LIMIT 1""",
+                (account_key, window_start, window_end),
+            ).fetchone()
+            if previous and observed_at <= int(previous["observed_at"]):
+                raise Conflict("snapshot observed_at must advance monotonically")
+            if previous and coverage_through < int(previous["coverage_through"]):
+                raise Conflict("snapshot coverage_through cannot move backwards")
+            if previous and reported < int(previous["reported_billed_micro_usd"]):
+                raise Conflict("provider-reported usage cannot decrease within a window")
+            db.execute(
+                """INSERT INTO provider_usage_snapshots(
+                id,account_key,window_start,window_end,observed_at,coverage_through,
+                reported_billed_micro_usd,currency,source,reason,actor,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    identifier,
+                    account_key,
+                    window_start,
+                    window_end,
+                    observed_at,
+                    coverage_through,
+                    reported,
+                    account["currency"],
+                    "manual-console",
+                    reason,
+                    actor,
+                    timestamp,
+                ),
+            )
+            if activate_snapshot_accounting and account["usage_basis"] != "provider_snapshot":
+                if len(billed_policies) != 1:
+                    raise Conflict(
+                        "snapshot accounting activation needs one active billed policy"
+                    )
+                old_policy = billed_policies[0]
+                revision = int(
+                    db.execute(
+                        "SELECT COALESCE(MAX(revision),0)+1 FROM quota_policies WHERE account_key=?",
+                        (account_key,),
+                    ).fetchone()[0]
+                )
+                replacement_policy_id = "qpol_" + secrets.token_hex(10)
+                db.execute(
+                    """UPDATE quota_policies SET superseded_at=?,supersession_reason=?
+                    WHERE id=? AND superseded_at IS NULL""",
+                    (timestamp, "provider snapshot accounting activated: " + reason, old_policy["id"]),
+                )
+                db.execute(
+                    """INSERT INTO quota_policies(
+                    id,account_key,revision,window_start,window_end,label,
+                    limit_requests,limit_pages,limit_estimated_micro_usd,
+                    limit_billed_micro_usd,currency,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        replacement_policy_id,
+                        account_key,
+                        revision,
+                        old_policy["window_start"],
+                        old_policy["window_end"],
+                        (str(old_policy["label"]) + " · provider-reported usage")[:160],
+                        old_policy["limit_requests"],
+                        old_policy["limit_pages"],
+                        None,
+                        old_policy["limit_billed_micro_usd"],
+                        old_policy["currency"],
+                        timestamp,
+                    ),
+                )
+                db.execute(
+                    "UPDATE quota_policies SET superseded_by=? WHERE id=?",
+                    (replacement_policy_id, old_policy["id"]),
+                )
+                db.execute(
+                    """UPDATE quota_schedules SET limit_estimated_micro_usd=NULL,
+                    updated_at=? WHERE account_key=?""",
+                    (timestamp, account_key),
+                )
+            if activate_snapshot_accounting or account["usage_basis"] == "provider_snapshot":
+                db.execute(
+                    """UPDATE provider_accounts SET usage_basis='provider_snapshot',
+                    snapshot_max_age_ms=?,updated_at=? WHERE account_key=?""",
+                    (snapshot_max_age_ms, timestamp, account_key),
+                )
+            released_quota_delays = db.execute(
+                """UPDATE jobs SET not_before=NULL,blocked_reason=NULL,updated_at=?
+                WHERE status='todo' AND (
+                  blocked_reason='quota' OR (
+                    json_valid(blocked_reason)
+                    AND json_extract(blocked_reason,'$.kind')='quota'
+                  )
+                ) AND recipe_digest IN (
+                  SELECT recipe_digest FROM worker_recipes WHERE provider_account=?
+                )""",
+                (timestamp, account_key),
+            ).rowcount
+            value = dict(
+                db.execute(
+                    "SELECT * FROM provider_usage_snapshots WHERE id=?", (identifier,)
+                ).fetchone()
+            )
+        value["replacement_policy_id"] = replacement_policy_id
+        value["released_quota_delays"] = released_quota_delays
+        return value
 
     def create_quota_override(
         self,
@@ -1023,20 +1306,41 @@ class Database:
             exceeded: list[dict[str, Any]] = []
             override_needed = False
             for policy in policies:
-                usage = db.execute(
-                    """SELECT COALESCE(SUM(reserved_requests),0),
-                    COALESCE(SUM(reserved_pages),0),
-                    COALESCE(SUM(reserved_estimated_micro_usd),0),
-                    COALESCE(SUM(COALESCE(billed_micro_usd,reserved_estimated_micro_usd)),0)
-                    FROM quota_reservations WHERE account_key=? AND created_at>=? AND created_at<?
-                    AND state IN ('reserved','committed','ambiguous')""",
-                    (account_key, policy["window_start"], policy["window_end"]),
-                ).fetchone()
+                usage = self._policy_usage(db, policy, account, timestamp)
+                if (
+                    not cache_hit
+                    and account["usage_basis"] == "provider_snapshot"
+                    and policy["limit_billed_micro_usd"] is not None
+                    and usage["billed_basis"] != "provider_snapshot"
+                ):
+                    snapshot = usage.get("snapshot") or {}
+                    exceeded.append(
+                        {
+                            "policy_id": policy["id"],
+                            "dimension": "provider_snapshot",
+                            "used": int(usage["billed_exposure_micro_usd"]),
+                            "requested": estimated,
+                            "limit": int(policy["limit_billed_micro_usd"] or 0),
+                            "reason": usage["billed_basis"],
+                            "fresh_until": snapshot.get("fresh_until"),
+                        }
+                    )
+                    continue
                 dimensions = (
-                    ("requests", policy["limit_requests"], int(usage[0]), requests),
-                    ("pages", policy["limit_pages"], int(usage[1]), pages),
-                    ("estimated", policy["limit_estimated_micro_usd"], int(usage[2]), estimated),
-                    ("billed", policy["limit_billed_micro_usd"], int(usage[3]), estimated),
+                    ("requests", policy["limit_requests"], int(usage["requests"]), requests),
+                    ("pages", policy["limit_pages"], int(usage["pages"]), pages),
+                    (
+                        "estimated",
+                        policy["limit_estimated_micro_usd"],
+                        int(usage["estimated_micro_usd"]),
+                        estimated,
+                    ),
+                    (
+                        "billed",
+                        policy["limit_billed_micro_usd"],
+                        int(usage["billed_exposure_micro_usd"]),
+                        estimated,
+                    ),
                 )
                 for name, limit, used, requested in dimensions:
                     if limit is None or used + requested <= int(limit):
@@ -1212,18 +1516,12 @@ class Database:
             accounts = [dict(row) for row in db.execute("SELECT * FROM provider_accounts ORDER BY account_key")]
             for account in accounts:
                 self._ensure_scheduled_policy(db, account["account_key"], timestamp)
+            accounts_by_key = {account["account_key"]: account for account in accounts}
             policies = [dict(row) for row in db.execute("SELECT * FROM quota_policies ORDER BY account_key,revision DESC")]
             for policy in policies:
-                row = db.execute(
-                    """SELECT COALESCE(SUM(reserved_requests),0) requests,
-                    COALESCE(SUM(reserved_pages),0) pages,
-                    COALESCE(SUM(reserved_estimated_micro_usd),0) estimated_micro_usd,
-                    COALESCE(SUM(COALESCE(billed_micro_usd,reserved_estimated_micro_usd)),0) billed_exposure_micro_usd
-                    FROM quota_reservations WHERE account_key=? AND created_at>=? AND created_at<?
-                    AND state IN ('reserved','committed','ambiguous')""",
-                    (policy["account_key"], policy["window_start"], policy["window_end"]),
-                ).fetchone()
-                policy["usage"] = dict(row)
+                policy["usage"] = self._policy_usage(
+                    db, policy, accounts_by_key[policy["account_key"]], timestamp
+                )
                 policy["active"] = (
                     policy["window_start"] <= timestamp < policy["window_end"]
                     and (
@@ -1277,11 +1575,19 @@ class Database:
                     (timestamp,),
                 )
             ]
+            snapshots = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT * FROM provider_usage_snapshots
+                    ORDER BY observed_at DESC,created_at DESC LIMIT 500"""
+                )
+            ]
         for account in accounts:
             account["enabled"] = bool(account["enabled"])
         return {"accounts": accounts, "schedules": schedules,
                 "policies": policies, "usage": usage,
                 "ambiguous": ambiguous, "overrides": overrides,
+                "provider_usage_snapshots": snapshots,
                 "waiting_jobs": waiting, "generated_at": timestamp}
 
     def worker_for_token(self, token: str) -> str | None:

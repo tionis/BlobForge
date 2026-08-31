@@ -587,6 +587,62 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                        {key: value[key] for key in value if key != "created_at"})
         return value
 
+    @app.post("/api/v1/admin/provider-usage-snapshots")
+    async def admin_provider_usage_snapshot(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        if body.get("confirm") is not True:
+            raise HTTPException(
+                400,
+                "confirm=true is required for a provider usage snapshot",
+            )
+        activate = body.get("activate_snapshot_accounting", True)
+        if not isinstance(activate, bool):
+            raise HTTPException(400, "activate_snapshot_accounting must be a boolean")
+        max_age_seconds = body.get("snapshot_max_age_seconds", 21_600)
+        if isinstance(max_age_seconds, bool) or not isinstance(max_age_seconds, int):
+            raise HTTPException(400, "snapshot_max_age_seconds must be an integer")
+        actor = principal_id(request)
+        try:
+            value = database.record_provider_usage_snapshot(
+                str(body.get("account_key") or ""),
+                reported_billed_micro_usd=body.get("reported_billed_micro_usd"),
+                observed_at=body.get("observed_at"),
+                coverage_through=body.get("coverage_through"),
+                reason=str(body.get("reason") or ""),
+                actor=actor,
+                activate_snapshot_accounting=activate,
+                snapshot_max_age_ms=max_age_seconds * 1000,
+            )
+        except KeyError:
+            raise HTTPException(404, "provider account not found") from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(
+            actor,
+            "quota.provider_usage_snapshot.create",
+            value["id"],
+            {
+                key: value[key]
+                for key in (
+                    "account_key",
+                    "window_start",
+                    "window_end",
+                    "observed_at",
+                    "coverage_through",
+                    "reported_billed_micro_usd",
+                    "currency",
+                    "source",
+                    "reason",
+                    "replacement_policy_id",
+                    "released_quota_delays",
+                )
+            },
+        )
+        return value
+
     @app.post("/api/v1/admin/jobs/{key}/quota-overrides")
     async def admin_quota_override(key: str, request: Request) -> dict[str, Any]:
         authorize(request, roles={"admin"})

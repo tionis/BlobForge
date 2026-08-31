@@ -337,6 +337,144 @@ def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp
     assert records["overrides"][0]["consumed_by"] == overage["reservation"]["id"]
 
 
+def test_manual_provider_snapshot_replaces_estimate_ceiling_without_rewriting_history(
+    tmp_path,
+):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    database.register_capabilities("hosted", [_capability()])
+    database.configure_provider_account(
+        "test:primary", "test-provider", currency="EUR", concurrency_limit=1
+    )
+    timestamp = now_ms()
+    old_policy = database.create_quota_policy(
+        "test:primary",
+        window_start=timestamp - 3_600_000,
+        window_end=timestamp + 86_400_000,
+        label="subscription allowance",
+        limit_estimated_micro_usd=40_000,
+        limit_billed_micro_usd=40_000,
+    )
+    _enqueue(database, "1" * 64)
+    first = _claim(database, "1" * 64)
+    reserved = database.reserve_quota(
+        first["hash"],
+        "hosted",
+        first["lease_token"],
+        {**_probe(first), "currency": "EUR"},
+    )["reservation"]
+    database.settle_quota(
+        reserved["id"],
+        "hosted",
+        {
+            "contract": PROVIDER_ATTEMPT_CONTRACT,
+            "reservation_id": reserved["id"],
+            "provider": "test-provider",
+            "account_key": "test:primary",
+            "currency": "EUR",
+            "checkpoint_key": f"checkpoint:{first['hash']}",
+            "state": "committed",
+            "requests": 1,
+            "pages": 8,
+            "list_micro_usd": 32_000,
+            "billed_micro_usd": None,
+            "credits_micro_usd": None,
+        },
+    )
+    _enqueue(database, "2" * 64)
+    second = _claim(database, "2" * 64)
+    denied = database.reserve_quota(
+        second["hash"],
+        "hosted",
+        second["lease_token"],
+        {**_probe(second), "currency": "EUR"},
+    )
+    assert not denied["authorized"]
+    assert {item["dimension"] for item in denied["exceeded"]} == {"estimated", "billed"}
+
+    observed_at = now_ms()
+    snapshot = database.record_provider_usage_snapshot(
+        "test:primary",
+        reported_billed_micro_usd=2_400,
+        observed_at=observed_at,
+        coverage_through=observed_at,
+        reason="provider console reports EUR 0.0024 through the first purchase",
+        actor="admin:test",
+        activate_snapshot_accounting=True,
+        snapshot_max_age_ms=3_600_000,
+    )
+    assert snapshot["replacement_policy_id"]
+    assert snapshot["released_quota_delays"] == 1
+
+    retried = _claim(database, second["hash"])
+    authorized = database.reserve_quota(
+        retried["hash"],
+        "hosted",
+        retried["lease_token"],
+        {**_probe(retried), "currency": "EUR"},
+    )
+    assert authorized["authorized"]
+    summary = database.quota_summary()
+    active = next(policy for policy in summary["policies"] if policy["active"])
+    historical = next(policy for policy in summary["policies"] if policy["id"] == old_policy["id"])
+    assert historical["superseded_by"] == active["id"]
+    assert active["limit_estimated_micro_usd"] is None
+    assert active["limit_billed_micro_usd"] == 40_000
+    assert active["usage"]["billed_basis"] == "provider_snapshot"
+    assert active["usage"]["billed_exposure_micro_usd"] == 34_400
+    assert active["usage"]["post_snapshot_estimated_micro_usd"] == 32_000
+    assert sum(row["estimated_micro_usd"] for row in summary["usage"]) == 64_000
+    assert summary["provider_usage_snapshots"][0]["reported_billed_micro_usd"] == 2_400
+
+
+def test_snapshot_accounting_requires_a_fresh_monotonic_snapshot(tmp_path):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    database.register_capabilities("hosted", [_capability()])
+    database.configure_provider_account("test:primary", "test-provider", currency="EUR")
+    timestamp = now_ms()
+    database.create_quota_policy(
+        "test:primary",
+        window_start=timestamp - 3_600_000,
+        window_end=timestamp + 86_400_000,
+        limit_estimated_micro_usd=100_000,
+        limit_billed_micro_usd=100_000,
+    )
+    observed_at = timestamp - 20 * 60_000
+    database.record_provider_usage_snapshot(
+        "test:primary",
+        reported_billed_micro_usd=10_000,
+        observed_at=observed_at,
+        coverage_through=observed_at,
+        reason="stale console observation",
+        actor="admin:test",
+        activate_snapshot_accounting=True,
+        snapshot_max_age_ms=15 * 60_000,
+    )
+    _enqueue(database, "3" * 64)
+    job = _claim(database, "3" * 64)
+    denied = database.reserve_quota(
+        job["hash"],
+        "hosted",
+        job["lease_token"],
+        {**_probe(job), "currency": "EUR"},
+    )
+    assert not denied["authorized"]
+    assert denied["exceeded"][0]["dimension"] == "provider_snapshot"
+    assert denied["exceeded"][0]["reason"] == "snapshot_stale"
+    with pytest.raises(Conflict, match="observed_at must advance"):
+        database.record_provider_usage_snapshot(
+            "test:primary",
+            reported_billed_micro_usd=11_000,
+            observed_at=observed_at,
+            coverage_through=observed_at,
+            reason="duplicate observation",
+            actor="admin:test",
+            activate_snapshot_accounting=False,
+            snapshot_max_age_ms=15 * 60_000,
+        )
+
+
 def test_cache_hit_needs_no_policy_allowance_and_ambiguous_attempt_is_reconciled(tmp_path):
     database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
     database.bootstrap_workers({"hosted": "worker-secret"})
@@ -669,3 +807,67 @@ async def test_quota_admin_and_worker_http_protocol(tmp_path):
         summary = await client.get("/api/v1/admin/quotas", headers=admin)
         assert summary.status_code == 200
         assert summary.json()["usage"][0]["credits_micro_usd"] == 32_000
+
+
+@pytest.mark.anyio
+async def test_admin_can_record_confirmed_manual_provider_usage_snapshot(tmp_path):
+    app = create_app(
+        ServerSettings(
+            data_dir=tmp_path,
+            client_token="admin-secret",
+            worker_tokens={},
+            lease_seconds=60,
+        )
+    )
+    admin = {"Authorization": "Bearer admin-secret"}
+    timestamp = now_ms()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        account = await client.put(
+            "/api/v1/admin/provider-accounts/test%3Aprimary",
+            headers=admin,
+            json={"provider": "test-provider", "currency": "EUR"},
+        )
+        assert account.status_code == 200
+        policy = await client.post(
+            "/api/v1/admin/quota-policies",
+            headers=admin,
+            json={
+                "account_key": "test:primary",
+                "window_start": timestamp - 3_600_000,
+                "window_end": timestamp + 86_400_000,
+                "limit_estimated_micro_usd": 12_750_000,
+                "limit_billed_micro_usd": 12_750_000,
+            },
+        )
+        assert policy.status_code == 200
+        body = {
+            "account_key": "test:primary",
+            "reported_billed_micro_usd": 960_000,
+            "observed_at": timestamp,
+            "coverage_through": timestamp,
+            "reason": "Mistral console showed EUR 0.96",
+            "activate_snapshot_accounting": True,
+            "snapshot_max_age_seconds": 21_600,
+        }
+        unconfirmed = await client.post(
+            "/api/v1/admin/provider-usage-snapshots", headers=admin, json=body
+        )
+        assert unconfirmed.status_code == 400
+        created = await client.post(
+            "/api/v1/admin/provider-usage-snapshots",
+            headers=admin,
+            json={**body, "confirm": True},
+        )
+        assert created.status_code == 200
+        assert created.json()["source"] == "manual-console"
+        assert created.json()["replacement_policy_id"]
+        summary = (
+            await client.get("/api/v1/admin/quotas", headers=admin)
+        ).json()
+        assert summary["accounts"][0]["usage_basis"] == "provider_snapshot"
+        assert summary["provider_usage_snapshots"][0]["actor"] == "token:bootstrap"
+        active = next(item for item in summary["policies"] if item["active"])
+        assert active["limit_estimated_micro_usd"] is None
+        assert active["usage"]["billed_exposure_micro_usd"] == 960_000
