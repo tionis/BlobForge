@@ -319,8 +319,8 @@ blobforge convert document.pdf --output ./results/
 Materialize converted markdown/assets next to local PDFs by matching on file hash.
 This is useful when conversions already exist in BlobForge and you want local `.md` files.
 Requires `BLOBFORGE_COORDINATOR_URL` / `BLOBFORGE_COORDINATOR_TOKEN` (an admin
-token); availability is checked in one bulk request and archives stream through
-signed URLs.
+token); retained artifacts are checked in bulk and the exact selected recipe
+streams through a signed URL. Current MDAFs are validated before projection.
 
 Outputs per PDF:
 - `<stem>.md`
@@ -335,6 +335,12 @@ blobforge hydrate ./library --dry-run
 
 # Overwrite existing markdown/assets
 blobforge hydrate ./library --force
+
+# Select one exact retained recipe when several artifacts exist
+blobforge hydrate ./library --recipe-digest blake3:<digest>
+
+# Write one <stem>.textpack directly, without intermediate siblings
+blobforge hydrate ./library --format textpack
 ```
 
 For large trees, preview and then either remove those hydrated siblings or

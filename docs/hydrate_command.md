@@ -16,25 +16,33 @@ Given one or more input paths (PDF files and/or directories), the command:
      keyed by `(path, size, mtime_ns)`, so unchanged files are reused without
      re-reading them on any filesystem. Only index misses fall through to the
      existing xattr-aware hash path (`compute_sha256_with_cache`).
-3. Runs remote preflight as incremental reconciliation:
-   - When a coordinator is configured, the local done-set mirror is reconciled
-     against the coordinator's `GET /api/v1/jobs/done-since` watermark
-     endpoint: the client stores `(since_ms, cursor)` per normalized coordinator
-     URL and each run pulls only
-     hashes that completed after the last sync (keyset-paginated over
-     the monotonic `done_seq`), merges them into that coordinator's local mirror, then
-     answers membership entirely locally. Content-addressed outputs are
-     immutable, so known-done hashes never need re-querying and there is no
-     status TTL.
-   - `--refresh-status` discards the local mirror and watermark and re-syncs
-     the done-set from scratch.
+3. Runs artifact-aware remote preflight:
+   - The coordinator's bulk status response includes every retained artifact
+     for each source, independently of the job's current mutable state. A
+     retained artifact can therefore be hydrated while the source is queued,
+     failed, or processing under another recipe.
+   - `--recipe-digest` chooses an exact retained recipe. Without it, hydration
+     uses the job's selected recipe when that artifact exists, or the sole
+     retained artifact. Multiple unmatched artifacts fail closed instead of
+     selecting newest-by-time.
+   - Older coordinators retain their done-watermark compatibility path;
+     `--refresh-status` only affects that legacy path.
    - If a coordinator is not configured, falls back to the legacy S3 done-hash
      index scan or per-hash existence checks.
-4. When conversion output exists, downloads `<hash>.zip` through a
-   coordinator-issued signed URL (deduplicated per hash during one run).
-5. Writes:
+4. Downloads the exact selected artifact through a coordinator-issued signed
+   URL, deduplicated by source hash and recipe during one run. `mdaf/v1`
+   packages are staged with a `.mdaf` suffix, fully validated, and read from
+   `text.md`; historical archives use their legacy `content.md` member.
+5. By default, writes:
    - `<stem>.md`
    - `<stem>.assets/` (sibling directory)
+
+   With `--format textpack`, writes one `<stem>.textpack` directly instead.
+   This is a deliberately lossy projection of MDAF into TextBundle v2: the
+   Markdown and assets are retained, while the source artifact identity,
+   recipe digest, and artifact type are recorded in the
+   `dev.tionis.blobforge` metadata extension. The MDAF remains the canonical
+   provenance-bearing artifact in BlobForge.
 
 The command requires `BLOBFORGE_COORDINATOR_URL` and
 `BLOBFORGE_COORDINATOR_TOKEN` (an admin token created in the management UI) or
@@ -49,27 +57,17 @@ Hydration maintains a SQLite database (WAL mode) that makes repeat runs fast:
   precision. This removes the dependency on filesystem extended-attribute
   support (the xattr cache silently misses on mounts without `user_xattr`),
   so unchanged files are never re-read.
-- **Done-set mirrors** — for each normalized coordinator URL, the full set of
-  content hashes known to have completed conversions (`done_hashes`) plus a
-  `(since_ms, cursor)` watermark in a `meta` table. Each mirror is append-only:
-  content-addressed outputs never
-  expire, and entries are dropped only when a signed download proves the
-  output is gone. Legacy unscoped done data is discarded on open because it
-  cannot safely be attributed to a coordinator; cached local file hashes are
-  preserved.
+- **Legacy done-set mirrors** — retained only for compatibility with old
+  coordinators that cannot return artifact-aware bulk status. Current
+  coordinators do not use this mirror because job completion is mutable while
+  retained artifacts are immutable and recipe-scoped.
 
 Location is `~/.cache/blobforge/hash_index.sqlite3`, overridable with
 `BLOBFORGE_CACHE_DIR` (directory) or `BLOBFORGE_HASH_INDEX_PATH` (file path).
 
-This is a practical form of set reconciliation: instead of re-transferring the
-whole candidate set each run, the client holds a local snapshot of the
-done-set and pulls only the coordinator-side delta since the last watermark.
-A full range-based reconciliation protocol (IBLT/Merkle-style) was considered
-and rejected as overkill — the candidate payload is only ~2 MB for tens of
-thousands of hashes, and the dominant costs on repeat runs are re-reading
-unchanged files and re-querying the full set, both of which the local index
-eliminates. The watermark sync keeps the coordinator exchange proportional to
-new completions rather than to the candidate set size.
+Bulk status is chunked at 5,000 source hashes per request. This transfers the
+recipe-scoped artifact catalog needed for deterministic selection; a one-bit
+done mirror cannot represent that information safely.
 
 ## Asset Path Rewriting
 
@@ -81,12 +79,26 @@ During hydration, those references are rewritten to `<stem>.assets/...` so multi
 - Markdown is written via atomic file replacement.
 - Asset extraction uses a staging directory before final placement.
 - `--dry-run` reports intended writes without changing local files.
-- Archive download is cached by hash to avoid repeated network fetches for duplicate files.
+- Archive download is cached by source hash and recipe to avoid repeated
+  network fetches for duplicate files without conflating recipe variants.
 - Remote checks are deduplicated by hash. A completed output whose signed
   download is rejected definitively (coordinator 404/409, i.e. the output is
   gone) is dropped from the local done-set mirror so it is not retried as
   available on every run; transient download failures keep the mirror entry so
   the next run retries.
+
+## Examples
+
+```bash
+# Current selected recipe, or the sole retained artifact
+blobforge hydrate ./library
+
+# One exact immutable recipe
+blobforge hydrate ./library --recipe-digest blake3:<digest>
+
+# Direct TextBundle v2 output without intermediate Markdown/assets
+blobforge hydrate ./library --format textpack
+```
 
 ## Exit Semantics
 

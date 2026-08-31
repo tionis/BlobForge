@@ -2601,11 +2601,45 @@ class Database:
             }
 
     def statuses(self, keys: list[str]) -> dict[str, Any]:
-        if not keys: return {}
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
         with self.connect() as db:
-            rows = db.execute(f"SELECT source_key,status,recipe_digest,completed_at FROM jobs WHERE source_key IN ({','.join('?' for _ in keys)})", keys)
-            found = {row["source_key"]: {"status": row["status"], "done": row["status"] == "done", "recipe_digest": row["recipe_digest"], "completed_at": row["completed_at"]} for row in rows}
-        return {key: found.get(key, {"status": "missing", "done": False}) for key in keys}
+            rows = db.execute(
+                f"SELECT source_key,status,recipe_digest,completed_at "
+                f"FROM jobs WHERE source_key IN ({placeholders})",
+                keys,
+            )
+            found = {
+                row["source_key"]: {
+                    "status": row["status"],
+                    "done": row["status"] == "done",
+                    "recipe_digest": row["recipe_digest"],
+                    "completed_at": row["completed_at"],
+                    "artifacts": [],
+                }
+                for row in rows
+            }
+            artifact_rows = db.execute(
+                f"""SELECT source_key,recipe_digest,identity,media_type,artifact_type,
+                           size_bytes,sha256,blake3,created_at,legacy,
+                           converter_backend,converter_version
+                    FROM artifacts WHERE source_key IN ({placeholders})
+                    ORDER BY source_key,created_at DESC""",
+                keys,
+            )
+            for row in artifact_rows:
+                item = dict(row)
+                source_key = str(item.pop("source_key"))
+                item["legacy"] = bool(item["legacy"])
+                if source_key in found:
+                    found[source_key]["artifacts"].append(item)
+        return {
+            key: found.get(
+                key, {"status": "missing", "done": False, "artifacts": []}
+            )
+            for key in keys
+        }
 
     def snapshot(self) -> dict[str, Any]:
         with self.connect() as db:

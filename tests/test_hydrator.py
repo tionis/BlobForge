@@ -2,10 +2,14 @@ import io
 import json
 import zipfile
 
+import pytest
+
 from blobforge.config import S3_PREFIX_DONE
 from blobforge.coordinator_client import CoordinatorError
 from blobforge.hash_index import HashIndex
-from blobforge.hydrator import hydrate
+from blobforge.hydrator import hydrate, select_artifact
+from blobforge.mdaf import MdafMemberInput, MdafSource, build_mdaf
+from blobforge.mdaf.builder import activity
 from blobforge.utils import compute_sha256_with_cache
 
 
@@ -45,6 +49,53 @@ def _build_conversion_zip(markdown_text, assets):
     return buffer.getvalue()
 
 
+def _build_mdaf(tmp_path, markdown_text, assets=None):
+    extra_members = [
+        MdafMemberInput(
+            path=f"assets/{name}", data=payload, role="asset",
+            created_by="activity:extract", media_type="application/octet-stream",
+        )
+        for name, payload in (assets or {}).items()
+    ]
+    result = build_mdaf(
+        tmp_path / "fixture.mdaf",
+        text=markdown_text,
+        sources=[MdafSource("document", "application/pdf", "blake3:" + "0" * 64)],
+        activities=[activity(
+            activity_id="activity:extract", kind="document-extraction",
+            tools=[{"name": "test", "version": "1"}], inputs=["source:document"],
+            outputs=["text.md", "provenance.json", *[member.path for member in extra_members]],
+            parameters={},
+        )],
+        producer={"name": "blobforge-tests", "version": "1"},
+        extra_members=extra_members,
+    )
+    return result.path.read_bytes(), result.identity
+
+
+class ArtifactCoordinator:
+    def __init__(self, statuses_by_hash, archives_by_recipe):
+        self.statuses_by_hash = statuses_by_hash
+        self.archives_by_recipe = archives_by_recipe
+        self.download_calls = []
+
+    def check_statuses(self, hashes, progress=None):
+        values = list(hashes)
+        if progress:
+            progress(len(values), len(values))
+        return {
+            value: self.statuses_by_hash.get(
+                value, {"status": "missing", "artifacts": []}
+            )
+            for value in values
+        }
+
+    def download_output(self, file_hash, local_path, recipe_digest=None):
+        self.download_calls.append((file_hash, recipe_digest))
+        with open(local_path, "wb") as handle:
+            handle.write(self.archives_by_recipe[(file_hash, recipe_digest)])
+
+
 def test_hydrate_materializes_markdown_and_assets(tmp_path):
     pdf_path = tmp_path / "rules.pdf"
     _write_pdf(pdf_path)
@@ -67,6 +118,74 @@ def test_hydrate_materializes_markdown_and_assets(tmp_path):
     asset_path = tmp_path / "rules.assets" / "page-1.png"
     assert asset_path.exists()
     assert asset_path.read_bytes() == b"image-data"
+
+
+def test_hydrate_reads_validated_mdaf_text_and_assets(tmp_path):
+    pdf_path = tmp_path / "rules.pdf"
+    _write_pdf(pdf_path)
+    file_hash = compute_sha256_with_cache(str(pdf_path))
+    archive, identity = _build_mdaf(
+        tmp_path, "![img](assets/page.png)\n", {"page.png": b"image"}
+    )
+    recipe = "blake3:" + "a" * 64
+    coordinator = ArtifactCoordinator(
+        {file_hash: {
+            "status": "todo", "recipe_digest": recipe,
+            "artifacts": [{
+                "recipe_digest": recipe, "artifact_type": "mdaf/v1",
+                "identity": identity,
+            }],
+        }},
+        {(file_hash, recipe): archive},
+    )
+
+    assert hydrate([str(pdf_path)], client=coordinator) == 0
+    assert (tmp_path / "rules.md").read_text() == "![img](rules.assets/page.png)\n"
+    assert (tmp_path / "rules.assets" / "page.png").read_bytes() == b"image"
+    assert coordinator.download_calls == [(file_hash, recipe)]
+
+
+def test_hydrate_can_write_textpack_directly_from_mdaf(tmp_path):
+    pdf_path = tmp_path / "rules.pdf"
+    _write_pdf(pdf_path)
+    file_hash = compute_sha256_with_cache(str(pdf_path))
+    archive, identity = _build_mdaf(
+        tmp_path, "![img](assets/page.png)\n", {"page.png": b"image"}
+    )
+    recipe = "blake3:" + "b" * 64
+    coordinator = ArtifactCoordinator(
+        {file_hash: {
+            "status": "failed", "recipe_digest": recipe,
+            "artifacts": [{
+                "recipe_digest": recipe, "artifact_type": "mdaf/v1",
+                "identity": identity,
+            }],
+        }},
+        {(file_hash, recipe): archive},
+    )
+
+    assert hydrate([str(pdf_path)], client=coordinator, output_format="textpack") == 0
+    assert not (tmp_path / "rules.md").exists()
+    assert not (tmp_path / "rules.assets").exists()
+    with zipfile.ZipFile(tmp_path / "rules.textpack") as textpack:
+        assert textpack.read("text.md") == b"![img](assets/page.png)\n"
+        assert textpack.read("assets/page.png") == b"image"
+        metadata = json.loads(textpack.read("info.json"))["dev.tionis.blobforge"]
+        assert metadata["artifactIdentity"] == identity
+        assert metadata["recipeDigest"] == recipe
+        assert metadata["artifactType"] == "mdaf/v1"
+
+
+def test_artifact_selection_fails_closed_when_multiple_outputs_are_ambiguous():
+    first = "blake3:" + "1" * 64
+    second = "blake3:" + "2" * 64
+    status = {"status": "todo", "recipe_digest": None, "artifacts": [
+        {"recipe_digest": first}, {"recipe_digest": second},
+    ]}
+
+    with pytest.raises(RuntimeError, match="multiple retained artifacts"):
+        select_artifact(status)
+    assert select_artifact(status, second)["recipe_digest"] == second
 
 
 def test_hydrate_skips_when_markdown_exists_without_force(tmp_path):

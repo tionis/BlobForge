@@ -5,6 +5,7 @@ Walks local PDF files, resolves their content hash, checks for completed
 conversion archives in S3, and writes local outputs:
 - <pdf_stem>.md
 - <pdf_stem>.assets/
+- or one <pdf_stem>.textpack
 """
 import os
 import shutil
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .config import S3_PREFIX_DONE
 from .coordinator_client import CoordinatorError
 from .hash_index import HashIndex, default_db_path
+from .mdaf import validate_mdaf
 from .s3_client import S3Client
 from .utils import compute_sha256_with_cache
 
@@ -160,20 +162,28 @@ def _replace_directory(staging_dir: str, target_dir: str) -> None:
             shutil.rmtree(backup_dir, ignore_errors=True)
 
 
-def _read_markdown_from_archive(archive_path: str) -> str:
-    """Read content.md from a conversion archive."""
+def _read_markdown_from_archive(
+    archive_path: str, artifact_type: str = "legacy-archive"
+) -> str:
+    """Read Markdown from a validated MDAF or an explicit legacy archive."""
+    member = "content.md"
+    if artifact_type == "mdaf/v1":
+        validate_mdaf(archive_path)
+        member = "text.md"
     with zipfile.ZipFile(archive_path, "r") as archive:
         try:
-            return archive.read("content.md").decode("utf-8", errors="replace")
+            errors = "strict" if artifact_type == "mdaf/v1" else "replace"
+            return archive.read(member).decode("utf-8", errors=errors)
         except KeyError as exc:
-            raise RuntimeError("Conversion archive is missing content.md") from exc
+            raise RuntimeError(f"Conversion archive is missing {member}") from exc
 
 
 def _hydrate_output_from_archive(
     archive_path: str,
     markdown_path: str,
     assets_dir_path: str,
-    assets_dir_name: str
+    assets_dir_name: str,
+    artifact_type: str = "legacy-archive",
 ) -> Tuple[bool, int]:
     """
     Materialize markdown and assets for one PDF from an existing zip archive.
@@ -181,7 +191,7 @@ def _hydrate_output_from_archive(
     Returns:
         (wrote_assets, asset_count)
     """
-    markdown_text = _read_markdown_from_archive(archive_path)
+    markdown_text = _read_markdown_from_archive(archive_path, artifact_type)
     markdown_text = _rewrite_markdown_asset_paths(markdown_text, assets_dir_name)
 
     staging_root = tempfile.mkdtemp(prefix=".blobforge-hydrate-assets-", dir=os.path.dirname(assets_dir_path) or ".")
@@ -298,10 +308,70 @@ def _resolve_done_availability(
     return availability
 
 
-def _download_conversion_archive(client: Any, file_hash: str, local_path: str) -> None:
+def _normalized_recipe_digest(value: Any) -> str:
+    digest = str(value or "").lower()
+    return digest.removeprefix("blake3:")
+
+
+def select_artifact(
+    status: Dict[str, Any], requested_recipe_digest: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Choose a retained artifact deterministically or fail on ambiguity."""
+    artifacts_value = status.get("artifacts")
+    if not isinstance(artifacts_value, list):
+        # Compatibility with coordinators predating artifact-aware status.
+        return (
+            {"recipe_digest": None, "artifact_type": "legacy-archive"}
+            if status.get("status") == "done"
+            else None
+        )
+    artifacts = [item for item in artifacts_value if isinstance(item, dict)]
+    if requested_recipe_digest:
+        requested = _normalized_recipe_digest(requested_recipe_digest)
+        matches = [
+            item for item in artifacts
+            if _normalized_recipe_digest(item.get("recipe_digest")) == requested
+        ]
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise RuntimeError(f"multiple artifacts match recipe {requested_recipe_digest}")
+        return matches[0]
+    selected_recipe = _normalized_recipe_digest(status.get("recipe_digest"))
+    selected = [
+        item for item in artifacts
+        if selected_recipe
+        and _normalized_recipe_digest(item.get("recipe_digest")) == selected_recipe
+    ]
+    if len(selected) == 1:
+        return selected[0]
+    if len(artifacts) == 1:
+        return artifacts[0]
+    if not artifacts:
+        return None
+    choices = ", ".join(sorted(str(item.get("recipe_digest") or "legacy") for item in artifacts))
+    raise RuntimeError(
+        "multiple retained artifacts are available and no selected recipe matches; "
+        f"choose --recipe-digest from: {choices}"
+    )
+
+
+def _download_conversion_archive(
+    client: Any,
+    file_hash: str,
+    local_path: str,
+    recipe_digest: Optional[str] = None,
+) -> None:
     """Download a completed conversion archive through the preferred client."""
     if hasattr(client, "download_output"):
-        client.download_output(file_hash, local_path)
+        if recipe_digest is None:
+            try:
+                client.download_output(file_hash, local_path, recipe_digest)
+            except TypeError:
+                # Compatibility with the pre-recipe coordinator client ABI.
+                client.download_output(file_hash, local_path)
+        else:
+            client.download_output(file_hash, local_path, recipe_digest)
         return
     done_key = f"{S3_PREFIX_DONE}/{file_hash}.zip"
     client.download_file(done_key, local_path)
@@ -314,17 +384,16 @@ def hydrate(
     client: Optional[Any] = None,
     index: Optional[HashIndex] = None,
     refresh_status: bool = False,
+    recipe_digest: Optional[str] = None,
+    output_format: str = "markdown",
 ) -> int:
     """
     Hydrate local markdown and assets for PDFs that already have completed
     conversions in BlobForge.
 
-    Uses a persistent local index for two purposes:
-    - Skip re-hashing unchanged files via (size, mtime_ns) instead of relying
-      on filesystem xattr support.
-    - Mirror the coordinator's done-set and reconcile it incrementally with a
-      watermark: each run pulls only hashes completed since the last sync and
-      answers membership locally, with no per-hash status queries and no TTL.
+    A persistent local index skips re-hashing unchanged files. Current
+    coordinators return recipe-scoped retained artifacts in bulk; the old
+    done-set watermark remains only as a compatibility path.
     """
     if client is None:
         if S3Client is not None:
@@ -344,6 +413,8 @@ def hydrate(
             client=client,
             index=index,
             refresh_status=refresh_status,
+            recipe_digest=recipe_digest,
+            output_format=output_format,
         )
     finally:
         if own_index:
@@ -357,7 +428,11 @@ def _hydrate_with_index(
     client: Any,
     index: HashIndex,
     refresh_status: bool,
+    recipe_digest: Optional[str],
+    output_format: str,
 ) -> int:
+    if output_format not in {"markdown", "textpack"}:
+        raise ValueError("output_format must be 'markdown' or 'textpack'")
     pdf_files = discover_pdf_files(paths)
 
     if not pdf_files:
@@ -369,7 +444,7 @@ def _hydrate_with_index(
     stats: Dict[str, int] = {
         "found": len(pdf_files),
         "hydrated": 0,
-        "skipped_existing_markdown": 0,
+        "skipped_existing_output": 0,
         "missing_conversion": 0,
         "errors": 0,
     }
@@ -385,9 +460,11 @@ def _hydrate_with_index(
         markdown_path = os.path.join(base_dir, f"{stem}.md")
         assets_dir_name = f"{stem}.assets"
         assets_dir_path = os.path.join(base_dir, assets_dir_name)
+        textpack_path = os.path.join(base_dir, f"{stem}.textpack")
+        output_path = textpack_path if output_format == "textpack" else markdown_path
 
-        if os.path.exists(markdown_path) and not force:
-            stats["skipped_existing_markdown"] += 1
+        if os.path.exists(output_path) and not force:
+            stats["skipped_existing_output"] += 1
             continue
 
         try:
@@ -410,6 +487,7 @@ def _hydrate_with_index(
             "markdown_path": markdown_path,
             "assets_dir_name": assets_dir_name,
             "assets_dir_path": assets_dir_path,
+            "textpack_path": textpack_path,
             "hash_cached": hash_cached,
         })
 
@@ -427,7 +505,7 @@ def _hydrate_with_index(
         print("\n--- Hydrate Summary ---")
         print(f"  Found PDFs:              {stats['found']}")
         print(f"  Hydrated:                {stats['hydrated']}")
-        print(f"  Skipped (markdown exists): {stats['skipped_existing_markdown']}")
+        print(f"  Skipped (output exists):  {stats['skipped_existing_output']}")
         print(f"  Missing conversions:     {stats['missing_conversion']}")
         print(f"  Errors:                  {stats['errors']}")
         return 1 if stats["errors"] > 0 else 0
@@ -438,32 +516,51 @@ def _hydrate_with_index(
         f"{len(unique_hashes)} unique hash(es)."
     )
 
-    # Reconcile the done-set with the coordinator's watermark protocol when
-    # available: pull only hashes completed since the last sync, merge them into
-    # the local mirror, then answer membership locally. Content-addressed outputs
-    # are immutable, so known-done hashes never need re-querying and there is no
-    # status TTL. Older clients / S3 fall back to bulk status or per-hash checks.
     done_scope = _done_set_scope(client)
-    if hasattr(client, "sync_done_hashes") and index is not None:
+    artifact_selections: Dict[str, Optional[Dict[str, Any]]] = {}
+    selection_errors: Dict[str, str] = {}
+    if hasattr(client, "check_statuses"):
+        def _report_status(checked: int, total: int) -> None:
+            print(f"  [status] {checked}/{total} hashes", flush=True)
+        statuses = client.check_statuses(unique_hashes, progress=_report_status)
+        for file_hash in unique_hashes:
+            status = statuses.get(file_hash, {"status": "missing", "artifacts": []})
+            if "artifacts" not in status and hasattr(client, "list_artifacts"):
+                status = dict(status)
+                status["artifacts"] = client.list_artifacts(file_hash)
+            try:
+                artifact_selections[file_hash] = select_artifact(status, recipe_digest)
+            except RuntimeError as exc:
+                selection_errors[file_hash] = str(exc)
+        print(
+            "Preflight: resolved retained artifacts via coordinator "
+            f"({len(unique_hashes)} hashes checked)."
+        )
+    elif hasattr(client, "sync_done_hashes") and index is not None:
         if refresh_status:
             index.reset_done_set(done_scope)
             since_ms, cursor = 0, ""
-            print("Preflight: refreshing done-set from scratch (--refresh-status).")
+            print("Preflight: refreshing legacy done-set from scratch.")
         else:
             since_ms, cursor = index.get_watermark(done_scope)
+
         def _report_sync(fetched: int) -> None:
             print(f"  [status] synced {fetched} done hashes so far", flush=True)
+
         new_hashes, next_since, next_cursor = client.sync_done_hashes(
             since_ms, cursor, progress=_report_sync
         )
         index.add_done_hashes(new_hashes, done_scope)
         index.set_watermark(next_since, next_cursor, done_scope)
-        conversion_available = {
-            file_hash: index.is_done(file_hash, done_scope)
+        artifact_selections = {
+            file_hash: (
+                {"recipe_digest": None, "artifact_type": "legacy-archive"}
+                if index.is_done(file_hash, done_scope) else None
+            )
             for file_hash in unique_hashes
         }
         print(
-            f"Preflight: reconciled done-set via coordinator watermark "
+            f"Preflight: reconciled legacy done-set via coordinator watermark "
             f"({len(new_hashes)} new since watermark, "
             f"{index.done_count(done_scope)} known done total)."
         )
@@ -471,8 +568,15 @@ def _hydrate_with_index(
         def _report_status(checked: int, total: int) -> None:
             print(f"  [status] {checked}/{total} hashes", flush=True)
         conversion_available = _resolve_done_availability(client, unique_hashes, progress=_report_status)
+        artifact_selections = {
+            file_hash: (
+                {"recipe_digest": None, "artifact_type": "legacy-archive"}
+                if available else None
+            )
+            for file_hash, available in conversion_available.items()
+        }
 
-    archive_cache: Dict[str, str] = {}
+    archive_cache: Dict[Tuple[str, str], str] = {}
 
     with tempfile.TemporaryDirectory(prefix="blobforge-hydrate-") as tmp_dir:
         for item_index, item in enumerate(work_items, start=1):
@@ -481,26 +585,43 @@ def _hydrate_with_index(
             markdown_path = item["markdown_path"]
             assets_dir_name = item["assets_dir_name"]
             assets_dir_path = item["assets_dir_path"]
+            textpack_path = item["textpack_path"]
 
             print(f"[{item_index}/{len(work_items)}] {pdf_path}")
 
-            available = conversion_available.get(file_hash, False)
-            if not available:
-                print(f"  [MISS] No completed conversion for hash {file_hash[:12]}...")
+            if file_hash in selection_errors:
+                print(f"  [ERROR] {selection_errors[file_hash]}")
+                stats["errors"] += 1
+                continue
+            artifact = artifact_selections.get(file_hash)
+            if artifact is None:
+                requested = f" for recipe {recipe_digest}" if recipe_digest else ""
+                print(f"  [MISS] No retained conversion{requested} for hash {file_hash[:12]}...")
                 stats["missing_conversion"] += 1
                 continue
 
+            selected_recipe = artifact.get("recipe_digest")
+            artifact_type = str(artifact.get("artifact_type") or "legacy-archive")
+
             if dry_run:
-                print(f"  [DRY-RUN] Would write {os.path.basename(markdown_path)} and {assets_dir_name}/")
+                if output_format == "textpack":
+                    print(f"  [DRY-RUN] Would write {os.path.basename(textpack_path)}")
+                else:
+                    print(f"  [DRY-RUN] Would write {os.path.basename(markdown_path)} and {assets_dir_name}/")
                 stats["hydrated"] += 1
                 continue
 
-            archive_path = archive_cache.get(file_hash)
+            cache_key = (file_hash, str(selected_recipe or "legacy"))
+            archive_path = archive_cache.get(cache_key)
             if archive_path is None:
-                archive_path = os.path.join(tmp_dir, f"{file_hash}.zip")
+                extension = ".mdaf" if artifact_type == "mdaf/v1" else ".zip"
+                recipe_key = _normalized_recipe_digest(selected_recipe)[:16] or "legacy"
+                archive_path = os.path.join(tmp_dir, f"{file_hash}.{recipe_key}{extension}")
                 try:
-                    _download_conversion_archive(client, file_hash, archive_path)
-                    archive_cache[file_hash] = archive_path
+                    _download_conversion_archive(
+                        client, file_hash, archive_path, selected_recipe
+                    )
+                    archive_cache[cache_key] = archive_path
                 except CoordinatorError as exc:
                     print(f"  [ERROR] Failed to download conversion zip: {exc}")
                     stats["errors"] += 1
@@ -517,16 +638,46 @@ def _hydrate_with_index(
                     continue
 
             try:
-                wrote_assets, asset_count = _hydrate_output_from_archive(
-                    archive_path=archive_path,
-                    markdown_path=markdown_path,
-                    assets_dir_path=assets_dir_path,
-                    assets_dir_name=assets_dir_name,
-                )
-                if wrote_assets:
-                    print(f"  [HYDRATED] {os.path.basename(markdown_path)} ({asset_count} assets)")
+                if output_format == "textpack":
+                    from .hydrated_outputs import HydratedOutput, create_textpack
+
+                    staging_root = tempfile.mkdtemp(prefix="textpack-", dir=tmp_dir)
+                    staging_markdown = os.path.join(staging_root, "text.md")
+                    staging_assets = os.path.join(staging_root, "assets")
+                    _, asset_count = _hydrate_output_from_archive(
+                        archive_path, staging_markdown, staging_assets, "assets",
+                        artifact_type,
+                    )
+                    metadata = {
+                        "artifactType": artifact_type,
+                    }
+                    if selected_recipe:
+                        metadata["recipeDigest"] = selected_recipe
+                    if artifact.get("identity"):
+                        metadata["artifactIdentity"] = artifact["identity"]
+                    create_textpack(
+                        HydratedOutput(
+                            pdf_path=pdf_path,
+                            markdown_path=staging_markdown,
+                            assets_path=staging_assets,
+                            textpack_path=textpack_path,
+                        ),
+                        force=force,
+                        blobforge_metadata=metadata,
+                    )
+                    print(f"  [HYDRATED] {os.path.basename(textpack_path)} ({asset_count} assets)")
                 else:
-                    print(f"  [HYDRATED] {os.path.basename(markdown_path)} (no assets)")
+                    wrote_assets, asset_count = _hydrate_output_from_archive(
+                        archive_path=archive_path,
+                        markdown_path=markdown_path,
+                        assets_dir_path=assets_dir_path,
+                        assets_dir_name=assets_dir_name,
+                        artifact_type=artifact_type,
+                    )
+                    if wrote_assets:
+                        print(f"  [HYDRATED] {os.path.basename(markdown_path)} ({asset_count} assets)")
+                    else:
+                        print(f"  [HYDRATED] {os.path.basename(markdown_path)} (no assets)")
                 stats["hydrated"] += 1
             except Exception as exc:
                 print(f"  [ERROR] Failed to hydrate local outputs: {exc}")
@@ -535,7 +686,7 @@ def _hydrate_with_index(
     print("\n--- Hydrate Summary ---")
     print(f"  Found PDFs:              {stats['found']}")
     print(f"  Hydrated:                {stats['hydrated']}")
-    print(f"  Skipped (markdown exists): {stats['skipped_existing_markdown']}")
+    print(f"  Skipped (output exists):  {stats['skipped_existing_output']}")
     print(f"  Missing conversions:     {stats['missing_conversion']}")
     print(f"  Errors:                  {stats['errors']}")
 

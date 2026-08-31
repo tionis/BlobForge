@@ -536,7 +536,7 @@ def cmd_convert(args):
 
 
 def cmd_hydrate(args):
-    """Hydrate local markdown/assets from completed conversion outputs."""
+    """Hydrate local Markdown/assets or TextPacks from retained artifacts."""
     if not _apply_coordinator_overrides(args):
         return 1
     if len(args.paths) == 1:
@@ -550,6 +550,8 @@ def cmd_hydrate(args):
         dry_run=args.dry_run,
         client=coordinator,
         refresh_status=args.refresh_status,
+        recipe_digest=args.recipe_digest,
+        output_format=args.format,
     )
 
 
@@ -1772,14 +1774,23 @@ def cmd_download(args):
     if not job:
         print(f"Error: Job {job_hash} does not exist.")
         return 1
-    if not recipe_digest and job.get("status") != "done":
-        print(f"Error: Job {job_hash} is not completed.")
-        print(f"Job is in state: {job.get('status')}")
+    try:
+        artifact = hydrator_module.select_artifact(
+            {**job, "artifacts": coordinator.list_artifacts(job_hash)}, recipe_digest
+        )
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
         return 1
+    if artifact is None:
+        print(f"Error: No retained artifact exists for job {job_hash} and that recipe.")
+        return 1
+    recipe_digest = artifact.get("recipe_digest")
+    artifact_type = str(artifact.get("artifact_type") or "legacy-archive")
 
     if output_path is None:
         suffix = f".{recipe_digest[:12]}" if recipe_digest else ""
-        output_path = f"{job_hash}{suffix}.zip"
+        extension = ".mdaf" if artifact_type == "mdaf/v1" else ".zip"
+        output_path = f"{job_hash}{suffix}{extension}"
 
     selected = f" recipe {recipe_digest}" if recipe_digest else " selected recipe"
     print(f"Downloading {job_hash}{selected} to {output_path}...")
@@ -1812,17 +1823,31 @@ def cmd_preview(args):
     if not job:
         print(f"Error: Job {job_hash} does not exist.")
         return 1
-    if not recipe_digest and job.get("status") != "done":
-        print(f"Error: Job {job_hash} is not completed.")
+    try:
+        artifact = hydrator_module.select_artifact(
+            {**job, "artifacts": coordinator.list_artifacts(job_hash)}, recipe_digest
+        )
+    except RuntimeError as exc:
+        print(f"Error: {exc}")
         return 1
+    if artifact is None:
+        print(f"Error: No retained artifact exists for job {job_hash} and that recipe.")
+        return 1
+    recipe_digest = artifact.get("recipe_digest")
+    artifact_type = str(artifact.get("artifact_type") or "legacy-archive")
 
     # Download to temp file
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+    extension = ".mdaf" if artifact_type == "mdaf/v1" else ".zip"
+    with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as tmp:
         tmp_path = tmp.name
 
     try:
         print(f"Fetching {job_hash}...")
         coordinator.download_output(job_hash, tmp_path, recipe_digest)
+        if artifact_type == "mdaf/v1":
+            from .mdaf import validate_mdaf
+
+            validate_mdaf(tmp_path)
         
         with zipfile.ZipFile(tmp_path, 'r') as zf:
             # List contents
@@ -1844,9 +1869,10 @@ def cmd_preview(args):
                             print(f"  {k}: {v}")
             
             # Show markdown preview
-            if 'content.md' in files:
-                print(f"\n--- content.md (first {args.lines} lines) ---")
-                with zf.open('content.md') as f:
+            markdown_member = "text.md" if artifact_type == "mdaf/v1" else "content.md"
+            if markdown_member in files:
+                print(f"\n--- {markdown_member} (first {args.lines} lines) ---")
+                with zf.open(markdown_member) as f:
                     content = f.read().decode('utf-8')
                     lines = content.split('\n')[:args.lines]
                     print('\n'.join(lines))
@@ -2036,12 +2062,20 @@ def main():
     p_convert.set_defaults(func=cmd_convert)
 
     # Hydrate local markdown/assets from completed conversions
-    p_hydrate = subparsers.add_parser("hydrate", help="Hydrate local markdown/assets from completed conversions")
+    p_hydrate = subparsers.add_parser("hydrate", help="Hydrate local outputs from retained conversion artifacts")
     p_hydrate.add_argument("paths", nargs='+', help="PDF files or directories to hydrate")
-    p_hydrate.add_argument("--force", action="store_true", help="Overwrite existing markdown/assets")
+    p_hydrate.add_argument("--force", action="store_true", help="Overwrite an existing selected-format output")
     p_hydrate.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
+    p_hydrate.add_argument(
+        "--format", choices=("markdown", "textpack"), default="markdown",
+        help="Output sibling Markdown/assets or one TextBundle v2 .textpack",
+    )
+    p_hydrate.add_argument(
+        "--recipe-digest", type=_recipe_digest_arg,
+        help="Hydrate this exact retained recipe (required if selection is ambiguous)",
+    )
     p_hydrate.add_argument("--refresh-status", action="store_true",
-                           help="Rebuild the local done-set mirror from scratch, re-syncing every hash")
+                           help="Rebuild the legacy-coordinator done-set mirror from scratch")
     p_hydrate.add_argument("--coordinator-url", help="Coordinator base URL")
     p_hydrate.add_argument("--token", help="Admin token for the coordinator")
     p_hydrate.set_defaults(func=cmd_hydrate)

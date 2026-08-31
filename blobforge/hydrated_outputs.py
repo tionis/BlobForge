@@ -9,7 +9,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Mapping, Optional
 
 from .hydrator import discover_pdf_files
 
@@ -135,7 +135,12 @@ def _asset_files(assets_path: str) -> Iterable[tuple[str, str]]:
             yield source_path, f"assets/{relative}"
 
 
-def _create_textpack(output: HydratedOutput, force: bool) -> None:
+def create_textpack(
+    output: HydratedOutput,
+    force: bool,
+    *,
+    blobforge_metadata: Optional[Mapping[str, Any]] = None,
+) -> None:
     """Atomically create and validate a TextBundle v2 compressed archive."""
     if os.path.exists(output.textpack_path) and not force:
         raise FileExistsError(f"TextPack already exists: {output.textpack_path}")
@@ -146,14 +151,17 @@ def _create_textpack(output: HydratedOutput, force: bool) -> None:
         markdown = handle.read()
     assets_dir_name = os.path.basename(output.assets_path)
     markdown = markdown.replace(f"{assets_dir_name}/", "assets/")
+    extension_metadata: dict[str, Any] = {
+        "version": 1,
+        "sourcePDF": os.path.basename(output.pdf_path),
+    }
+    if blobforge_metadata:
+        extension_metadata.update(blobforge_metadata)
     metadata = {
         "version": 2,
         "type": "net.daringfireball.markdown",
         "transient": False,
-        "dev.tionis.blobforge": {
-            "version": 1,
-            "sourcePDF": os.path.basename(output.pdf_path),
-        },
+        "dev.tionis.blobforge": extension_metadata,
     }
 
     target_dir = os.path.dirname(output.textpack_path) or "."
@@ -187,6 +195,11 @@ def _create_textpack(output: HydratedOutput, force: bool) -> None:
     finally:
         if os.path.exists(temporary_path):
             os.unlink(temporary_path)
+
+
+def _create_textpack(output: HydratedOutput, force: bool) -> None:
+    """Compatibility wrapper for the hydrated-output maintenance workflow."""
+    create_textpack(output, force)
 
 
 def textpack(paths: List[str], execute: bool = False, force: bool = False) -> int:

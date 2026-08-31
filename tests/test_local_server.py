@@ -124,6 +124,8 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
             "/api/v1/jobs/status", headers=client_headers, json={"hashes": [source_hash]}
         )).json()["results"][source_hash]
         assert status["done"] is True
+        assert status["artifacts"][0]["recipe_digest"] == "recipe-v1"
+        assert status["artifacts"][0]["artifact_type"] == "legacy-archive"
         download = (await client.post(
             f"/api/v1/jobs/{source_hash}/download-url",
             headers=client_headers,
@@ -139,6 +141,11 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
             headers=client_headers,
             json={"recipe_digest": "recipe-v2"},
         )
+        retained_status = (await client.post(
+            "/api/v1/jobs/status", headers=client_headers, json={"hashes": [source_hash]}
+        )).json()["results"][source_hash]
+        assert retained_status["status"] == "todo"
+        assert retained_status["artifacts"][0]["recipe_digest"] == "recipe-v1"
         assert requeue.json()["action"] == "queued"
         assert (await client.get(
             f"/api/v1/jobs/{source_hash}", headers=client_headers
