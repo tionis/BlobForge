@@ -38,6 +38,26 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Hydration, download, and preview select retained artifacts
+  independently from mutable job state. Current `mdaf/v1` packages are staged
+  with the required `.mdaf` suffix, validated, and read from `text.md`; only
+  explicit legacy archives use `content.md`. Selection prefers an explicit
+  `--recipe-digest`, then the job's current recipe, then a sole artifact, and
+  otherwise fails closed. `blobforge hydrate --format textpack` directly emits
+  an atomic TextBundle v2 projection and records source artifact identity,
+  recipe, and type in its BlobForge metadata. MDAF remains canonical because
+  TextPack intentionally omits its complete provenance and source maps.
+
+- **2026-08-31:** Coordinator-known recipes must not depend on a live worker to
+  exist in the registry. Marker 1.10.2 plus `pdf-enrichment/v1` is now a
+  lifecycle-v3 composite; startup installs it and idempotently assigns it only
+  to unassigned raw-only PDF imports tagged both `legacy-import` and
+  `metadata-unavailable`. Never relabel completed legacy jobs/artifacts or
+  override an explicit hosted-recipe choice. Worker heartbeat status and
+  scheduling availability are separate: the admin API derives working,
+  accepting, idle, deferred, quota-exhausted, provider cooldown/disablement,
+  offline, and revoked states from capabilities, jobs, and account state.
+
 - **2026-08-31:** Cross-currency provider estimates must retain two immutable
   monetary facts: the provider list-price amount/currency and the conservative
   amount reserved against the account billing currency. The coordinator now

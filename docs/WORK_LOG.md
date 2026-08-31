@@ -1,5 +1,85 @@
 # Work Log
 
+## 2026-08-31 (MDAF-Native Hydration and Direct TextPack Output)
+
+- **Objective:** Repair hydration for current MDAFs, make retained-artifact
+  selection deterministic, and allow hydration directly to `.textpack`.
+- **Inspection/tools:** Used `git status`/`diff`, `rg`, and targeted `sed` reads
+  over hydration, TextPack maintenance, coordinator status/download APIs,
+  SQLite artifacts, MDAF validation/building, CLI commands, documentation, and
+  tests. Used `apply_patch` for all edits and `uv run` with an isolated `/tmp`
+  cache for compilation, CLI help, focused tests, and the full suite. The first
+  compile attempt exposed the sandbox's read-only default uv cache and was
+  repeated with `UV_CACHE_DIR=/tmp/uv-cache`; no dependency was changed.
+- **Implementation:** Bulk job status now includes immutable retained-artifact
+  summaries even when a job is queued or failed. Hydrate selects an exact
+  requested recipe, the job's selected retained recipe, or a sole artifact and
+  fails closed on ambiguity. Downloads are cached by source and recipe.
+  `mdaf/v1` downloads use a `.mdaf` staging name, pass full validation, and
+  read `text.md`; explicit legacy archives retain `content.md` compatibility.
+  Download and preview use the same deterministic selection, and preview now
+  displays MDAF Markdown. `hydrate --format textpack` atomically emits a
+  TextBundle v2 without sibling intermediates and records artifact identity,
+  recipe digest, and artifact type in its BlobForge metadata extension.
+- **Documentation/tracking:** Updated the hydrate design, README examples,
+  TODO state, and durable repository findings. TextPack is documented as a
+  lossy convenience projection; MDAF remains the canonical provenance and
+  source-mapping artifact.
+- **Verification:** Focused hydration/TextPack/coordinator/server coverage
+  passed (71 tests). The clean full suite passed with **330 tests and 5
+  subtests**. `blobforge hydrate --help` exposes `--format` and
+  `--recipe-digest`; Python compilation passed.
+- **Status:** Complete. No user artifact or hydrated output was modified.
+
+## 2026-08-31 (Hydrate/MDAF Compatibility Inspection)
+
+- **Objective:** Determine why `blobforge hydrate` is broken and whether its
+  materialization model can work with current MDAF artifacts.
+- **Inspection/tools:** Used `rg` and targeted `sed` reads over the CLI,
+  hydrator, coordinator client/server artifact endpoints, database selection,
+  MDAF validator/builder, tests, and hydrate design. Used `find` to select one
+  real migrated artifact and `uv run` for a read-only archive/member probe and
+  direct hydrator reproduction. No user PDF, artifact, cache, or hydrated output
+  was modified.
+- **Finding:** The real MDAF contains `text.md`, no `content.md`, and eight
+  assets. `_read_markdown_from_archive` reproducibly raises `Conversion archive
+  is missing content.md`. Current hydration also mirrors only jobs whose mutable
+  state is `done` and downloads without a recipe, which selects the newest
+  artifact by creation time. `blobforge preview` likewise only displays
+  `content.md`. This is unsafe once one source retains multiple immutable
+  recipes or queues another conversion.
+- **Decision:** Hydrating Markdown/assets remains compatible with MDAF as a
+  projection, but the implementation must become format-aware and recipe-aware.
+  The pending repair is tracked in `TODO.md`; no fix was made during this
+  diagnostic turn.
+
+## 2026-08-31 (Coordinator State UI and Marker Legacy Routing)
+
+- **Objective:** Add exact-recipe job filtering, readable artifact provenance,
+  semantic worker availability, conspicuous policy supersession, and a real
+  Marker 1 recipe for remaining raw-only legacy work.
+- **Inspection/tools:** Used `rg`, `find`, and targeted `sed`/`nl` reads to map
+  admin endpoints, SQLite state, management assets, migration tags, adapters,
+  and enrichment. Used `apply_patch` for repository edits; used `uv run` for
+  digest/lifecycle checks, compilation and tests; checked emitted JavaScript
+  syntax with Node.
+- **Implementation:** Added exact recipe/unassigned API and UI filters; compact
+  artifact cards; color-coded heartbeat and availability badges; derived
+  quota/cooldown/disabled/deferred worker states; and clearly marked
+  superseded policy rows with replacement metadata. Added raw Marker 1.10.2
+  and lifecycle-v3 Marker-plus-enrichment recipes. The adapter retains raw
+  Markdown/metadata and Poppler evidence/report data. Coordinator startup
+  installs the recipe and transactionally assigns only unassigned raw-only
+  legacy PDFs, auditing a nonzero idempotent migration.
+- **Verification:** Composite identity is
+  `blake3:8f299a9230dc20143695f0f67517e3ae1edd3f3a8b060f6aa6f418465662976c`;
+  lifecycle parsing agrees. Targeted coordinator/worker/quota tests passed.
+  The first full run inherited production coordinator variables and reproduced
+  the documented 16 legacy-worker DNS failures; the CI-isolated rerun with
+  `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` unset passed
+  **327 tests plus 5 subtests**. Compileall, generated-JavaScript syntax
+  checking, and diff checking also passed.
+
 ## 2026-08-31 (Explicit Mistral Credential Risk Acceptance and Restart)
 
 - **Decision:** The owner clarified that the exposed Mistral inference key and

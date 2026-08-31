@@ -65,7 +65,9 @@ view; detailed research tasks remain in the sections below.
 
 ### Phase 2: Conversion recipes
 
-- [ ] Integrate the shared enrichment stages into a pinned Marker 1 recipe.
+- [x] Integrate the shared enrichment stages into a pinned Marker 1.10.2
+  composite recipe, install it coordinator-side, and bind only still-unassigned
+  raw-only legacy imports to it without rewriting completed lineage.
 - [ ] Promote the Marker 2 evaluator into a pinned composite recipe; require a
   verifiable model revision or manifest checksum and declared inference backend.
 - [ ] Add Datalab and promote the Mistral OCR evaluator into production-ready
@@ -284,6 +286,11 @@ view; detailed research tasks remain in the sections below.
 - [ ] Replace the production PDF worker's legacy ZIP publisher with staged MDAF
   generation/validation. The isolated multipurpose adapter dispatcher is now
   implemented separately for incremental canary deployment.
+- [x] Make `blobforge hydrate` and `preview` MDAF-native: validate `mdaf/v1`, read `text.md`,
+  select an explicit/current recipe instead of newest-by-time, treat retained
+  artifacts independently from mutable job state, and retain a deliberate
+  compatibility path for historical `content.md` ZIPs. Support direct,
+  provenance-linked TextPack projection during hydration.
 - [ ] Generalize filesystem ingestion beyond `.pdf`, including safe media-type
   detection, adapter selection, and source-type-specific limits.
 - [x] Run the complete 1,377-artifact plus 431 raw-source local import and audit.
