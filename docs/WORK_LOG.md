@@ -79,6 +79,24 @@
 - **Verification:** Focused client, worker, and local-server tests cover network
   classification, retry-free lease release, deferred-loop backoff, public admin
   URLs, and internal worker source/artifact/output URLs.
+- **Production deployment:** The complete hermetic suite passes 318 tests plus
+  5 subtests. GitHub Actions published coordinator manifest
+  `sha256:35e9f25a08ab7546c90b69ed15080dec4be5a296e23a06c52311d2aae05ec618`
+  and hosted-worker manifest
+  `sha256:18a8cea2a15851501755936931e9831ccaa2807ab71a021e28e6a8a886793bca`
+  from revision `26d0728e3cbda0aa88899aa6524ade243f79cd5c`.
+  A queue-preserving drain allowed an in-flight paid conversion to commit
+  before replacement. Exact pre-maintenance scheduling was restored and the
+  scratch table removed afterward.
+- **Recovery audit:** No job whose history contains the observed
+  network-unreachable transfer error remains failed. Jobs with one such attempt
+  stayed queued with their retry history intact. The formerly exhausted
+  436-page Cthulhu job completed through Mistral at `4_low`, committed exactly
+  one request/436 pages, and retains retry count 2. Storypath remains done at
+  `2_high` with its single original committed reservation and validated
+  `blake3:9b1d9598a5447d5f93e7de7bd820590fec74951d34f160a287c286cfceb1d4d3`
+  artifact. All three services are active, SQLite `quick_check` is `ok`, the
+  backup timer is enabled, and the public health endpoint returns HTTP 200.
 
 ## 2026-08-31 (Administrative CLI Intake)
 

@@ -38,6 +38,16 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Revision `26d0728` is deployed on Citadel as coordinator
+  manifest `sha256:35e9f25a...` and hosted-worker manifest
+  `sha256:18a8cea2a...`. The queue-preserving rollout retained all historical
+  failures and restored exact scheduling. No job affected by the transient
+  public-route input outage remains failed. The encrypted 436-page Cthulhu job
+  completed at `4_low`, committing one request/436 pages while retaining retry
+  count 2. Storypath remains recovered from its original single reservation.
+  Production passed SQLite `quick_check`, has no maintenance scratch table,
+  keeps all three services active, and returns HTTP 200 from public health.
+
 - **2026-08-31:** Worker-only source, parent-artifact, and output capability
   URLs must use the internal coordinator request origin, not the configured
   public browser origin. A transient public-route outage caused multiple input
@@ -54,8 +64,8 @@ The virtual environment is located at `.venv/` and should be activated automatic
   EUR 1.028 list exposure, created no second reservation, and published
   validated wiki-v3 MDAF
   `blake3:9b1d9598a5447d5f93e7de7bd820590fec74951d34f160a287c286cfceb1d4d3`.
-  The encrypted 436-page Cthulhu source now passes preflight and is deferred as
-  `todo` by the normal shared 429 cooldown without consuming another retry.
+  The encrypted 436-page Cthulhu source subsequently completed with one
+  committed request/436 pages and retained its two historical retries.
 
 - **2026-08-31:** `pypdf` can inspect unencrypted PDFs without its optional
   cryptography provider, but AES-encrypted PDFs fail even during the
