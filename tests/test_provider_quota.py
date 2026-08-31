@@ -337,6 +337,87 @@ def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp
     assert records["overrides"][0]["consumed_by"] == overage["reservation"]["id"]
 
 
+def test_cross_currency_estimate_requires_audited_fx_and_retains_both_amounts(
+    tmp_path,
+):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    database.register_capabilities("hosted", [_capability()])
+    database.configure_provider_account(
+        "test:primary", "test-provider", currency="EUR", concurrency_limit=1
+    )
+    timestamp = now_ms()
+    database.create_quota_policy(
+        "test:primary",
+        window_start=timestamp - 1_000,
+        window_end=timestamp + 86_400_000,
+        label="EUR allowance",
+        limit_estimated_micro_usd=30_000,
+        limit_billed_micro_usd=30_000,
+    )
+    key = "9" * 64
+    _enqueue(database, key)
+    job = _claim(database, key)
+    probe = {
+        **_probe(job),
+        "currency": "EUR",
+        "estimate_currency": "USD",
+    }
+    denied = database.reserve_quota(key, "hosted", job["lease_token"], probe)
+    assert denied["authorized"] is False
+    assert "USD/EUR FX rate" in denied["reason"]
+    assert database.get_job(key)["retry_count"] == 0
+
+    rate = database.record_provider_fx_rate(
+        "test:primary",
+        source_currency="USD",
+        rate_numerator=9,
+        rate_denominator=10,
+        observed_at=timestamp,
+        valid_until=timestamp + 3_600_000,
+        source="operator supplied conservative rate",
+        reason="bound the EUR allowance without relabeling USD list price",
+        actor="admin:test",
+    )
+    assert rate["released_fx_delays"] == 1
+    retried = _claim(database, key)
+    reservation = database.reserve_quota(
+        key,
+        "hosted",
+        retried["lease_token"],
+        {**probe, "lease_token": retried["lease_token"]},
+    )["reservation"]
+    assert reservation["estimate_currency"] == "USD"
+    assert reservation["reserved_estimate_micro_units"] == 32_000
+    assert reservation["reserved_estimated_micro_usd"] == 28_800
+    assert reservation["fx_rate_id"] == rate["id"]
+
+    settled = database.settle_quota(
+        reservation["id"],
+        "hosted",
+        {
+            "contract": PROVIDER_ATTEMPT_CONTRACT,
+            "reservation_id": reservation["id"],
+            "provider": "test-provider",
+            "account_key": "test:primary",
+            "currency": "EUR",
+            "list_currency": "USD",
+            "checkpoint_key": f"checkpoint:{key}",
+            "state": "committed",
+            "requests": 1,
+            "pages": 8,
+            "list_micro_usd": 32_000,
+            "billed_micro_usd": None,
+            "credits_micro_usd": None,
+        },
+    )
+    assert settled["list_currency"] == "USD"
+    summary = database.quota_summary()
+    assert summary["provider_fx_rates"][0]["id"] == rate["id"]
+    assert summary["usage"][0]["list_currency"] == "USD"
+    assert summary["usage"][0]["estimated_micro_usd"] == 28_800
+
+
 def test_manual_provider_snapshot_replaces_estimate_ceiling_without_rewriting_history(
     tmp_path,
 ):
@@ -686,6 +767,29 @@ async def test_quota_admin_and_worker_http_protocol(tmp_path):
             },
         )
         assert account.status_code == 200
+        unconfirmed_fx = await client.post(
+            "/api/v1/admin/provider-fx-rates",
+            headers=admin,
+            json={"account_key": "test:primary"},
+        )
+        assert unconfirmed_fx.status_code == 400
+        fx = await client.post(
+            "/api/v1/admin/provider-fx-rates",
+            headers=admin,
+            json={
+                "account_key": "test:primary",
+                "source_currency": "EUR",
+                "rate_numerator": 1_100_000,
+                "rate_denominator": 1_000_000,
+                "observed_at": timestamp,
+                "valid_until": timestamp + 3_600_000,
+                "source": "test reference rate",
+                "reason": "exercise the immutable administrative FX contract",
+                "confirm": True,
+            },
+        )
+        assert fx.status_code == 200
+        assert fx.json()["account_currency"] == "USD"
         schedule = await client.put(
             "/api/v1/admin/quota-schedules/test%3Aprimary",
             headers=admin,

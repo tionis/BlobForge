@@ -390,6 +390,7 @@ class RecipeWorker:
                             "provider": quota_probe.provider,
                             "account_key": quota_probe.account_key,
                             "currency": quota_probe.currency,
+                            "list_currency": quota_probe.estimate_currency,
                             "checkpoint_key": quota_probe.checkpoint_key,
                             "state": "cache_hit" if quota_probe.cache_hit else "ambiguous",
                             "cache_hit": quota_probe.cache_hit,

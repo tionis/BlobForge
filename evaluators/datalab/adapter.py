@@ -138,6 +138,7 @@ def _attempt_report(
             "provider": "datalab",
             "account_key": account_key,
             "currency": currency,
+            "list_currency": currency,
             "checkpoint_key": checkpoint_key,
             "state": state,
             "cache_hit": state == "cache_hit",
@@ -440,6 +441,7 @@ def main() -> int:
                 "provider": "datalab",
                 "account_key": account_key,
                 "currency": currency,
+                "estimate_currency": currency,
                 "checkpoint_key": checkpoint_key,
                 "cache_hit": complete,
                 "checkpoint_state": (

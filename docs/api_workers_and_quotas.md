@@ -116,6 +116,11 @@ The coordinator uses these normalized records:
 - `provider_accounts`: non-secret logical account, provider, immutable ISO 4217
   billing currency after first use, enabled state, concurrency ceiling, and
   shared cooldown.
+- `provider_fx_rates`: append-only conversion evidence for a provider's
+  list-price currency and one account billing currency. Each record retains an
+  integer numerator/denominator, observation and expiry times, evidence source,
+  reason, actor, and creation time. Same-currency estimates use the identity
+  rate and require no record.
 - `quota_schedules`: one optional monthly reset rule per account. The reset is
   local midnight in an explicit IANA timezone, supports days 1 through 28, and
   materializes the containing immutable policy window transactionally on
@@ -131,8 +136,10 @@ The coordinator uses these normalized records:
   is equally strict or stricter, so all current-cycle usage remains counted and
   the correction cannot manufacture allowance.
 - `quota_reservations`: job, exact recipe, worker, fenced lease/attempt,
-  checkpoint key, reserved units, state (`reserved`, `committed`, `released`,
-  or `ambiguous`), measured usage, billing fields, and timestamps.
+  checkpoint key, original estimate/currency, conservative account-currency
+  estimate, immutable FX-rate reference when applicable, state (`reserved`,
+  `committed`, `released`, or `ambiguous`), measured usage, list-price currency,
+  billing fields, and timestamps.
 - `job_quota_overrides`: one job and exact recipe, bounded extra request/page/
   cost allowance, reason, actor, expiry, creation time, and consuming
   reservation. Overrides are single-use unless explicitly created otherwise.
@@ -160,6 +167,17 @@ usage, and reconcile ambiguous attempts. It also configures recurring monthly
 schedules through `PUT /api/v1/admin/quota-schedules/{account}`. The management
 console exposes these operations under **Quotas**.
 
+Cross-currency estimates use an optional `estimate_currency` in the v1 probe.
+The existing `currency` continues to identify the provider account's billing
+currency. If they differ, authorization selects the newest unexpired matching
+FX record, converts with integer ceiling division, and stores both amounts plus
+the rate ID. Missing or expired evidence returns the job to `todo` for five
+minutes without consuming a retry or creating a reservation. Recording a
+matching rate through `POST /api/v1/admin/provider-fx-rates` releases those
+delays. The endpoint requires `confirm=true`; rates cannot last more than 31
+days. BlobForge never fetches, guesses, or silently refreshes exchange rates.
+Operators must include any desired safety margin in the recorded rate.
+
 Changing an enabled schedule's timezone or reset day materializes the
 replacement window and transactionally supersedes the old active scheduled
 window under those coverage rules. The historical policy remains visible in
@@ -171,11 +189,15 @@ claim recomputes the correct replacement-window deferral; this never increments
 their conversion retry count or authorizes spend by itself.
 
 Legacy JSON and SQLite field names retain the suffix `micro_usd` for wire and
-database compatibility. Their value is actually one-millionth of the provider
-account's declared currency. Every new probe, attempt report, policy, and
-account is currency-bound; a EUR probe cannot reserve or settle against a USD
-account. Older records without a currency predate this contract and default to
-USD.
+database compatibility. Policy, billed, credit, snapshot, override, and
+`reserved_estimated_micro_usd` values are one-millionth of the provider
+account's declared currency. A probe's legacy `estimated_micro_usd` and a
+report's `list_micro_usd` are instead explicitly qualified by
+`estimate_currency` and `list_currency`; absent qualifiers default to the
+account currency for older workers. Cross-currency reservations additionally
+store `reserved_estimate_micro_units` in the source price currency. Actual
+billed cash and credits must still use the account currency. Older records are
+migrated as same-currency observations without changing amounts.
 
 Mistral OCR wiki-v3 and Datalab accurate wiki-v1 implement the structured ABI.
 Mistral reserves its fixed per-page estimate. Datalab exposes no trustworthy
@@ -342,9 +364,9 @@ currency. Mistral's console first reported EUR 0.96, then advanced to EUR
 10.91 for the same purchases while the worker was stopped. The first display
 was incomplete provider reporting, not a discount. The later snapshot left
 EUR 1.84 of the EUR 12.75 allowance. List-price currency and account billing
-currency must be modeled separately with explicit exchange-rate provenance;
-a manual provider snapshot remains the authoritative allowance baseline in the
-meantime.
+currency are now modeled separately with explicit exchange-rate provenance.
+Historical rows remain unchanged; a manual provider snapshot remains the
+authoritative allowance baseline for actual consumption.
 
 These are different accounting facts and remain separate. Settled reservations
 retain their list-price estimate; an operator must not rewrite them to

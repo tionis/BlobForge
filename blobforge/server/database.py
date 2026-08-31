@@ -218,8 +218,12 @@ class Database:
                     cache_hit INTEGER NOT NULL DEFAULT 0,
                     reserved_requests INTEGER NOT NULL, reserved_pages INTEGER NOT NULL,
                     reserved_estimated_micro_usd INTEGER NOT NULL,
+                    estimate_currency TEXT,
+                    reserved_estimate_micro_units INTEGER,
+                    fx_rate_id TEXT REFERENCES provider_fx_rates(id),
                     actual_requests INTEGER, actual_pages INTEGER,
-                    list_micro_usd INTEGER, billed_micro_usd INTEGER,
+                    list_micro_usd INTEGER, list_currency TEXT,
+                    billed_micro_usd INTEGER,
                     credits_micro_usd INTEGER, override_id TEXT REFERENCES job_quota_overrides(id),
                     detail TEXT, created_at INTEGER NOT NULL, settled_at INTEGER,
                     reconcile_by INTEGER NOT NULL,
@@ -241,6 +245,26 @@ class Database:
                 CREATE INDEX IF NOT EXISTS provider_usage_snapshot_lookup_idx
                     ON provider_usage_snapshots(
                         account_key,window_start,window_end,observed_at DESC
+                    );
+                CREATE TABLE IF NOT EXISTS provider_fx_rates (
+                    id TEXT PRIMARY KEY,
+                    account_key TEXT NOT NULL REFERENCES provider_accounts(account_key),
+                    source_currency TEXT NOT NULL,
+                    account_currency TEXT NOT NULL,
+                    rate_numerator INTEGER NOT NULL,
+                    rate_denominator INTEGER NOT NULL,
+                    observed_at INTEGER NOT NULL,
+                    valid_until INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(account_key,source_currency,account_currency,observed_at)
+                );
+                CREATE INDEX IF NOT EXISTS provider_fx_rate_lookup_idx
+                    ON provider_fx_rates(
+                        account_key,source_currency,account_currency,
+                        observed_at DESC,valid_until
                     );
                 CREATE TABLE IF NOT EXISTS scim_users (
                     id TEXT PRIMARY KEY, external_id TEXT UNIQUE, user_name TEXT NOT NULL UNIQUE,
@@ -342,6 +366,33 @@ class Database:
                     "ALTER TABLE provider_accounts ADD COLUMN snapshot_max_age_ms "
                     f"INTEGER NOT NULL DEFAULT {DEFAULT_SNAPSHOT_MAX_AGE_MS}"
                 )
+            reservation_columns = {
+                row[1] for row in db.execute("PRAGMA table_info(quota_reservations)")
+            }
+            for name, declaration in (
+                ("estimate_currency", "TEXT"),
+                ("reserved_estimate_micro_units", "INTEGER"),
+                ("fx_rate_id", "TEXT REFERENCES provider_fx_rates(id)"),
+                ("list_currency", "TEXT"),
+            ):
+                if name not in reservation_columns:
+                    db.execute(
+                        f"ALTER TABLE quota_reservations ADD COLUMN {name} {declaration}"
+                    )
+            db.execute(
+                """UPDATE quota_reservations SET
+                estimate_currency=COALESCE(estimate_currency,(
+                    SELECT currency FROM provider_accounts
+                    WHERE provider_accounts.account_key=quota_reservations.account_key
+                )),
+                reserved_estimate_micro_units=COALESCE(
+                    reserved_estimate_micro_units,reserved_estimated_micro_usd
+                ),
+                list_currency=COALESCE(list_currency,(
+                    SELECT currency FROM provider_accounts
+                    WHERE provider_accounts.account_key=quota_reservations.account_key
+                ))"""
+            )
             policy_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(quota_policies)")
             }
@@ -524,6 +575,129 @@ class Database:
         value = dict(row)
         value["enabled"] = bool(value["enabled"])
         return value
+
+    def record_provider_fx_rate(
+        self,
+        account_key: str,
+        *,
+        source_currency: str,
+        rate_numerator: int,
+        rate_denominator: int,
+        observed_at: int,
+        valid_until: int,
+        source: str,
+        reason: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Append an explicit source-price to account-currency conversion rate."""
+        account_key = account_key.strip().lower()
+        source_currency = source_currency.strip().upper()
+        source = source.strip()
+        reason = reason.strip()
+        actor = actor.strip()
+        if len(source_currency) != 3 or not source_currency.isalpha():
+            raise ValueError("source_currency must be a three-letter ISO 4217 code")
+        numerator = self._quota_integer(rate_numerator, "rate_numerator")
+        denominator = self._quota_integer(rate_denominator, "rate_denominator")
+        observed = self._quota_integer(observed_at, "observed_at")
+        expires = self._quota_integer(valid_until, "valid_until")
+        if not numerator or not denominator:
+            raise ValueError("FX numerator and denominator must be positive")
+        timestamp = now_ms()
+        if observed > timestamp + 60_000:
+            raise ValueError("observed_at cannot be in the future")
+        if expires <= max(observed, timestamp):
+            raise ValueError("valid_until must be later than observation time and now")
+        if expires - observed > 31 * 86_400_000:
+            raise ValueError("an FX rate cannot be valid for more than 31 days")
+        if not source or len(source) > 120:
+            raise ValueError("source must contain 1-120 characters")
+        if not reason or len(reason) > 1000:
+            raise ValueError("reason must contain 1-1000 characters")
+        if not actor:
+            raise ValueError("actor is required")
+        identifier = "qfx_" + secrets.token_hex(10)
+        with self.transaction() as db:
+            account = db.execute(
+                "SELECT currency FROM provider_accounts WHERE account_key=?",
+                (account_key,),
+            ).fetchone()
+            if not account:
+                raise KeyError(account_key)
+            account_currency = str(account["currency"])
+            if source_currency == account_currency:
+                raise ValueError("same-currency estimates do not require an FX rate")
+            try:
+                db.execute(
+                    """INSERT INTO provider_fx_rates(
+                    id,account_key,source_currency,account_currency,
+                    rate_numerator,rate_denominator,observed_at,valid_until,
+                    source,reason,actor,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        identifier,
+                        account_key,
+                        source_currency,
+                        account_currency,
+                        numerator,
+                        denominator,
+                        observed,
+                        expires,
+                        source,
+                        reason,
+                        actor,
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise Conflict("an FX observation already exists at this time") from exc
+            released = db.execute(
+                """UPDATE jobs SET not_before=NULL,blocked_reason=NULL,updated_at=?
+                WHERE status='todo' AND blocked_reason LIKE 'no current % FX rate%'
+                AND recipe_digest IN (
+                    SELECT recipe_digest FROM recipes WHERE provider_account=?
+                )""",
+                (timestamp, account_key),
+            ).rowcount
+            row = db.execute(
+                "SELECT * FROM provider_fx_rates WHERE id=?", (identifier,)
+            ).fetchone()
+        value = dict(row)
+        value["released_fx_delays"] = released
+        return value
+
+    @staticmethod
+    def _converted_estimate(
+        db: sqlite3.Connection,
+        account: sqlite3.Row,
+        source_currency: str,
+        source_micro_units: int,
+        timestamp: int,
+    ) -> tuple[int, str | None]:
+        account_currency = str(account["currency"])
+        if source_currency == account_currency:
+            return source_micro_units, None
+        rate = db.execute(
+            """SELECT * FROM provider_fx_rates
+            WHERE account_key=? AND source_currency=? AND account_currency=?
+            AND observed_at<=? AND valid_until>?
+            ORDER BY observed_at DESC,created_at DESC LIMIT 1""",
+            (
+                account["account_key"],
+                source_currency,
+                account_currency,
+                timestamp,
+                timestamp,
+            ),
+        ).fetchone()
+        if not rate:
+            raise LookupError("no current FX rate for provider estimate")
+        numerator = int(rate["rate_numerator"])
+        denominator = int(rate["rate_denominator"])
+        converted = (source_micro_units * numerator + denominator - 1) // denominator
+        if converted > 9_223_372_036_854_775_807:
+            raise ValueError("converted provider estimate exceeds SQLite integer range")
+        return converted, str(rate["id"])
 
     def configure_quota_schedule(
         self,
@@ -1160,14 +1334,14 @@ class Database:
         cache_hit = body.get("cache_hit")
         requests = self._quota_integer(body.get("requests"), "requests")
         pages = self._quota_integer(body.get("pages"), "pages")
-        estimated = self._quota_integer(
+        source_estimated = self._quota_integer(
             body.get("estimated_micro_usd"), "estimated_micro_usd"
         )
         if not account_key or not provider or not checkpoint_key:
             raise ValueError("provider, account_key, and checkpoint_key are required")
         if not isinstance(cache_hit, bool):
             raise ValueError("cache_hit must be a boolean")
-        if cache_hit and (requests or estimated):
+        if cache_hit and (requests or source_estimated):
             raise ValueError("cache hits cannot reserve requests or spend")
         identifier = "qres_" + secrets.token_hex(12)
         lease_digest = token_hash(lease)
@@ -1181,6 +1355,23 @@ class Database:
             ).fetchone()
             if not recipe or recipe["provider_account"] != account_key or recipe["provider"] != provider:
                 raise Conflict("quota probe does not match the leased recipe provider account")
+            account = db.execute(
+                "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
+            ).fetchone()
+            if not account or account["provider"] != provider:
+                raise Conflict("provider account is not configured")
+            if not account["enabled"]:
+                raise Conflict("provider account is disabled")
+            probe_currency = str(body.get("currency") or "USD").upper()
+            if probe_currency != str(account["currency"]):
+                raise Conflict("provider probe currency does not match the account currency")
+            estimate_currency = str(
+                body.get("estimate_currency") or probe_currency
+            ).upper()
+            if len(estimate_currency) != 3 or not estimate_currency.isalpha():
+                raise ValueError(
+                    "estimate_currency must be a three-letter ISO 4217 code"
+                )
             existing = db.execute(
                 """SELECT * FROM quota_reservations
                 WHERE source_key=? AND recipe_digest=? AND lease_token_hash=?""",
@@ -1193,22 +1384,19 @@ class Database:
                     or bool(existing["cache_hit"]) != cache_hit
                     or int(existing["reserved_requests"]) != requests
                     or int(existing["reserved_pages"]) != pages
-                    or int(existing["reserved_estimated_micro_usd"]) != estimated
+                    or str(existing["estimate_currency"] or probe_currency)
+                    != estimate_currency
+                    or int(
+                        existing["reserved_estimate_micro_units"]
+                        if existing["reserved_estimate_micro_units"] is not None
+                        else existing["reserved_estimated_micro_usd"]
+                    )
+                    != source_estimated
                 ):
                     raise Conflict("quota retry does not match its existing reservation")
                 value = dict(existing)
                 value.pop("lease_token_hash", None)
                 return {"authorized": True, "reservation": value, "idempotent": True}
-            account = db.execute(
-                "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
-            ).fetchone()
-            if not account or account["provider"] != provider:
-                raise Conflict("provider account is not configured")
-            if not account["enabled"]:
-                raise Conflict("provider account is disabled")
-            probe_currency = str(body.get("currency") or "USD").upper()
-            if probe_currency != str(account["currency"]):
-                raise Conflict("provider probe currency does not match the account currency")
             resume_identifier = body.get("resume_reservation_id")
             if isinstance(resume_identifier, str) and resume_identifier:
                 resumable = db.execute(
@@ -1224,6 +1412,27 @@ class Database:
                     ),
                 ).fetchone()
                 if resumable:
+                    if (
+                        str(resumable["estimate_currency"] or probe_currency)
+                        != estimate_currency
+                        or (
+                            not cache_hit
+                            and (
+                                int(resumable["reserved_requests"]) != requests
+                                or int(resumable["reserved_pages"]) != pages
+                                or int(
+                                    resumable["reserved_estimate_micro_units"]
+                                    if resumable["reserved_estimate_micro_units"]
+                                    is not None
+                                    else resumable["reserved_estimated_micro_usd"]
+                                )
+                                != source_estimated
+                            )
+                        )
+                    ):
+                        raise Conflict(
+                            "provider checkpoint estimate does not match its reservation"
+                        )
                     db.execute(
                         """UPDATE quota_reservations SET worker_id=?,lease_token_hash=?,
                         state='reserved',reconcile_by=? WHERE id=?""",
@@ -1243,6 +1452,31 @@ class Database:
                         "provider checkpoint names a reservation that cannot be resumed; "
                         "reconcile it before retrying"
                     )
+            try:
+                estimated, fx_rate_id = self._converted_estimate(
+                    db,
+                    account,
+                    estimate_currency,
+                    source_estimated,
+                    timestamp,
+                ) if not cache_hit else (0, None)
+            except LookupError:
+                defer_until = timestamp + 300_000
+                reason = (
+                    f"no current {estimate_currency}/{account['currency']} FX rate "
+                    "for provider estimate"
+                )
+                db.execute(
+                    """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
+                    lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=?
+                    WHERE source_key=?""",
+                    (defer_until, reason, timestamp, key),
+                )
+                return {
+                    "authorized": False,
+                    "reason": reason,
+                    "not_before": defer_until,
+                }
             if account["cooldown_until"] and int(account["cooldown_until"]) > timestamp:
                 defer_until = int(account["cooldown_until"])
                 reason = str(account["cooldown_reason"] or "provider cooldown")
@@ -1364,11 +1598,13 @@ class Database:
             db.execute(
                 """INSERT INTO quota_reservations(id,source_key,recipe_digest,account_key,
                 worker_id,lease_token_hash,checkpoint_key,state,cache_hit,reserved_requests,
-                reserved_pages,reserved_estimated_micro_usd,created_at,reconcile_by,override_id)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                reserved_pages,reserved_estimated_micro_usd,estimate_currency,
+                reserved_estimate_micro_units,fx_rate_id,created_at,reconcile_by,override_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     identifier, key, recipe_digest, account_key, worker_id, lease_digest,
                     checkpoint_key, "reserved", int(cache_hit), requests, pages, estimated,
+                    estimate_currency, source_estimated, fx_rate_id,
                     timestamp, timestamp + 86_400_000, override_id,
                 ),
             )
@@ -1423,6 +1659,17 @@ class Database:
             actual_requests = self._quota_integer(report.get("requests"), "requests")
             actual_pages = self._quota_integer(report.get("pages"), "pages")
             list_micro = self._quota_integer(report.get("list_micro_usd"), "list_micro_usd", optional=True)
+            list_currency = str(
+                report.get("list_currency") or report_currency
+            ).upper()
+            if len(list_currency) != 3 or not list_currency.isalpha():
+                raise ValueError(
+                    "list_currency must be a three-letter ISO 4217 code"
+                )
+            if list_currency != str(row["estimate_currency"] or report_currency):
+                raise Conflict(
+                    "provider list-price currency does not match the reservation estimate"
+                )
             billed_micro = self._quota_integer(report.get("billed_micro_usd"), "billed_micro_usd", optional=True)
             credits_micro = self._quota_integer(report.get("credits_micro_usd"), "credits_micro_usd", optional=True)
             if actual_requests > int(row["reserved_requests"]) or actual_pages > int(row["reserved_pages"]):
@@ -1455,11 +1702,13 @@ class Database:
                 )
             db.execute(
                 """UPDATE quota_reservations SET state=?,actual_requests=?,actual_pages=?,
-                list_micro_usd=?,billed_micro_usd=?,credits_micro_usd=?,detail=?,settled_at=?
+                list_micro_usd=?,list_currency=?,billed_micro_usd=?,credits_micro_usd=?,
+                detail=?,settled_at=?
                 WHERE id=?""",
                 (
-                    stored_state, actual_requests, actual_pages, list_micro, billed_micro,
-                    credits_micro, str(report.get("detail") or "")[:1000] or None,
+                    stored_state, actual_requests, actual_pages, list_micro,
+                    list_currency, billed_micro, credits_micro,
+                    str(report.get("detail") or "")[:1000] or None,
                     timestamp, identifier,
                 ),
             )
@@ -1532,14 +1781,21 @@ class Database:
             usage = [
                 dict(row)
                 for row in db.execute(
-                    """SELECT account_key,state,COUNT(*) attempts,
+                    """SELECT account_key,state,
+                    COALESCE(list_currency,(
+                        SELECT currency FROM provider_accounts
+                        WHERE provider_accounts.account_key=quota_reservations.account_key
+                    )) list_currency,
+                    COUNT(*) attempts,
                     COALESCE(SUM(reserved_requests),0) requests,
                     COALESCE(SUM(reserved_pages),0) pages,
                     COALESCE(SUM(reserved_estimated_micro_usd),0) estimated_micro_usd,
                     COALESCE(SUM(list_micro_usd),0) list_micro_usd,
                     COALESCE(SUM(billed_micro_usd),0) billed_micro_usd,
                     COALESCE(SUM(credits_micro_usd),0) credits_micro_usd
-                    FROM quota_reservations GROUP BY account_key,state ORDER BY account_key,state"""
+                    FROM quota_reservations
+                    GROUP BY account_key,state,list_currency
+                    ORDER BY account_key,state,list_currency"""
                 )
             ]
             schedules = [
@@ -1582,12 +1838,20 @@ class Database:
                     ORDER BY observed_at DESC,created_at DESC LIMIT 500"""
                 )
             ]
+            fx_rates = [
+                dict(row)
+                for row in db.execute(
+                    """SELECT * FROM provider_fx_rates
+                    ORDER BY observed_at DESC,created_at DESC LIMIT 500"""
+                )
+            ]
         for account in accounts:
             account["enabled"] = bool(account["enabled"])
         return {"accounts": accounts, "schedules": schedules,
                 "policies": policies, "usage": usage,
                 "ambiguous": ambiguous, "overrides": overrides,
                 "provider_usage_snapshots": snapshots,
+                "provider_fx_rates": fx_rates,
                 "waiting_jobs": waiting, "generated_at": timestamp}
 
     def worker_for_token(self, token: str) -> str | None:

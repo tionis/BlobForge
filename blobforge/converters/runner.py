@@ -57,6 +57,7 @@ class ProviderProbe:
     estimated_micro_usd: int
     raw: Mapping[str, Any]
     currency: str = "USD"
+    estimate_currency: str = "USD"
 
 
 class AdapterCancelled(RuntimeError):
@@ -215,6 +216,13 @@ def probe_provider(
         currency = str(value.get("currency") or "USD").upper()
         if len(currency) != 3 or not currency.isalpha():
             raise ValueError("provider probe currency must be a three-letter ISO 4217 code")
+        estimate_currency = str(
+            value.get("estimate_currency") or currency
+        ).upper()
+        if len(estimate_currency) != 3 or not estimate_currency.isalpha():
+            raise ValueError(
+                "provider probe estimate_currency must be a three-letter ISO 4217 code"
+            )
         if value["cache_hit"] and any(
             value[key] for key in ("requests", "estimated_micro_usd")
         ):
@@ -229,6 +237,7 @@ def probe_provider(
             estimated_micro_usd=value["estimated_micro_usd"],
             raw=value,
             currency=currency,
+            estimate_currency=estimate_currency,
         )
 
 

@@ -564,6 +564,52 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         )
         return value
 
+    @app.post("/api/v1/admin/provider-fx-rates")
+    async def admin_provider_fx_rate(request: Request) -> dict[str, Any]:
+        authorize(request, roles={"admin"})
+        body = await request.json()
+        if body.get("confirm") is not True:
+            raise HTTPException(400, "confirm=true is required for an FX rate")
+        actor = principal_id(request)
+        try:
+            value = database.record_provider_fx_rate(
+                str(body.get("account_key") or ""),
+                source_currency=str(body.get("source_currency") or ""),
+                rate_numerator=body.get("rate_numerator"),
+                rate_denominator=body.get("rate_denominator"),
+                observed_at=body.get("observed_at"),
+                valid_until=body.get("valid_until"),
+                source=str(body.get("source") or ""),
+                reason=str(body.get("reason") or ""),
+                actor=actor,
+            )
+        except KeyError:
+            raise HTTPException(404, "provider account not found") from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        database.audit(
+            actor,
+            "quota.fx_rate.create",
+            value["id"],
+            {
+                key: value[key]
+                for key in (
+                    "account_key",
+                    "source_currency",
+                    "account_currency",
+                    "rate_numerator",
+                    "rate_denominator",
+                    "observed_at",
+                    "valid_until",
+                    "source",
+                    "reason",
+                )
+            },
+        )
+        return value
+
     @app.post("/api/v1/admin/quota-policies")
     async def admin_quota_policy(request: Request) -> dict[str, Any]:
         authorize(request, roles={"admin"})

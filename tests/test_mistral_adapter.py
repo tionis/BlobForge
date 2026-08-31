@@ -193,6 +193,7 @@ def test_provider_probe_and_attempt_report_bound_the_purchase(tmp_path, monkeypa
         tmp_path,
         probe_output,
         provider_account="mistral:test",
+        billing_currency="EUR",
         quota_managed=True,
     )
     probe_value = json.loads(probe_request.read_text(encoding="utf-8"))
@@ -204,8 +205,9 @@ def test_provider_probe_and_attempt_report_bound_the_purchase(tmp_path, monkeypa
     assert probe == {
         "contract": "dev.tionis.blobforge.provider-probe/v1",
         "provider": "mistral-ai",
-            "account_key": "mistral:test",
-            "currency": "USD",
+        "account_key": "mistral:test",
+        "currency": "EUR",
+        "estimate_currency": "USD",
         "checkpoint_key": probe["checkpoint_key"],
         "cache_hit": False,
         "requests": 1,
@@ -220,6 +222,7 @@ def test_provider_probe_and_attempt_report_bound_the_purchase(tmp_path, monkeypa
         tmp_path,
         output,
         provider_account="mistral:test",
+        billing_currency="EUR",
         quota_managed=True,
     )
     request_value = json.loads(request_path.read_text(encoding="utf-8"))
@@ -237,7 +240,9 @@ def test_provider_probe_and_attempt_report_bound_the_purchase(tmp_path, monkeypa
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["state"] == "committed"
     assert report["reservation_id"] == "qres_test"
+    assert report["currency"] == "EUR"
     assert report["list_micro_usd"] == 8_000
+    assert report["list_currency"] == "USD"
     envelope = json.loads(next(cache.glob("*/*.json")).read_text(encoding="utf-8"))
     assert envelope["reservation_id"] == "qres_test"
     assert calls == [True]

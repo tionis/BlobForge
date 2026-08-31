@@ -198,6 +198,7 @@ def _attempt_report(
         "provider": "mistral-ai",
         "account_key": provider_account,
         "currency": currency,
+        "list_currency": "USD",
         "checkpoint_key": checkpoint_key,
         "state": state,
         "cache_hit": cache_hit,
@@ -371,8 +372,8 @@ def main() -> int:
         raise ValueError(f"page ceiling rejected {page_count} pages (limit {max_pages})")
     if not math.isfinite(max_cost) or max_cost <= 0 or expected_cost > max_cost:
         raise ValueError(
-            f"spend ceiling rejected estimated {currency} {expected_cost:.4f} "
-            f"(limit {currency} {max_cost:.4f})"
+            f"spend ceiling rejected estimated USD {expected_cost:.4f} "
+            f"(limit USD {max_cost:.4f})"
         )
     model = str(parameters.get("model") or "mistral-ocr-4-1")
     if model != "mistral-ocr-4-1":
@@ -416,6 +417,7 @@ def main() -> int:
                 "provider": "mistral-ai",
                 "account_key": provider_account,
                 "currency": currency,
+                "estimate_currency": "USD",
                 "checkpoint_key": f"sha256:{request_id}",
                 "cache_hit": cache_hit,
                 "requests": 0 if cache_hit else 1,

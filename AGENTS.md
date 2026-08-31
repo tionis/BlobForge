@@ -38,6 +38,16 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Cross-currency provider estimates must retain two immutable
+  monetary facts: the provider list-price amount/currency and the conservative
+  amount reserved against the account billing currency. The coordinator now
+  requires a fresh append-only administrator-confirmed FX observation, converts
+  with integer ceiling division, and stores its rate ID on the reservation.
+  Missing/expired FX evidence defers without retry or reservation and is
+  released when a matching rate is recorded. Legacy `micro_usd` account fields
+  remain wire-compatible; probe estimates and reported list prices are
+  qualified separately. Never fetch or infer an exchange rate inside a worker.
+
 - **2026-08-31:** Mistral's console advanced from EUR 0.96 to EUR 10.91 for
   the same 17 requests / 3,184 pages while the hosted worker was stopped. The
   first value was incomplete provider reporting, not a stable subscription

@@ -1,5 +1,39 @@
 # Work Log
 
+## 2026-08-31 (Provider Estimate Currency and FX Provenance)
+
+- **Objective:** Continue safely while Mistral remains disabled and correct the
+  discovered USD-list-price/EUR-account conflation without rerouting any of the
+  25 explicitly assigned Mistral jobs to Datalab.
+- **Production inspection:** A sanitized read-only Citadel audit found SQLite
+  healthy, the coordinator and Datalab worker active, Mistral offline, no
+  unsettled attempts, 25 Mistral-assigned todo jobs, 431 unassigned todo jobs,
+  and no Datalab-assigned todo jobs. The first inspection used the nonexistent
+  `last_heartbeat` column and failed read-only; the corrected query used
+  `last_seen`. No production state changed.
+- **Implementation:** Added append-only provider FX observations with integer
+  ratios, exact source/account currencies, observation/expiry, evidence,
+  reason, and actor. Provider probes may qualify their original estimate
+  currency; cross-currency reservations require a current matching rate and
+  retain the source amount, conservative ceiling-rounded account amount, and
+  immutable rate ID. Attempt reports independently qualify list-price currency
+  while billed cash and credits remain account-currency values. Existing rows
+  migrate as same-currency history without rewriting amounts.
+- **Failure behavior and administration:** Missing/expired FX evidence defers a
+  job for five minutes without a reservation or retry. Recording a matching
+  confirmed rate releases relevant delays. The admin API and quota UI can
+  create and inspect immutable rates, display list currencies separately, and
+  require operators to include any safety margin; BlobForge performs no
+  implicit network lookup.
+- **Verification:** Focused provider, adapter, recipe-worker, converter-runner,
+  and local-server coverage passes 66 tests; the complete hermetic suite passes
+  324 tests plus 5 subtests, and generated management JavaScript passes
+  `node --check`. A dedicated regression proves
+  missing-rate deferral, release, USD/EUR conversion, exact dual-amount
+  retention, FX linkage, and distinct list/billing-currency settlement.
+- **Tools:** `rg`, `sed`, `apply_patch`, uv/pytest, and sanitized read-only
+  Ansible/Podman/SQLite inspection.
+
 ## 2026-08-31 (Manual Provider Usage Snapshot Accounting)
 
 - **Implementation:** Added append-only, account-currency provider usage
