@@ -1,5 +1,28 @@
 # Work Log
 
+## 2026-08-31 (Explicit Mistral Credential Risk Acceptance and Restart)
+
+- **Decision:** The owner clarified that the exposed Mistral inference key and
+  BlobForge worker token are acceptable temporarily and explicitly requested
+  that the hosted Mistral worker remain running. Credential rotation stays on
+  the roadmap but is no longer a restart prerequisite.
+- **Action:** Restarted only `blobforge-hosted-mistral.service` using a narrow
+  `systemctl start` command that returned no unit environment or credentials.
+  No Gandalf commit, secret, recipe assignment, coordinator image, or quota
+  policy changed.
+- **Verification:** Sanitized read-only production audits found SQLite
+  `quick_check=ok`, the Mistral worker active/working, Datalab idle, and all 431
+  unassigned jobs unchanged. Mistral completed two more explicitly assigned
+  jobs: 421 pages across two requests with EUR 1.684 conservative exposure.
+  Accounting therefore uses EUR 10.91 provider baseline plus EUR 1.684 after
+  its coverage cutoff, or EUR 12.594 of the EUR 12.75 ceiling. Twenty-three
+  Mistral jobs remain todo; claims that cannot fit the remaining EUR 0.156 are
+  deferred without retries. The worker remains running under the owner's
+  explicit temporary risk acceptance.
+- **Tools:** Narrow Ansible `command`/`systemctl`, followed by sanitized
+  read-only Ansible/Podman/SQLite inspection. No verbose systemd module or
+  status payload was used.
+
 ## 2026-08-31 (Provider Estimate Currency and FX Provenance)
 
 - **Objective:** Continue safely while Mistral remains disabled and correct the

@@ -230,9 +230,10 @@ view; detailed research tasks remain in the sections below.
   deferred Gandalf credential commit. Before Mistral is re-enabled, record a
   conservative, sourced, time-bounded USD/EUR rate through the quota console.
 - [ ] Revoke and replace the Mistral inference API key exposed by a verbose
-  systemd status result, deploy the already encrypted replacement BlobForge
-  worker credential with the Mistral unit disabled, then re-enable the worker
-  only after its provider key has been replaced.
+  systemd status result and deploy the already encrypted replacement BlobForge
+  worker credential. The owner explicitly accepted temporary exposure and
+  requested that the worker continue running on 2026-08-31; do not treat that
+  scoped acceptance as cancellation of eventual rotation.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
   immutable artifact identities.
 

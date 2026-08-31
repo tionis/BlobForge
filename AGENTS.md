@@ -64,8 +64,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
   its verbose result can return the entire unit status, including plaintext
   environment arguments. Use a no-log task or a narrow `systemctl` command and
   query only explicit safe properties. A Mistral inference key and worker token
-  were exposed this way; keep the worker stopped, rotate both credentials, and
-  do not re-enable it until the provider key is replaced.
+  were exposed this way. The owner explicitly accepted temporary continued use
+  of those credentials and requested that the worker remain running on
+  2026-08-31; this is a scoped risk acceptance, not a cancellation of rotation.
+  Rotate both credentials when convenient, and never expose them again while
+  inspecting or changing service state.
 
 - **2026-08-31:** Non-Enterprise provider usage reconciliation uses immutable
   manual account snapshots, never fabricated per-job billing. A snapshot binds
