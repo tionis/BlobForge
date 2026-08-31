@@ -221,6 +221,11 @@ view; detailed research tasks remain in the sections below.
   count fresh post-snapshot reservations conservatively, require a separate
   Mistral Admin API key for automation, and support audited manual snapshots
   when that credential is unavailable.
+- [ ] Separate each provider's list-price currency from the account billing
+  currency. Require an explicit FX rate, observation time, and source when an
+  estimate crosses currencies; never relabel Mistral's USD 0.004/page list
+  price as EUR. Keep manual provider snapshots authoritative for actual billed
+  allowance consumption.
 - [ ] Revoke and replace the Mistral inference API key exposed by a verbose
   systemd status result, deploy the already encrypted replacement BlobForge
   worker credential with the Mistral unit disabled, then re-enable the worker

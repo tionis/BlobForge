@@ -336,9 +336,15 @@ or included-subscription consumption. When `billed_micro_usd` is unknown, the
 current fail-safe ledger uses the reservation estimate for both estimated and
 billed quota dimensions. This prevents accidental overspend, but it can stop
 early when an account plan applies a discount or included usage. In the August
-2026 production window, 3,184 pages therefore counted as EUR 12.736 at the
-standard EUR 0.004/page estimate while Mistral's console reported EUR 0.96 of
-subscription usage.
+2026 production window, 3,184 pages therefore initially counted as EUR 12.736
+because a USD 0.004/page list price had been mislabeled as the EUR account
+currency. Mistral's console first reported EUR 0.96, then advanced to EUR
+10.91 for the same purchases while the worker was stopped. The first display
+was incomplete provider reporting, not a discount. The later snapshot left
+EUR 1.84 of the EUR 12.75 allowance. List-price currency and account billing
+currency must be modeled separately with explicit exchange-rate provenance;
+a manual provider snapshot remains the authoritative allowance baseline in the
+meantime.
 
 These are different accounting facts and remain separate. Settled reservations
 retain their list-price estimate; an operator must not rewrite them to
@@ -372,5 +378,7 @@ recording a new snapshot releases quota-delayed jobs for recomputation.
 The manual flow requires `confirm=true` and is available in the management
 quota console. Set `coverage_through` only as late as the provider display is
 known to include: an optimistic cutoff could omit a purchase during provider
-reporting lag. Automated snapshots would still require a dedicated Mistral
-Admin API key rather than the inference key.
+reporting lag. Treat a fresh dashboard reading as provisional and append a
+later monotonic observation when the provider finishes reporting; never infer
+a stable per-page rate from an early value. Automated snapshots would still
+require a dedicated Mistral Admin API key rather than the inference key.

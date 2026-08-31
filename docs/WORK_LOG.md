@@ -27,12 +27,16 @@
   completion.
 - **Production:** Commit `6dfc045` passed GitHub Actions and its server image
   was deployed on Citadel at manifest `sha256:65d348adbf...` after a successful
-  quiesced recovery snapshot. The confirmed EUR 0.96 Mistral observation was
+  quiesced recovery snapshot. The initial EUR 0.96 Mistral observation was
   recorded as `quse_04e5e6fc3ee34434a9df`, covering all purchases through the
   last settled reservation. It superseded the active estimate-based policy
   with `qpol_5d74656af3d60dff0a69`, retained the EUR 12.75 billed limit, removed
   the estimate ceiling from the active/future schedule, and released 25 quota
-  delays. SQLite `quick_check` is `ok`, public health is green, and there are no
+  delays. While the Mistral worker remained stopped, the console advanced to
+  EUR 10.91 for the same 17 requests / 3,184 pages. A second immutable snapshot,
+  `quse_bf6fb86c5ec0b7b28138`, supersedes the incomplete reading and leaves EUR
+  1.84 available. No newer purchase was folded into its unchanged coverage
+  cutoff. SQLite `quick_check` is `ok`, public health is green, and there are no
   processing jobs or unsettled Mistral reservations.
 - **Credential incident:** The Ansible `systemd_service` stop result included
   systemd's complete `ExecStart` field, which exposed both the Mistral inference
@@ -44,15 +48,15 @@
 
 ## 2026-08-31 (Mistral Console/Quota Discrepancy Diagnosis)
 
-- **Finding:** BlobForge blocked the next Mistral jobs because all 17 committed
+- **Initial finding:** BlobForge blocked the next Mistral jobs because all 17 committed
   reservations have unknown provider billing. Its conservative fallback counts
   3,184 pages at the configured standard list price of EUR 0.004/page: EUR
-  12.736 against the EUR 12.75 allowance. Mistral's admin console instead shows
-  EUR 0.96. That value is provider-reported subscription usage, which the OCR
-  response does not return; it is not evidence that BlobForge purchased only
-  240 pages. The observed ratio is exactly EUR 0.0003/page after console
-  rounding, but its cause must not be inferred as a stable price without the
-  provider billing record.
+  12.736 against the EUR 12.75 allowance. Mistral's admin console initially
+  showed EUR 0.96. The inference that this reflected a discounted subscription
+  rate was disproved when the console advanced to EUR 10.91 while the worker
+  was stopped. This was reporting lag. The later total is also consistent with
+  converting the USD 12.736 list exposure into EUR, revealing that the
+  configured estimate had incorrectly treated USD and EUR as interchangeable.
 - **Provider check:** Read-only requests from the hosted worker to Mistral's
   billing usage and spend-limit endpoints both returned HTTP 401. The deployed
   inference key is intentionally not an Admin API key, which Mistral requires
@@ -75,6 +79,13 @@
   console observations must be explicitly audited when the account cannot
   create Admin API keys. Because the provider does not document endpoint-level
   read-only scoping, never expose this credential to conversion adapters.
+- **Reconciliation:** Submitted the later EUR 10.91 console reading through the
+  confirmed admin endpoint with the same last-settled coverage cutoff. The
+  monotonic update created `quse_bf6fb86c5ec0b7b28138`; it did not replace the
+  policy or release jobs again. A sanitized production check verified EUR
+  10.91 effective usage, EUR 12.75 limit, no unsettled Mistral reservations,
+  zero processing jobs, inactive Mistral worker, active coordinator/Datalab,
+  and SQLite `quick_check=ok`.
 - **Tools:** `rg`, `sed`, Ansible, Podman, read-only SQLite/Python probes, and
   Mistral's official pricing, OCR, subscription, and Admin API documentation.
 

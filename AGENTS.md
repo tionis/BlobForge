@@ -38,6 +38,17 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Mistral's console advanced from EUR 0.96 to EUR 10.91 for
+  the same 17 requests / 3,184 pages while the hosted worker was stopped. The
+  first value was incomplete provider reporting, not a stable subscription
+  discount. The later immutable snapshot supersedes it, leaves EUR 1.84 of the
+  EUR 12.75 allowance, and preserves both observations. A provider snapshot is
+  provisional until reporting lag has elapsed; advance it monotonically and
+  never infer a per-page rate from an early dashboard value. The EUR 10.91
+  total is consistent with conversion of the USD 12.736 list estimate, which
+  exposes a separate modeling flaw: provider list-price currency and account
+  billing currency need explicit FX provenance and must not be conflated.
+
 - **2026-08-31:** Never use Ansible's `systemd_service` module for runtime
   state changes on Quadlets that place credentials directly in `ExecStart`:
   its verbose result can return the entire unit status, including plaintext
