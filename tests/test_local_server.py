@@ -40,6 +40,7 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
         client_token="client-secret",
         worker_tokens={"pdf-worker": "worker-secret"},
         lease_seconds=60,
+        public_url="https://blobforge.example",
     ))
     client_headers = {"Authorization": "Bearer client-secret"}
     worker_headers = {"Authorization": "Bearer worker-secret"}
@@ -60,6 +61,7 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
             headers=client_headers,
             json={"digest_algorithm": "sha256", "media_type": "application/pdf"},
         )).json()
+        assert transfer["url"].startswith("https://blobforge.example/")
         uploaded = await client.put(transfer["url"], content=source)
         assert uploaded.status_code == 200
 
@@ -97,6 +99,7 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
             },
         )).json()["job"]
         assert claim["hash"] == source_hash
+        assert claim["input"]["url"].startswith("http://testserver/")
         assert (await client.get(claim["input"]["url"])).content == source
 
         artifact = _zip_bytes()
@@ -105,6 +108,7 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
             headers=worker_headers,
             json={"worker_id": "pdf-worker", "lease_token": claim["lease_token"]},
         )).json()
+        assert output_transfer["url"].startswith("http://testserver/")
         assert (await client.put(output_transfer["url"], content=artifact)).status_code == 200
         completed = await client.post(
             f"/api/v1/jobs/{source_hash}/complete",

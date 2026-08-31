@@ -70,6 +70,11 @@ A source job is not charged merely because it was leased. The worker first
 downloads and locally preflights it:
 
 1. The normal capability-aware claim creates a fenced job lease.
+   Worker-only source, parent-artifact, and output capability URLs use the
+   coordinator URL on which the worker made its request, rather than routing
+   through public ingress. A transient signed-input network failure releases
+   the lease and waits before reclaiming; it occurs before provider preflight
+   and must not consume a conversion retry.
 2. The adapter probe computes the provider request/checkpoint identity, page
    count, estimated list price, and whether a durable successful response is
    already cached. It performs no network request.
@@ -198,6 +203,7 @@ rather than rewriting the policy that authorized historical purchases.
 | local budget exhausted | none | defer until reset or bounded override |
 | provider `429` before purchase | release | defer account using `Retry-After` |
 | provider success checkpointed | commit | package; retry later from cache if needed |
+| signed input transfer network unavailable | none | release lease and retry later without consuming conversion retries |
 | timeout with unknown provider outcome | ambiguous | stop automatic repurchase and reconcile |
 | packaging/upload failure after provider success | commit | retry from durable cache |
 | invalid/expired override | none | remain quota-deferred |

@@ -38,6 +38,15 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Worker-only source, parent-artifact, and output capability
+  URLs must use the internal coordinator request origin, not the configured
+  public browser origin. A transient public-route outage caused multiple input
+  downloads to fail before provider preflight and incorrectly consumed retries.
+  Signed-input `URLError` is now `CoordinatorTransferUnavailable`: workers
+  release the lease, defer with backoff, and never call the conversion-failure
+  endpoint. Local filesystem `OSError` remains a real failure. Admin/browser
+  transfer URLs remain public.
+
 - **2026-08-31:** The Storypath production incident is closed. Hosted image
   `sha256:4579d53d...` from revision `cad2fb3` was deployed through a
   queue-preserving idle drain. The retry resumed original reservation

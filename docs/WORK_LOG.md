@@ -58,11 +58,27 @@
 - **Recovery gate:** Publish and deploy the resulting hosted-worker image, then
   retry the failed source through the normal quota probe. Do not bypass the
   existing page and monthly spend ceilings.
-- **Production recovery:** The corrected evaluator was deployed and the source
-  was retried without resetting its first failure or changing its `4_low`
-  priority. It passed encrypted-PDF preflight, then encountered a provider 429;
-  the shared cooldown returned it to `todo` without another retry increment or
-  charged reservation. Normal scheduling will resume it after the cooldown.
+- **Production recovery:** The corrected evaluator was deployed and its exact
+  environment can read the local 436-page source. The production retry retained
+  `4_low` priority and failure history, but a simultaneous signed-input network
+  outage occurred before the repaired preflight could execute. That exposed a
+  separate worker retry-accounting defect addressed below.
+
+## 2026-08-31 (Hosted Signed-Transfer Network Failure)
+
+- **Incident:** A brief Citadel network outage made the worker unable to reach
+  public signed source URLs. Several jobs failed before provider preflight and
+  incorrectly consumed conversion retries, including Cthulhu attempt 2. No
+  provider reservation or purchase existed for those attempts.
+- **Correction:** Worker claim and output capability URLs now retain the
+  internal coordinator request origin; browser/admin transfers continue to use
+  the configured public origin. `CoordinatorTransferUnavailable` distinguishes
+  signed-input network failures from local I/O faults. Recipe workers release
+  those leases, mark the outcome deferred, and wait before reclaiming instead
+  of recording a conversion failure.
+- **Verification:** Focused client, worker, and local-server tests cover network
+  classification, retry-free lease release, deferred-loop backoff, public admin
+  URLs, and internal worker source/artifact/output URLs.
 
 ## 2026-08-31 (Administrative CLI Intake)
 

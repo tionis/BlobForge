@@ -22,7 +22,7 @@ from .converters import (
     probe_provider,
     run_converter,
 )
-from .coordinator_client import CoordinatorClient
+from .coordinator_client import CoordinatorClient, CoordinatorTransferUnavailable
 from .recipe_runtime import AdapterRecipe
 from .reprocessing import ReprocessResult, reprocess_mdaf
 
@@ -213,7 +213,18 @@ class RecipeWorker:
                     "parent.mdaf" if input_kind == "artifact" else f"source{recipe.input_suffix}"
                 )
                 artifact = root / "artifact.mdaf"
-                self.coordinator.download_job_input(job, str(source))
+                try:
+                    self.coordinator.download_job_input(job, str(source))
+                except CoordinatorTransferUnavailable as exc:
+                    self.coordinator.release(
+                        source_key,
+                        worker_id=self.worker_id,
+                        lease_token=lease,
+                        reason="source transfer network unavailable",
+                    )
+                    return JobOutcome(
+                        True, source_key, digest, None, str(exc), True
+                    )
                 if input_kind == "source" and recipe.provider_account is not None:
                     self.coordinator.heartbeat(
                         source_key,
@@ -457,7 +468,11 @@ class RecipeWorker:
                 outcome = self.process_once()
                 if run_once and outcome.claimed:
                     return 0 if outcome.success or outcome.deferred else 1
-                if not outcome.claimed:
+                if outcome.deferred:
+                    if run_once:
+                        return 0
+                    self.stop_event.wait(idle_sleep)
+                elif not outcome.claimed:
                     if run_once:
                         return 0
                     self.stop_event.wait(idle_sleep)

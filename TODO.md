@@ -142,6 +142,9 @@ view; detailed research tasks remain in the sections below.
 - [x] Deploy both hosted-worker repairs, recover Storypath from its original
   paid checkpoint without repurchase, and requeue the encrypted Cthulhu source
   under normal rate-limit and quota controls.
+- [x] Keep worker-only signed transfers on the internal coordinator origin and
+  release transient input-network failures without consuming conversion
+  retries; requeue production jobs affected by the observed outage.
 - [ ] Add an evidence-backed Docling table-screenshot suppression fixture;
   screenshots may remain secondary evidence but not duplicate primary tables.
 - [x] Complete the decision-sufficient blinded Mistral-wiki/Datalab-wiki

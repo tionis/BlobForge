@@ -1,9 +1,14 @@
 import json
+import urllib.error
 from unittest.mock import patch
 
 import pytest
 
-from blobforge.coordinator_client import CoordinatorClient, CoordinatorError
+from blobforge.coordinator_client import (
+    CoordinatorClient,
+    CoordinatorError,
+    CoordinatorTransferUnavailable,
+)
 
 
 class FakeResponse:
@@ -147,6 +152,19 @@ def test_input_download_streams_signed_url_to_disk(tmp_path):
 
     assert target.read_bytes() == b"%PDF signed content"
     assert opened.call_args.args[0].full_url == "https://s3.example/raw.pdf?signed=yes"
+
+
+def test_input_download_classifies_network_unavailability(tmp_path):
+    client = CoordinatorClient("https://coord.example", "bfw_worker-token")
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError(OSError(101, "Network is unreachable")),
+    ):
+        with pytest.raises(CoordinatorTransferUnavailable, match="Network is unreachable"):
+            client.download_job_input(
+                {"input": {"url": "https://coord.example/signed-source"}},
+                str(tmp_path / "source.pdf"),
+            )
 
 
 def test_bulk_status_uses_single_request_and_dedupes_hashes():

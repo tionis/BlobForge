@@ -190,11 +190,21 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         finally:
             alias.unlink(missing_ok=True)
 
-    def capability_url(request: Request, method: str, scope: str, subject: str, path: str, extra: dict[str, str] | None = None) -> str:
+    def capability_url(
+        request: Request,
+        method: str,
+        scope: str,
+        subject: str,
+        path: str,
+        extra: dict[str, str] | None = None,
+        *,
+        internal: bool = False,
+    ) -> str:
         expires, signature = signer.issue(method, scope, subject)
         query = {"expires": str(expires), "signature": signature}
         query.update(extra or {})
-        return f"{base_url(request)}{path}?{urlencode(query)}"
+        origin = str(request.base_url).rstrip("/") if internal else base_url(request)
+        return f"{origin}{path}?{urlencode(query)}"
 
     def verify_capability(request: Request, method: str, scope: str, subject: str) -> None:
         try:
@@ -785,6 +795,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                         "artifact",
                         subject,
                         f"/api/v1/transfers/artifacts/{artifact['id']}",
+                        internal=True,
                     ),
                 }
             else:
@@ -803,6 +814,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                             "digest": job["digest"],
                             "media_type": job["media_type"],
                         },
+                        internal=True,
                     ),
                 }
         return {"job": job, "config": runtime_config()}
@@ -843,7 +855,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         worker_id = str(authorize(request, worker=True)); body = await request.json(); lease = str(body.get("lease_token"))
         if not database.lease_valid(key, worker_id, lease): raise Conflict("lease is missing, expired, or owned by another worker")
         subject = f"{key}|{worker_id}|{lease}"
-        return {"url": capability_url(request, "PUT", "output", subject, f"/api/v1/transfers/outputs/{key}", {"worker_id": worker_id, "lease_token": lease}), "headers": {"Content-Type": "application/zip"}}
+        return {"url": capability_url(request, "PUT", "output", subject, f"/api/v1/transfers/outputs/{key}", {"worker_id": worker_id, "lease_token": lease}, internal=True), "headers": {"Content-Type": "application/zip"}}
 
     @app.put("/api/v1/transfers/outputs/{key}")
     async def put_output(key: str, request: Request) -> dict[str, Any]:

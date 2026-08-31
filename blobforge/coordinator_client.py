@@ -25,6 +25,10 @@ class CoordinatorError(RuntimeError):
         self.status = status
 
 
+class CoordinatorTransferUnavailable(CoordinatorError):
+    """A signed byte transfer failed because its network path was unavailable."""
+
+
 class CoordinatorClient:
     """Small dependency-free client for workers, ingestion, and CLI reads."""
 
@@ -464,7 +468,11 @@ class CoordinatorClient:
             )
             with urllib.request.urlopen(request, timeout=self.timeout) as response, open(local_path, "wb") as target:
                 shutil.copyfileobj(response, target, length=1024 * 1024)
-        except (urllib.error.URLError, OSError) as exc:
+        except urllib.error.URLError as exc:
+            raise CoordinatorTransferUnavailable(
+                f"Input download failed: {exc}"
+            ) from exc
+        except OSError as exc:
             raise CoordinatorError(f"Input download failed: {exc}") from exc
 
     def upload_job_output(

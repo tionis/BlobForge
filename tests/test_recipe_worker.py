@@ -11,6 +11,7 @@ from blobforge.converters import (
     ConverterRunResult,
     ProviderProbe,
 )
+from blobforge.coordinator_client import CoordinatorTransferUnavailable
 from blobforge.recipe_runtime import (
     AdapterRecipe,
     datalab_wiki_v1_recipe,
@@ -124,6 +125,27 @@ def test_worker_advertises_and_dispatches_alternating_media_recipes(tmp_path):
     assert first_result["logical_identity"] == "identity-audio-v1"
     assert first_result["converter_backend"] == "backend-audio-v1"
     assert first_result["artifact_type"] == "mdaf/v1"
+
+
+def test_source_transfer_outage_releases_without_consuming_retry():
+    recipe = _recipe("pdf-v1", "application/pdf")
+
+    class UnavailableCoordinator(FakeCoordinator):
+        def download_job_input(self, job, path):
+            raise CoordinatorTransferUnavailable(
+                "Input download failed: network is unreachable"
+            )
+
+    coordinator = UnavailableCoordinator(
+        [_job("transfer-outage", recipe, "application/pdf")]
+    )
+    worker = RecipeWorker(coordinator, [recipe], heartbeat_interval=3600)
+    worker.register()
+    outcome = worker.process_once()
+    assert outcome.deferred
+    assert outcome.success is None
+    assert coordinator.released[0][0] == "transfer-outage"
+    assert coordinator.failed == []
 
 
 def test_worker_stop_event_prevents_claim_and_deregisters_without_idle_delay():
