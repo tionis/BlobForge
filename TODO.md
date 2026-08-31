@@ -145,7 +145,7 @@ view; detailed research tasks remain in the sections below.
 - [x] Keep worker-only signed transfers on the internal coordinator origin and
   release transient input-network failures without consuming conversion
   retries; requeue production jobs affected by the observed outage.
-- [ ] Deploy allowance-preserving quota-boundary realignment, then move Mistral
+- [x] Deploy allowance-preserving quota-boundary realignment, then move Mistral
   and Datalab from day 28/Europe-Berlin to day 1/UTC calendar-month resets. Verify the
   current Mistral window still counts EUR 12.736 of EUR 12.75 and that the next
   window begins at 2026-09-01 00:00 UTC / 02:00 CEST.

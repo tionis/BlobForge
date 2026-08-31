@@ -22,10 +22,20 @@
 - **Implementation:** Added policy supersession persistence, authorization and
   summary semantics, HTTP 409 conflict handling, calendar-month UI defaults,
   one-time release of stale quota delays, and focused tests for preserved
-  usage, exact defer time, and rollback of an unsafe realignment. The first
-  coordinator build was deployed to add the schema before configuration; the
-  production schedules remain day 28 until the delay-recomputation build is
-  deployed and the API realignment is audited.
+  usage, exact defer time, and rollback of an unsafe realignment. The complete
+  hermetic suite passes 320 tests plus 5 subtests.
+- **Production cutover:** Coordinator revision `f7968ef` is deployed at
+  manifest
+  `sha256:9b277ee84a8a19de92d3320a1d107e8899e2f504b4f1ab78ce1511d23234f390`.
+  The audited API realignment changed both recurring accounts to day 1 in
+  `UTC`, retained their original Aug-28 policies with supersession links, and
+  created active Aug-1-to-Sep-1 replacements. Mistral carried forward exactly
+  EUR 12.736 of EUR 12.75 estimated/list exposure, leaving EUR 0.014 and no
+  unsettled attempt. Its stale Sep-28 quota delays were released and subsequent
+  probes can defer to 2026-09-01 00:00 UTC without consuming retries. Datalab's
+  recurring USD 20 window remains unused and has no assigned jobs; the separate
+  USD 0.07 canary ledger remains unchanged. No job recipe was silently changed
+  merely to consume expiring allowance.
 
 ## 2026-08-31 (Mistral Degenerate-Table Packaging Failure)
 

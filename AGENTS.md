@@ -49,8 +49,12 @@ The virtual environment is located at `.venv/` and should be activated automatic
   replacement window that covers the old window's elapsed portion, and reject
   weaker replacement limits. Realignment must also release stale quota-delayed
   jobs once so they recompute the replacement boundary without consuming a
-  retry. Both production schedules still need final deployment and conversion
-  from day 28/Europe-Berlin to day 1/UTC.
+  retry. Coordinator revision `f7968ef` is deployed at manifest
+  `sha256:9b277ee84a...`; both recurring schedules are now day 1/UTC, and the
+  prior day-28 policies remain linked superseded audit records. Mistral carried
+  exactly EUR 12.736 into the replacement window, leaving EUR 0.014 with no
+  unsettled attempt. Datalab's recurring USD 20 window is unused but has no
+  assigned jobs; never silently change recipes just to consume expiring quota.
 
 - **2026-08-31:** Revision `26d0728` is deployed on Citadel as coordinator
   manifest `sha256:35e9f25a...` and hosted-worker manifest
