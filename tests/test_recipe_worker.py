@@ -15,6 +15,7 @@ from blobforge.coordinator_client import CoordinatorTransferUnavailable
 from blobforge.recipe_runtime import (
     AdapterRecipe,
     datalab_wiki_v1_recipe,
+    marker1_enriched_v1_recipe,
     mistral_wiki_v3_recipe,
 )
 from blobforge.recipe_worker import RecipeWorker
@@ -33,6 +34,21 @@ def _recipe(digest, media_type):
         parameters={"recipe_digest": digest},
         environment={},
         deployment_status="test",
+    )
+
+
+def test_marker1_enriched_runtime_is_explicit_assignment_and_lifecycle_recipe():
+    runtime = marker1_enriched_v1_recipe()
+
+    assert runtime.backend == "marker-pdf-enriched"
+    assert runtime.claim_unassigned is False
+    assert runtime.input_kinds == ("source",)
+    assert runtime.parameters["recipe_digest"] == runtime.recipe_digest
+    assert runtime.recipe["lifecycle"]["extraction"]["recipe_digest"] == (
+        runtime.recipe["base_recipe"]["digest"]
+    )
+    assert runtime.recipe["pdf_enrichment"]["base_recipe"] == (
+        "pdf-enrichment-v1.json"
     )
 
 

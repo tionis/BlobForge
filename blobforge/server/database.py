@@ -464,13 +464,134 @@ class Database:
         with self.connect() as db:
             rows = list(db.execute(f"""SELECT worker_id,hostname,status,current_job,last_seen,
                 created_at,revoked,managed_by,metadata_json FROM workers {clause} ORDER BY revoked,worker_id"""))
-        result = []
-        for row in rows:
-            value = dict(row)
-            value["revoked"] = bool(value["revoked"])
-            value["metadata"] = json.loads(value.pop("metadata_json") or "{}")
-            result.append(value)
+            result = []
+            timestamp = now_ms()
+            for row in rows:
+                value = dict(row)
+                value["revoked"] = bool(value["revoked"])
+                value["metadata"] = json.loads(value.pop("metadata_json") or "{}")
+                capabilities = [
+                    dict(item)
+                    for item in db.execute(
+                        """SELECT wr.recipe_digest,wr.provider_account,wr.provider,
+                        wr.claim_unassigned,r.backend,r.media_types_json,r.input_kinds_json
+                        FROM worker_recipes wr JOIN recipes r USING(recipe_digest)
+                        WHERE wr.worker_id=? ORDER BY r.backend,wr.recipe_digest""",
+                        (value["worker_id"],),
+                    )
+                ]
+                for capability in capabilities:
+                    capability["claim_unassigned"] = bool(
+                        capability["claim_unassigned"]
+                    )
+                    capability["media_types"] = json.loads(
+                        capability.pop("media_types_json")
+                    )
+                    capability["input_kinds"] = json.loads(
+                        capability.pop("input_kinds_json")
+                    )
+                value["capabilities"] = capabilities
+                value["availability"] = self._worker_availability(
+                    db, value, capabilities, timestamp
+                )
+                result.append(value)
         return result
+
+    @staticmethod
+    def _worker_availability(
+        db: sqlite3.Connection,
+        worker: Mapping[str, Any],
+        capabilities: list[Mapping[str, Any]],
+        timestamp: int,
+    ) -> dict[str, Any]:
+        if worker["revoked"]:
+            return {"state": "revoked", "detail": "Credential revoked"}
+        if worker["status"] == "offline":
+            return {"state": "offline", "detail": "Worker is not connected"}
+        if worker.get("current_job") or worker["status"] in {"working", "processing"}:
+            return {"state": "working", "detail": "Processing a job"}
+        account_keys = sorted(
+            {
+                str(item["provider_account"])
+                for item in capabilities
+                if item.get("provider_account")
+            }
+        )
+        for account_key in account_keys:
+            account = db.execute(
+                """SELECT enabled,cooldown_until,cooldown_reason FROM provider_accounts
+                WHERE account_key=?""",
+                (account_key,),
+            ).fetchone()
+            if account and not account["enabled"]:
+                return {
+                    "state": "provider-disabled",
+                    "detail": f"Provider account {account_key} is disabled",
+                }
+            if account and int(account["cooldown_until"] or 0) > timestamp:
+                return {
+                    "state": "provider-cooldown",
+                    "detail": str(account["cooldown_reason"] or "Provider cooldown"),
+                    "until": int(account["cooldown_until"]),
+                }
+        if not capabilities:
+            return {"state": "idle", "detail": "No capabilities advertised"}
+        predicates: list[str] = []
+        parameters: list[Any] = []
+        for capability in capabilities:
+            media_types = list(capability["media_types"])
+            input_kinds = list(capability["input_kinds"])
+            media_placeholders = ",".join("?" for _ in media_types)
+            input_placeholders = ",".join("?" for _ in input_kinds)
+            recipe_clause = (
+                "(j.recipe_digest IS NULL OR j.recipe_digest=?)"
+                if capability["claim_unassigned"]
+                else "j.recipe_digest=?"
+            )
+            predicates.append(
+                f"(s.media_type IN ({media_placeholders}) "
+                f"AND j.input_kind IN ({input_placeholders}) "
+                f"AND {recipe_clause})"
+            )
+            parameters.extend(media_types)
+            parameters.extend(input_kinds)
+            parameters.append(str(capability["recipe_digest"]))
+        pending = list(
+            db.execute(
+                f"""SELECT j.not_before,j.blocked_reason FROM jobs j
+                JOIN sources s USING(source_key) WHERE j.status='todo'
+                AND ({' OR '.join(predicates)})""",
+                parameters,
+            )
+        )
+        ready = [
+            row for row in pending if row["not_before"] is None or int(row["not_before"]) <= timestamp
+        ]
+        if ready:
+            return {
+                "state": "accepting",
+                "detail": f"{len(ready)} assigned job{'s' if len(ready) != 1 else ''} ready",
+            }
+        if pending:
+            reasons = [str(row["blocked_reason"] or "") for row in pending]
+            quota_blocked = all(
+                reason == "quota"
+                or '"kind": "quota"' in reason
+                or "quota policy" in reason.lower()
+                or "quota exhausted" in reason.lower()
+                for reason in reasons
+            )
+            until_values = [int(row["not_before"]) for row in pending if row["not_before"]]
+            return {
+                "state": "quota-exhausted" if quota_blocked else "deferred",
+                "detail": (
+                    f"All {len(pending)} assigned jobs are quota-delayed"
+                    if quota_blocked
+                    else f"All {len(pending)} assigned jobs are deferred"
+                ),
+                **({"until": min(until_values)} if until_values else {}),
+            }
+        return {"state": "idle", "detail": "Waiting for an assigned job"}
 
     def create_admin_token(self, label: str, expires_at: int | None = None) -> dict[str, Any]:
         identifier = secrets.token_hex(8)
@@ -1944,6 +2065,63 @@ class Database:
                 result.append(value)
         return result
 
+    def install_recipe(
+        self,
+        *,
+        digest: str,
+        backend: str,
+        recipe: Mapping[str, Any],
+        media_types: list[str],
+        artifact_type: str = "mdaf/v1",
+        input_kinds: list[str] | None = None,
+        display_name: str = "",
+        notes: str = "",
+    ) -> None:
+        """Install a coordinator-known immutable recipe without requiring a live worker."""
+        timestamp = now_ms()
+        with self.transaction() as db:
+            db.execute(
+                """INSERT INTO recipes(recipe_digest,backend,recipe_json,media_types_json,
+                artifact_type,last_seen,input_kinds_json,display_name,notes)
+                VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(recipe_digest) DO UPDATE SET
+                backend=excluded.backend,recipe_json=excluded.recipe_json,
+                media_types_json=excluded.media_types_json,artifact_type=excluded.artifact_type,
+                input_kinds_json=excluded.input_kinds_json,last_seen=excluded.last_seen""",
+                (
+                    digest,
+                    backend,
+                    json.dumps(recipe, sort_keys=True),
+                    json.dumps(sorted(set(media_types))),
+                    artifact_type,
+                    timestamp,
+                    json.dumps(sorted(set(input_kinds or ["source"]))),
+                    display_name,
+                    notes,
+                ),
+            )
+
+    def assign_unconverted_legacy_jobs(self, recipe_digest: str) -> int:
+        """Bind unassigned raw-only legacy imports without rewriting completed lineage."""
+        timestamp = now_ms()
+        with self.transaction() as db:
+            changed = db.execute(
+                """UPDATE jobs SET recipe_digest=?,recipe_json=NULL,updated_at=?
+                WHERE recipe_digest IS NULL AND input_kind='source'
+                AND status IN ('todo','failed','dead')
+                AND EXISTS (
+                    SELECT 1 FROM sources s WHERE s.source_key=jobs.source_key
+                    AND s.media_type='application/pdf'
+                )
+                AND EXISTS (
+                    SELECT 1 FROM json_each(jobs.tags_json) WHERE value='legacy-import'
+                )
+                AND EXISTS (
+                    SELECT 1 FROM json_each(jobs.tags_json) WHERE value='metadata-unavailable'
+                )""",
+                (recipe_digest, timestamp),
+            ).rowcount
+        return int(changed)
+
     def resolve_backend(self, backend: str, media_type: str) -> str:
         matches = [item for item in self.recipes(media_type) if item["backend"] == backend.lower() and item["worker_count"] and item["enabled"]]
         if not matches:
@@ -1994,6 +2172,7 @@ class Database:
 
     def list_jobs(
         self, *, search: str = "", status: str = "", priority: str = "", media_type: str = "",
+        recipe_digest: str = "",
         limit: int = 50, offset: int = 0,
     ) -> dict[str, Any]:
         conditions: list[str] = []
@@ -2008,6 +2187,10 @@ class Database:
             conditions.append("j.priority=?"); params.append(priority)
         if media_type:
             conditions.append("s.media_type=?"); params.append(media_type)
+        if recipe_digest == "unassigned":
+            conditions.append("j.recipe_digest IS NULL")
+        elif recipe_digest:
+            conditions.append("j.recipe_digest=?"); params.append(recipe_digest)
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         with self.connect() as db:
             total = int(db.execute(f"SELECT COUNT(*) FROM jobs j JOIN sources s USING(source_key) {where}", params).fetchone()[0])

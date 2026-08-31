@@ -8,16 +8,28 @@ objects administrators operate:
 
 - **Overview** shows queue state, priority distribution, worker availability,
   and recent administrative audit events.
-- **Jobs** is a paginated library with name/hash/path/tag search and state or
-  priority filters. Administrators can stream-upload a source, change its
+- **Jobs** is a paginated library with name/hash/path/tag search and state,
+  priority, or exact-recipe filters (including an explicit unassigned view).
+  Artifact cards put the legacy qualifier and human recipe label before a
+  compact, tooltip-backed digest so provenance remains readable at narrow
+  dialog widths. Administrators can stream-upload a source, change its
   priority, inspect failure history and artifacts, download source/output
   bytes, release and requeue active work, retry failures with or without
   resetting attempts, request an exact conversion recipe, and delete a job.
-- **Workers** creates one credential per worker identity and lists runtime
-  state. Dynamically enrolled credentials can be rotated or revoked.
+- **Workers** creates one credential per worker identity and lists both the
+  heartbeat status and coordinator-derived availability. Availability
+  distinguishes active work, ready assigned work, idle capacity, provider
+  cooldown/disablement, generic deferral, and the case where every assigned
+  job is quota-delayed. Status and availability use consistent semantic color
+  coding. Dynamically enrolled credentials can be rotated or revoked.
 - **Recipes** explains and manages converter output identities. Administrators
   may attach a display name and notes or retire/reactivate a recipe.
 - **Access** creates and revokes automation administrator tokens.
+
+Immutable quota-window history remains visible after replacement. Superseded
+rows have a distinct background and badge and show the replacement policy,
+supersession timestamp, and recorded reason rather than looking like ordinary
+inactive windows.
 
 OpenAPI remains available from the sidebar for integration work. The old
 **Snapshot JSON** link was a raw diagnostics endpoint and is intentionally not
@@ -86,7 +98,10 @@ installation and runtime isolation remain worker-host responsibilities.
 
 ## Recipes are immutable output identities
 
-A recipe is created when a worker advertises a capability. Its digest binds the
+A recipe is normally created when a worker advertises a capability. The
+coordinator also installs a small set of built-in immutable recipes that must
+be selectable before their workers come online; currently this includes the
+Marker 1.10.2 plus PDF-enrichment recipe. Its digest binds the
 canonical output-affecting converter configuration. Editing that canonical
 configuration in the console would break reproducibility, so the UI only edits
 operator metadata (`display_name`, `notes`) and `enabled` state. Retiring a

@@ -30,6 +30,7 @@ from .scim import create_scim_router
 from ..routing import RoutingFeatures, route_pdf
 from ..mdaf import canonical_json_bytes, validate_mdaf
 from ..recipe_lifecycle import RECIPE_MEMBER_PATH, recipe_digest
+from ..recipe_runtime import marker1_enriched_v1_recipe
 
 
 PRIORITIES = {"1_urgent", "2_high", "3_normal", "4_low"}
@@ -99,6 +100,30 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         lease_seconds=settings.lease_seconds,
         max_retries=settings.max_retries,
     )
+    marker_recipe = marker1_enriched_v1_recipe()
+    database.install_recipe(
+        digest=marker_recipe.recipe_digest,
+        backend=marker_recipe.backend,
+        recipe=marker_recipe.recipe,
+        media_types=list(marker_recipe.media_types),
+        artifact_type=marker_recipe.artifact_type,
+        input_kinds=list(marker_recipe.input_kinds),
+        display_name="Marker 1.10.2 + PDF enrichment",
+        notes=(
+            "Local born-digital PDF recipe; pinned Marker 1 extraction followed by "
+            "pdf-enrichment/v1 source mapping."
+        ),
+    )
+    assigned_legacy_jobs = database.assign_unconverted_legacy_jobs(
+        marker_recipe.recipe_digest
+    )
+    if assigned_legacy_jobs:
+        database.audit(
+            "system:migration",
+            "jobs.legacy-recipe-assignment",
+            marker_recipe.recipe_digest,
+            {"assigned": assigned_legacy_jobs},
+        )
     database.bootstrap_workers(settings.worker_tokens)
     storage = LocalStorage(settings.data_dir)
     signer = CapabilitySigner(settings.data_dir / "capability.key", settings.capability_ttl_seconds)
@@ -346,14 +371,23 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     @app.get("/api/v1/admin/jobs")
     async def admin_jobs(request: Request, search: str = "", status: str = "", priority: str = "",
-                         media_type: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+                         media_type: str = "", recipe_digest: str = "",
+                         limit: int = 50, offset: int = 0) -> dict[str, Any]:
         authorize(request, roles={"admin"})
         if status and status not in {"todo", "processing", "failed", "dead", "done"}:
             raise HTTPException(400, "unsupported job status")
         if priority and priority not in PRIORITIES:
             raise HTTPException(400, "unsupported priority")
         return database.list_jobs(search=search[:200], status=status, priority=priority,
-                                  media_type=media_type[:120], limit=max(1, min(limit, 200)), offset=max(0, offset))
+                                  media_type=media_type[:120],
+                                  recipe_digest=(
+                                      recipe_digest
+                                      if recipe_digest == "unassigned"
+                                      else _recipe_identifier(recipe_digest)
+                                      if recipe_digest
+                                      else ""
+                                  ),
+                                  limit=max(1, min(limit, 200)), offset=max(0, offset))
 
     @app.post("/api/v1/admin/uploads")
     async def admin_upload(request: Request, filename: str, media_type: str = "application/octet-stream",

@@ -8,6 +8,11 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 
+from blobforge.enrichment.align import (
+    align_markdown_to_pdf,
+    validate_alignment_publication,
+)
+from blobforge.enrichment.pdf import extract_pdf_evidence
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
@@ -95,9 +100,31 @@ def main() -> int:
     markdown = _rewrite_assets(markdown, {Path(name).name for name in images})
     markdown, mappings = _strip_pages(markdown)
     (data / "text.md").write_text(markdown, encoding="utf-8")
+    (native / "raw.md").write_text(markdown, encoding="utf-8")
     marker_meta = _extract_marker_meta(rendered)
     (native / "marker.json").write_text(
         json.dumps(marker_meta, ensure_ascii=False, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+    evidence = extract_pdf_evidence(source)
+    alignment = align_markdown_to_pdf(markdown, evidence, seed_mappings=mappings)
+    enriched_mappings = [*mappings, *alignment.mappings]
+    publication_errors = validate_alignment_publication(
+        {"mappings": enriched_mappings}, alignment.report()
+    )
+    if publication_errors:
+        raise ValueError(
+            "Marker enrichment publication invariants failed: "
+            + "; ".join(publication_errors)
+        )
+    (native / "pdf-evidence.json").write_text(
+        json.dumps(evidence.as_json(), ensure_ascii=False, sort_keys=True, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    (native / "enrichment-report.json").write_text(
+        json.dumps(alignment.report(), ensure_ascii=False, sort_keys=True, indent=2)
+        + "\n",
         encoding="utf-8",
     )
     members = [
@@ -107,7 +134,28 @@ def main() -> int:
             "role": "rendition",
             "media_type": "application/json",
             "namespace": "com.datalab.marker",
-        }
+        },
+        {
+            "path": "renditions/com.datalab.marker/raw.md",
+            "file": "data/native/raw.md",
+            "role": "rendition",
+            "media_type": "text/markdown",
+            "namespace": "com.datalab.marker",
+        },
+        {
+            "path": "renditions/org.freedesktop.poppler/pdf-evidence.json",
+            "file": "data/native/pdf-evidence.json",
+            "role": "rendition",
+            "media_type": "application/json",
+            "namespace": "org.freedesktop.poppler",
+        },
+        {
+            "path": "extensions/dev.tionis.blobforge.pdf-enrichment/report.json",
+            "file": "data/native/enrichment-report.json",
+            "role": "extension",
+            "media_type": "application/json",
+            "namespace": "dev.tionis.blobforge.pdf-enrichment",
+        },
     ]
     for name, image in sorted(images.items()):
         safe_name = Path(name).name
@@ -124,7 +172,8 @@ def main() -> int:
             }
         )
     (data / "source-map.json").write_text(
-        json.dumps({"mappings": mappings, "references": []}, indent=2) + "\n",
+        json.dumps({"mappings": enriched_mappings, "references": []}, indent=2)
+        + "\n",
         encoding="utf-8",
     )
     bundle = {
@@ -133,6 +182,10 @@ def main() -> int:
         "source_map": "data/source-map.json",
         "members": members,
         "tool": {"name": "marker-pdf", "version": version("marker-pdf")},
+        "additional_tools": [
+            {"name": "pdftotext", "version": evidence.extractor_version},
+            {"name": "blobforge", "version": version("blobforge")},
+        ],
         "models": [
             {
                 "provider": "datalab",
@@ -140,7 +193,11 @@ def main() -> int:
                 "resolution": "mutable-alias",
             }
         ],
-        "parameters": config,
+        "parameters": {
+            **config,
+            "normalization_profile": "pdf-enrichment-v1",
+            "recipe_digest": parameters.get("recipe_digest"),
+        },
         "diagnostics": [
             {
                 "severity": "warning",

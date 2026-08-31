@@ -1,0 +1,60 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 2,
+    "name": "blobforge-marker1-adapter",
+    "version": "0.2.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "base_recipe": {
+    "digest": "blake3:621e4816ac7fdd2d730c7fbdc61b8a309cbf50f40c600e0455005bd25c63d6ee",
+    "path": "marker-1.10.2-v1.json"
+  },
+  "engine": "marker-pdf-enriched",
+  "generation": 1,
+  "lifecycle": {
+    "extraction": {
+      "expensive": true,
+      "major": 1,
+      "native_members": [
+        "renditions/com.datalab.marker/metadata.json",
+        "renditions/com.datalab.marker/raw.md"
+      ],
+      "recipe_digest": "blake3:621e4816ac7fdd2d730c7fbdc61b8a309cbf50f40c600e0455005bd25c63d6ee",
+      "replace_requires_recipe_major": true,
+      "version": "1.0.0"
+    },
+    "family": "marker-pdf-enriched",
+    "postprocessing": {
+      "generation": 1,
+      "profile": "pdf-enrichment-v1",
+      "version": "1.0.0"
+    },
+    "recipe_version": "1.0.0",
+    "upgrade": {
+      "automatic": true,
+      "from_recipe_digests": []
+    }
+  },
+  "markdown": {
+    "content": "marker-output-unchanged",
+    "offset_unit": "utf-8-byte",
+    "segmentation": "dev.tionis.blobforge/markdown-blocks-v1"
+  },
+  "pdf_enrichment": {
+    "algorithm": "dev.tionis.blobforge/poppler-anchor-bounded-word-alignment-v2",
+    "base_recipe": "pdf-enrichment-v1.json",
+    "extractor": "poppler-pdftotext-bbox-layout",
+    "extractor_version": "25.03.0",
+    "ocr": false
+  },
+  "publication": {
+    "mapping": "marker-page-seeds-plus-pdf-enrichment-v1",
+    "outline": "complete-markdown-heading-forest",
+    "unsupported_precision": "page-only"
+  },
+  "schema": "dev.tionis.blobforge.recipe/v3"
+}

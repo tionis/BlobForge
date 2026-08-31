@@ -1,0 +1,38 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 1,
+    "name": "blobforge-marker1-adapter",
+    "version": "0.1.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "engine": "marker-pdf",
+  "generation": 1,
+  "markdown": {
+    "asset_links": "sanitized-local-path-v1",
+    "page_boundaries": "marker-paginate-output-v1",
+    "provider_markdown": "otherwise-unchanged"
+  },
+  "model": {
+    "identifier": "marker-1.10.2-default-models",
+    "provider": "datalab",
+    "resolution": "mutable-alias"
+  },
+  "native_evidence": {
+    "preserve_markdown": true,
+    "preserve_metadata": true
+  },
+  "parameters": {
+    "extract_images": true,
+    "marker_pdf": "1.10.2",
+    "paginate_output": true
+  },
+  "publication": {
+    "mapping": "marker-page-boundaries-v1",
+    "unsupported_precision": "page-only"
+  },
+  "schema": "dev.tionis.blobforge.recipe/v2"
+}

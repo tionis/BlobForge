@@ -44,6 +44,36 @@ class AdapterRecipe:
         return value
 
 
+def marker1_enriched_v1_recipe(
+    *, repository: str | Path | None = None
+) -> AdapterRecipe:
+    """Build the pinned Marker 1 plus deterministic PDF-enrichment runtime."""
+    root = Path(repository or Path(__file__).resolve().parent.parent).resolve()
+    recipe_path = root / "blobforge" / "recipes" / "marker-1.10.2-enriched-v1.json"
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    adapter = root / "evaluators" / "marker1" / "adapter.py"
+    return AdapterRecipe(
+        key="marker1-enriched-v1",
+        backend="marker-pdf-enriched",
+        recipe=recipe,
+        recipe_digest=digest,
+        media_types=("application/pdf",),
+        artifact_type="mdaf/v1",
+        input_suffix=".pdf",
+        command=("uv", "run", "--project", str(adapter.parent), "python", str(adapter)),
+        parameters={
+            "extract_images": True,
+            "normalization_profile": "pdf-enrichment-v1",
+            "recipe_digest": digest,
+        },
+        environment={},
+        deployment_status="ready",
+        input_kinds=("source",),
+        claim_unassigned=False,
+    )
+
+
 def mistral_wiki_v3_recipe(
     *,
     repository: str | Path | None = None,

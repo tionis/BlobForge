@@ -18,7 +18,7 @@ from blobforge.mdaf import (
 )
 from blobforge.mdaf.builder import activity, markdown_outline
 from blobforge.recipe_lifecycle import RECIPE_MEMBER_PATH
-from blobforge.recipe_runtime import mistral_wiki_v3_recipe
+from blobforge.recipe_runtime import marker1_enriched_v1_recipe, mistral_wiki_v3_recipe
 
 
 def _zip_bytes() -> bytes:
@@ -316,7 +316,8 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert "Snapshot JSON" not in root.text
         assert "Conversion recipes" not in root.text
         assert "script-src 'self'" in root.headers["content-security-policy"]
-        assert (await client.get("/static/management-v6.js")).status_code == 200
+        assert (await client.get("/static/management-v7.js")).status_code == 200
+        assert 'id="job-recipe"' in root.text
         assert "Plan upgrades" in root.text
         assert "Record provider usage" in root.text
         assert "Provider-reported usage snapshots" in root.text
@@ -344,6 +345,18 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         )).json()
         assert listed["total"] == 1
         assert listed["jobs"][0]["original_name"] == "rulebook.pdf"
+        by_recipe = (await client.get(
+            "/api/v1/admin/jobs",
+            params={"recipe_digest": recipe_digest},
+            headers=headers,
+        )).json()
+        assert by_recipe["total"] == 1
+        unassigned = (await client.get(
+            "/api/v1/admin/jobs",
+            params={"recipe_digest": "unassigned"},
+            headers=headers,
+        )).json()
+        assert unassigned["total"] == 0
         assert (await client.patch(
             f"/api/v1/admin/jobs/{digest}/priority",
             headers=headers,
@@ -374,6 +387,48 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert {event["action"] for event in audit} >= {
             "job.upload", "job.priority", "job.requeue", "job.delete"
         }
+
+
+@pytest.mark.anyio
+async def test_builtin_marker_recipe_assigns_only_unconverted_legacy_jobs(tmp_path):
+    settings = ServerSettings(
+        data_dir=tmp_path, client_token="client-secret", worker_tokens={}
+    )
+    app = create_app(settings)
+    database = app.state.database
+    legacy_key = "1" * 64
+    ordinary_key = "2" * 64
+    explicit_key = "4" * 64
+    for key, tags in (
+        (legacy_key, ["legacy-import", "metadata-unavailable"]),
+        (ordinary_key, ["rulebook"]),
+        (explicit_key, ["legacy-import", "metadata-unavailable"]),
+    ):
+        database.enqueue(
+            key,
+            {
+                "digest_algorithm": "sha256",
+                "digest": key,
+                "media_type": "application/pdf",
+                "tags": tags,
+            },
+        )
+    explicit_recipe = "blake3:" + "f" * 64
+    database.request_conversion(explicit_key, explicit_recipe)
+
+    restarted = create_app(settings)
+    marker = marker1_enriched_v1_recipe()
+    assert restarted.state.database.get_job(legacy_key)["recipe_digest"] == marker.recipe_digest
+    assert restarted.state.database.get_job(ordinary_key)["recipe_digest"] is None
+    assert restarted.state.database.get_job(explicit_key)["recipe_digest"] == explicit_recipe
+    assert restarted.state.database.assign_unconverted_legacy_jobs(marker.recipe_digest) == 0
+    installed = {
+        recipe["recipe_digest"]: recipe
+        for recipe in restarted.state.database.recipes("application/pdf")
+    }
+    assert installed[marker.recipe_digest]["display_name"] == (
+        "Marker 1.10.2 + PDF enrichment"
+    )
 
 
 @pytest.mark.anyio
@@ -484,6 +539,62 @@ async def test_recipe_management_labels_and_retires_worker_recipe(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_worker_admin_state_explains_quota_exhaustion(tmp_path):
+    app = create_app(ServerSettings(
+        data_dir=tmp_path,
+        client_token="client-secret",
+        worker_tokens={"hosted": "worker-secret"},
+    ))
+    admin = {"Authorization": "Bearer client-secret"}
+    worker = {"Authorization": "Bearer worker-secret"}
+    recipe = {"engine": "hosted-test"}
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    capability = {
+        "backend": "hosted-test",
+        "recipe_digest": digest,
+        "recipe": recipe,
+        "media_types": ["application/pdf"],
+        "provider_account": "hosted:test",
+        "provider": "test-provider",
+        "claim_unassigned": False,
+    }
+    app.state.database.configure_provider_account(
+        "hosted:test",
+        provider="test-provider",
+        currency="USD",
+        concurrency_limit=1,
+        enabled=True,
+    )
+    key = "3" * 64
+    app.state.database.enqueue(key, {
+        "digest_algorithm": "sha256",
+        "digest": key,
+        "media_type": "application/pdf",
+        "tags": [],
+    })
+    app.state.database.request_conversion(key, digest)
+    with app.state.database.transaction() as db:
+        db.execute(
+            "UPDATE jobs SET not_before=?,blocked_reason=? WHERE source_key=?",
+            (9_999_999_999_999, '{"kind": "quota", "exceeded": []}', key),
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        assert (await client.post(
+            "/api/v1/workers/register",
+            headers=worker,
+            json={"worker_id": "hosted", "capabilities": [capability]},
+        )).status_code == 200
+        values = (await client.get(
+            "/api/v1/admin/workers", headers=admin
+        )).json()["workers"]
+    hosted = next(value for value in values if value["worker_id"] == "hosted")
+    assert hosted["availability"]["state"] == "quota-exhausted"
+    assert "quota-delayed" in hosted["availability"]["detail"]
+
+
+@pytest.mark.anyio
 async def test_pdf_worker_does_not_claim_other_media(tmp_path):
     app = create_app(ServerSettings(
         data_dir=tmp_path,
@@ -550,7 +661,10 @@ async def test_multipurpose_worker_claims_capability_and_backend_can_be_selected
         assert claim["capability"]["backend"] == "whisper"
         recipes = (await client.get("/api/v1/recipes", headers=client_headers,
                                     params={"media_type": "application/pdf"})).json()["recipes"]
-        assert [item["backend"] for item in recipes] == ["marker"]
+        assert {item["backend"] for item in recipes} == {
+            "marker",
+            "marker-pdf-enriched",
+        }
 
 
 @pytest.mark.anyio
