@@ -31,6 +31,18 @@
   `node --check`. A dedicated regression proves
   missing-rate deferral, release, USD/EUR conversion, exact dual-amount
   retention, FX linkage, and distinct list/billing-currency settlement.
+- **Production-shaped migration canary:** GitHub Actions passed its test job and
+  published the server and hosted-worker images for `e5c35d0` at
+  `sha256:f18b5b6519...` and `sha256:422e9860d7...`. The candidate server image
+  migrated a consistent online backup of Citadel's live ledger in an isolated,
+  networkless, read-only-root container. All 28 historical reservations gained
+  four required columns, no qualifier remained null, no legacy amount changed,
+  and `quick_check` remained `ok`; the temporary copy was then removed.
+- **Deployment gate:** Production itself was not changed. The local Gandalf
+  branch still contains the explicitly deferred credential-rotation commit, so
+  pushing a new image pin would implicitly publish that change. Keep Mistral
+  stopped and leave the published image deployment-ready until that history is
+  resolved deliberately.
 - **Tools:** `rg`, `sed`, `apply_patch`, uv/pytest, and sanitized read-only
   Ansible/Podman/SQLite inspection.
 

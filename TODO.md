@@ -226,6 +226,9 @@ view; detailed research tasks remain in the sections below.
   estimate crosses currencies; never relabel Mistral's USD 0.004/page list
   price as EUR. Keep manual provider snapshots authoritative for actual billed
   allowance consumption.
+- [ ] Deploy cross-currency quota revision `e5c35d0` after resolving the
+  deferred Gandalf credential commit. Before Mistral is re-enabled, record a
+  conservative, sourced, time-bounded USD/EUR rate through the quota console.
 - [ ] Revoke and replace the Mistral inference API key exposed by a verbose
   systemd status result, deploy the already encrypted replacement BlobForge
   worker credential with the Mistral unit disabled, then re-enable the worker
