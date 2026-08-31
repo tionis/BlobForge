@@ -533,6 +533,7 @@ class Database:
             ).fetchone()
             old_policy = None
             superseded_policy_ids: list[str] = []
+            released_quota_delays = 0
             db.execute(
                 """INSERT INTO quota_schedules(account_key,timezone,reset_day,label,enabled,
                 limit_requests,limit_pages,limit_estimated_micro_usd,
@@ -620,8 +621,22 @@ class Database:
                             ),
                         )
                         superseded_policy_ids.append(str(old_policy["id"]))
+                        released_quota_delays = db.execute(
+                            """UPDATE jobs SET not_before=NULL,blocked_reason=NULL,updated_at=?
+                            WHERE status='todo' AND (
+                              blocked_reason='quota' OR (
+                                json_valid(blocked_reason)
+                                AND json_extract(blocked_reason,'$.kind')='quota'
+                              )
+                            ) AND recipe_digest IN (
+                              SELECT recipe_digest FROM worker_recipes
+                              WHERE provider_account=?
+                            )""",
+                            (timestamp, account_key),
+                        ).rowcount
             value = dict(schedule)
             value["superseded_policy_ids"] = superseded_policy_ids
+            value["released_quota_delays"] = released_quota_delays
         value["enabled"] = bool(value["enabled"])
         return value
 

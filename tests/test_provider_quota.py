@@ -91,6 +91,14 @@ def _epoch(value: str) -> int:
 def test_monthly_quota_window_uses_local_reset_midnight_across_dst():
     assert monthly_quota_window(
         _epoch("2026-08-31T12:00:00+00:00"),
+        reset_day=1,
+        timezone_name="UTC",
+    ) == (
+        _epoch("2026-08-01T00:00:00+00:00"),
+        _epoch("2026-09-01T00:00:00+00:00"),
+    )
+    assert monthly_quota_window(
+        _epoch("2026-08-31T12:00:00+00:00"),
         reset_day=28,
         timezone_name="Europe/Berlin",
     ) == (
@@ -169,6 +177,19 @@ def test_monthly_schedule_realigns_boundary_without_resetting_used_allowance(
     )
     assert first["authorized"]
 
+    _enqueue(database, "b" * 64)
+    second_job = _claim(database, "b" * 64)
+    denied_under_old_boundary = database.reserve_quota(
+        second_job["hash"],
+        "hosted",
+        second_job["lease_token"],
+        {**_probe(second_job), "currency": "EUR"},
+    )
+    assert not denied_under_old_boundary["authorized"]
+    assert denied_under_old_boundary["not_before"] == _epoch(
+        "2026-09-28T00:00:00+02:00"
+    )
+
     schedule = database.configure_quota_schedule(
         "test:primary",
         timezone_name="Europe/Berlin",
@@ -178,6 +199,8 @@ def test_monthly_schedule_realigns_boundary_without_resetting_used_allowance(
         limit_billed_micro_usd=32_000,
     )
     assert len(schedule["superseded_policy_ids"]) == 1
+    assert schedule["released_quota_delays"] == 1
+    assert database.get_job("b" * 64)["not_before"] is None
     summary = database.quota_summary()
     old = next(policy for policy in summary["policies"] if policy["superseded_at"])
     replacement = next(
@@ -189,7 +212,6 @@ def test_monthly_schedule_realigns_boundary_without_resetting_used_allowance(
     assert replacement["window_end"] == _epoch("2026-09-01T00:00:00+02:00")
     assert replacement["usage"]["estimated_micro_usd"] == 32_000
 
-    _enqueue(database, "b" * 64)
     second_job = _claim(database, "b" * 64)
     denied = database.reserve_quota(
         second_job["hash"],

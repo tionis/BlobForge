@@ -38,15 +38,19 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
-- **2026-08-31:** Mistral's allowance resets at the start of the calendar month;
-  the next observed boundary is 2026-09-01 02:00 Europe/Berlin. At inspection,
+- **2026-08-31:** Mistral's allowance resets at 00:00 UTC on the first day of
+  the calendar month; the next observed boundary is 2026-09-01 00:00 UTC,
+  which is 02:00 CEST. Production schedules must use day 1 with timezone `UTC`,
+  not Berlin local midnight. At inspection,
   production had already committed EUR 12.736 of EUR 12.75 across 17 requests
   and 3,184 pages, leaving EUR 0.014 with no unsettled reservation. Never treat
   a recurring reset-day correction as a fresh allowance. Schedule realignment
   must append supersession metadata, retain the old policy and usage, require a
   replacement window that covers the old window's elapsed portion, and reject
-  weaker replacement limits. Both production schedules still need deployment
-  and conversion from day 28 to day 1.
+  weaker replacement limits. Realignment must also release stale quota-delayed
+  jobs once so they recompute the replacement boundary without consuming a
+  retry. Both production schedules still need final deployment and conversion
+  from day 28/Europe-Berlin to day 1/UTC.
 
 - **2026-08-31:** Revision `26d0728` is deployed on Citadel as coordinator
   manifest `sha256:35e9f25a...` and hosted-worker manifest

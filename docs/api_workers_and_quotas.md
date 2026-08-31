@@ -166,6 +166,9 @@ window under those coverage rules. The historical policy remains visible in
 the quota summary but no longer participates in authorization after its
 supersession timestamp. A boundary move that would omit already-counted usage
 or weaken any limit fails with HTTP 409 and rolls back the schedule change.
+Quota-delayed jobs for that provider account are released once so their next
+claim recomputes the correct replacement-window deferral; this never increments
+their conversion retry count or authorizes spend by itself.
 
 Legacy JSON and SQLite field names retain the suffix `micro_usd` for wire and
 database compatibility. Their value is actually one-millionth of the provider
