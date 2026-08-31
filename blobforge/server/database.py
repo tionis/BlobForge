@@ -185,7 +185,9 @@ class Database:
                     limit_requests INTEGER, limit_pages INTEGER,
                     limit_estimated_micro_usd INTEGER, limit_billed_micro_usd INTEGER,
                     currency TEXT NOT NULL DEFAULT 'USD',
-                    created_at INTEGER NOT NULL, UNIQUE(account_key, revision)
+                    created_at INTEGER NOT NULL, superseded_at INTEGER,
+                    superseded_by TEXT REFERENCES quota_policies(id),
+                    supersession_reason TEXT, UNIQUE(account_key, revision)
                 );
                 CREATE TABLE IF NOT EXISTS quota_schedules (
                     account_key TEXT PRIMARY KEY REFERENCES provider_accounts(account_key),
@@ -318,6 +320,12 @@ class Database:
                     "ALTER TABLE quota_policies ADD COLUMN currency "
                     "TEXT NOT NULL DEFAULT 'USD'"
                 )
+            if "superseded_at" not in policy_columns:
+                db.execute("ALTER TABLE quota_policies ADD COLUMN superseded_at INTEGER")
+            if "superseded_by" not in policy_columns:
+                db.execute("ALTER TABLE quota_policies ADD COLUMN superseded_by TEXT")
+            if "supersession_reason" not in policy_columns:
+                db.execute("ALTER TABLE quota_policies ADD COLUMN supersession_reason TEXT")
             db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS quota_policy_window_idx "
                 "ON quota_policies(account_key,window_start,window_end)"
@@ -520,6 +528,11 @@ class Database:
                 "SELECT 1 FROM provider_accounts WHERE account_key=?", (account_key,)
             ).fetchone():
                 raise KeyError(account_key)
+            previous = db.execute(
+                "SELECT * FROM quota_schedules WHERE account_key=?", (account_key,)
+            ).fetchone()
+            old_policy = None
+            superseded_policy_ids: list[str] = []
             db.execute(
                 """INSERT INTO quota_schedules(account_key,timezone,reset_day,label,enabled,
                 limit_requests,limit_pages,limit_estimated_micro_usd,
@@ -549,31 +562,96 @@ class Database:
                 "SELECT * FROM quota_schedules WHERE account_key=?", (account_key,)
             ).fetchone()
             if enabled:
-                self._ensure_scheduled_policy(db, account_key, timestamp)
+                replacement_id = self._ensure_scheduled_policy(db, account_key, timestamp)
+                if (
+                    previous
+                    and bool(previous["enabled"])
+                    and (
+                        previous["timezone"] != timezone_name
+                        or int(previous["reset_day"]) != reset_day
+                    )
+                ):
+                    old_start, old_end = monthly_quota_window(
+                        timestamp,
+                        reset_day=int(previous["reset_day"]),
+                        timezone_name=str(previous["timezone"]),
+                    )
+                    old_policy = db.execute(
+                        """SELECT * FROM quota_policies WHERE account_key=?
+                        AND window_start=? AND window_end=? AND superseded_at IS NULL""",
+                        (account_key, old_start, old_end),
+                    ).fetchone()
+                    replacement = db.execute(
+                        "SELECT * FROM quota_policies WHERE id=?", (replacement_id,)
+                    ).fetchone()
+                    if old_policy and old_policy["id"] != replacement_id:
+                        if int(replacement["window_start"]) > int(old_policy["window_start"]):
+                            raise Conflict(
+                                "new quota boundary would omit usage from the active policy"
+                            )
+                        for column in (
+                            "limit_requests",
+                            "limit_pages",
+                            "limit_estimated_micro_usd",
+                            "limit_billed_micro_usd",
+                        ):
+                            old_limit = old_policy[column]
+                            replacement_limit = replacement[column]
+                            if old_limit is None:
+                                if replacement_limit is not None:
+                                    continue
+                            elif (
+                                replacement_limit is not None
+                                and int(replacement_limit) <= int(old_limit)
+                            ):
+                                continue
+                            else:
+                                raise Conflict(
+                                    "new quota boundary cannot weaken the active policy limits"
+                                )
+                        db.execute(
+                            """UPDATE quota_policies SET superseded_at=?,superseded_by=?,
+                            supersession_reason=? WHERE id=? AND superseded_at IS NULL""",
+                            (
+                                timestamp,
+                                replacement_id,
+                                "recurring schedule boundary realignment",
+                                old_policy["id"],
+                            ),
+                        )
+                        superseded_policy_ids.append(str(old_policy["id"]))
             value = dict(schedule)
+            value["superseded_policy_ids"] = superseded_policy_ids
         value["enabled"] = bool(value["enabled"])
         return value
 
     def _ensure_scheduled_policy(
         self, db: sqlite3.Connection, account_key: str, timestamp: int
-    ) -> None:
+    ) -> str | None:
         schedule = db.execute(
             "SELECT * FROM quota_schedules WHERE account_key=? AND enabled=1",
             (account_key,),
         ).fetchone()
         if not schedule:
-            return
+            return None
         start, end = monthly_quota_window(
             timestamp,
             reset_day=int(schedule["reset_day"]),
             timezone_name=str(schedule["timezone"]),
         )
-        if db.execute(
+        existing = db.execute(
             """SELECT 1 FROM quota_policies
             WHERE account_key=? AND window_start=? AND window_end=?""",
             (account_key, start, end),
-        ).fetchone():
-            return
+        ).fetchone()
+        if existing:
+            return str(
+                db.execute(
+                    """SELECT id FROM quota_policies WHERE account_key=?
+                    AND window_start=? AND window_end=?""",
+                    (account_key, start, end),
+                ).fetchone()[0]
+            )
         account = db.execute(
             "SELECT currency FROM provider_accounts WHERE account_key=?", (account_key,)
         ).fetchone()
@@ -586,13 +664,14 @@ class Database:
         start_label = datetime.fromtimestamp(start / 1000, tz=timezone.utc).astimezone(
             ZoneInfo(str(schedule["timezone"]))
         ).date()
+        identifier = "qpol_" + secrets.token_hex(10)
         db.execute(
             """INSERT INTO quota_policies(id,account_key,revision,window_start,window_end,label,
             limit_requests,limit_pages,limit_estimated_micro_usd,
             limit_billed_micro_usd,currency,created_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                "qpol_" + secrets.token_hex(10),
+                identifier,
                 account_key,
                 revision,
                 start,
@@ -606,6 +685,7 @@ class Database:
                 now_ms(),
             ),
         )
+        return identifier
 
     def create_quota_policy(
         self,
@@ -895,8 +975,9 @@ class Database:
             policies = list(
                 db.execute(
                     """SELECT * FROM quota_policies WHERE account_key=?
-                    AND window_start<=? AND window_end>? ORDER BY window_end""",
-                    (account_key, timestamp, timestamp),
+                    AND window_start<=? AND window_end>?
+                    AND (superseded_at IS NULL OR superseded_at>?) ORDER BY window_end""",
+                    (account_key, timestamp, timestamp, timestamp),
                 )
             )
             if not cache_hit and not policies:
@@ -1128,7 +1209,13 @@ class Database:
                     (policy["account_key"], policy["window_start"], policy["window_end"]),
                 ).fetchone()
                 policy["usage"] = dict(row)
-                policy["active"] = policy["window_start"] <= timestamp < policy["window_end"]
+                policy["active"] = (
+                    policy["window_start"] <= timestamp < policy["window_end"]
+                    and (
+                        policy["superseded_at"] is None
+                        or timestamp < policy["superseded_at"]
+                    )
+                )
             usage = [
                 dict(row)
                 for row in db.execute(

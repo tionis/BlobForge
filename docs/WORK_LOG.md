@@ -1,5 +1,29 @@
 # Work Log
 
+## 2026-08-31 (Calendar-Month Provider Quota Correction)
+
+- **Finding:** Both recurring production schedules were configured for local
+  midnight on day 28, but the provider allowances reset at the beginning of
+  each calendar month. Mistral's next observed reset is 2026-09-01 02:00 CEST.
+  The production ledger has already committed EUR 12.736 of the EUR 12.75
+  Mistral ceiling across 17 requests/3,184 pages, leaving EUR 0.014 rather than
+  another EUR 12 today. No Mistral reservation is unsettled. The recurring
+  Datalab account has no usage; its earlier USD 0.07 canary belongs to the
+  separate frozen canary account.
+- **Design:** Schedule boundary changes preserve the old immutable policy and
+  append explicit supersession metadata. A replacement may supersede the
+  active policy only if its window covers every timestamp counted by the old
+  policy through the change and each limit is equally strict or stricter.
+  Consequently the Aug-1 replacement counts all Aug-28 usage and cannot reset
+  today's allowance, while the Sep-1 window starts cleanly at the provider
+  boundary. Unsafe boundary moves fail atomically.
+- **Implementation:** Added policy supersession persistence, authorization and
+  summary semantics, HTTP 409 conflict handling, calendar-month UI defaults,
+  and focused tests for preserved usage, exact defer time, and rollback of an
+  unsafe realignment. The complete hermetic suite passes 320 tests plus 5
+  subtests. Production configuration remains day 28 until the corrected
+  coordinator is built, deployed, and audited.
+
 ## 2026-08-31 (Mistral Degenerate-Table Packaging Failure)
 
 - **Incident:** The uploaded *Storypath Ultra Core Manual* reached Mistral

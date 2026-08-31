@@ -124,7 +124,12 @@ The coordinator uses these normalized records:
   request/page/estimated-list-price/billed-cash limits. Multiple simultaneous
   policies may enforce, for example, a daily request rate, monthly promotional
   allowance, and all-time evaluation campaign ceiling. Policy revisions are
-  immutable after use.
+  immutable after use. A recurring reset-boundary correction may append
+  `superseded_at`, `superseded_by`, and a reason to the old policy without
+  rewriting its window, limits, or usage. The coordinator accepts this only
+  when the replacement window starts no later than the old one and every limit
+  is equally strict or stricter, so all current-cycle usage remains counted and
+  the correction cannot manufacture allowance.
 - `quota_reservations`: job, exact recipe, worker, fenced lease/attempt,
   checkpoint key, reserved units, state (`reserved`, `committed`, `released`,
   or `ambiguous`), measured usage, billing fields, and timestamps.
@@ -154,6 +159,13 @@ accounts and immutable policy windows, create/revoke overages, summarize
 usage, and reconcile ambiguous attempts. It also configures recurring monthly
 schedules through `PUT /api/v1/admin/quota-schedules/{account}`. The management
 console exposes these operations under **Quotas**.
+
+Changing an enabled schedule's timezone or reset day materializes the
+replacement window and transactionally supersedes the old active scheduled
+window under those coverage rules. The historical policy remains visible in
+the quota summary but no longer participates in authorization after its
+supersession timestamp. A boundary move that would omit already-counted usage
+or weaken any limit fails with HTTP 409 and rolls back the schedule change.
 
 Legacy JSON and SQLite field names retain the suffix `micro_usd` for wire and
 database compatibility. Their value is actually one-millionth of the provider

@@ -552,6 +552,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             )
         except KeyError:
             raise HTTPException(404, "provider account not found") from None
+        except Conflict as exc:
+            raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         database.audit(

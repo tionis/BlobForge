@@ -145,6 +145,10 @@ view; detailed research tasks remain in the sections below.
 - [x] Keep worker-only signed transfers on the internal coordinator origin and
   release transient input-network failures without consuming conversion
   retries; requeue production jobs affected by the observed outage.
+- [ ] Deploy allowance-preserving quota-boundary realignment, then move Mistral
+  and Datalab from day 28 to calendar-month resets in Europe/Berlin. Verify the
+  current Mistral window still counts EUR 12.736 of EUR 12.75 and that the next
+  window begins on 2026-09-01 at 02:00 CEST.
 - [ ] Add an evidence-backed Docling table-screenshot suppression fixture;
   screenshots may remain secondary evidence but not duplicate primary tables.
 - [x] Complete the decision-sufficient blinded Mistral-wiki/Datalab-wiki

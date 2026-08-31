@@ -140,6 +140,91 @@ def test_monthly_schedule_materializes_once_and_enforces_account_currency(tmp_pa
     )["authorized"]
 
 
+def test_monthly_schedule_realigns_boundary_without_resetting_used_allowance(
+    tmp_path, monkeypatch
+):
+    timestamp = _epoch("2026-08-31T00:30:00+00:00")
+    monkeypatch.setattr("blobforge.server.database.now_ms", lambda: timestamp)
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    database.register_capabilities("hosted", [_capability()])
+    database.configure_provider_account(
+        "test:primary", "test-provider", currency="EUR", concurrency_limit=2
+    )
+    database.configure_quota_schedule(
+        "test:primary",
+        timezone_name="Europe/Berlin",
+        reset_day=28,
+        label="monthly paid allowance",
+        limit_estimated_micro_usd=32_000,
+        limit_billed_micro_usd=32_000,
+    )
+    _enqueue(database, "a" * 64)
+    first_job = _claim(database, "a" * 64)
+    first = database.reserve_quota(
+        first_job["hash"],
+        "hosted",
+        first_job["lease_token"],
+        {**_probe(first_job), "currency": "EUR"},
+    )
+    assert first["authorized"]
+
+    schedule = database.configure_quota_schedule(
+        "test:primary",
+        timezone_name="Europe/Berlin",
+        reset_day=1,
+        label="monthly paid allowance",
+        limit_estimated_micro_usd=32_000,
+        limit_billed_micro_usd=32_000,
+    )
+    assert len(schedule["superseded_policy_ids"]) == 1
+    summary = database.quota_summary()
+    old = next(policy for policy in summary["policies"] if policy["superseded_at"])
+    replacement = next(
+        policy for policy in summary["policies"] if policy["id"] == old["superseded_by"]
+    )
+    assert not old["active"]
+    assert replacement["active"]
+    assert replacement["window_start"] == _epoch("2026-08-01T00:00:00+02:00")
+    assert replacement["window_end"] == _epoch("2026-09-01T00:00:00+02:00")
+    assert replacement["usage"]["estimated_micro_usd"] == 32_000
+
+    _enqueue(database, "b" * 64)
+    second_job = _claim(database, "b" * 64)
+    denied = database.reserve_quota(
+        second_job["hash"],
+        "hosted",
+        second_job["lease_token"],
+        {**_probe(second_job), "currency": "EUR"},
+    )
+    assert not denied["authorized"]
+    assert denied["reason"] == "quota exhausted"
+    assert denied["not_before"] == _epoch("2026-09-01T00:00:00+02:00")
+
+
+def test_monthly_schedule_rejects_boundary_that_omits_current_usage(tmp_path, monkeypatch):
+    timestamp = _epoch("2026-08-31T00:30:00+00:00")
+    monkeypatch.setattr("blobforge.server.database.now_ms", lambda: timestamp)
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.configure_provider_account("test:primary", "test-provider", currency="EUR")
+    database.configure_quota_schedule(
+        "test:primary",
+        timezone_name="Europe/Berlin",
+        reset_day=1,
+        limit_estimated_micro_usd=32_000,
+    )
+    with pytest.raises(Conflict, match="omit usage"):
+        database.configure_quota_schedule(
+            "test:primary",
+            timezone_name="Europe/Berlin",
+            reset_day=28,
+            limit_estimated_micro_usd=32_000,
+        )
+    summary = database.quota_summary()
+    assert summary["schedules"][0]["reset_day"] == 1
+    assert len(summary["policies"]) == 1
+
+
 def test_explicit_only_hosted_capability_never_claims_unassigned_work(tmp_path):
     database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
     database.bootstrap_workers({"hosted": "worker-secret"})
