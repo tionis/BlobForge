@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-08-31:** Never use Ansible's `systemd_service` module for runtime
+  state changes on Quadlets that place credentials directly in `ExecStart`:
+  its verbose result can return the entire unit status, including plaintext
+  environment arguments. Use a no-log task or a narrow `systemctl` command and
+  query only explicit safe properties. A Mistral inference key and worker token
+  were exposed this way; keep the worker stopped, rotate both credentials, and
+  do not re-enable it until the provider key is replaced.
+
 - **2026-08-31:** Non-Enterprise provider usage reconciliation uses immutable
   manual account snapshots, never fabricated per-job billing. A snapshot binds
   reported usage to an exact quota window and declared coverage cutoff; quota

@@ -25,6 +25,22 @@
   `BLOBFORGE_COORDINATOR_URL` and `BLOBFORGE_COORDINATOR_TOKEN` unset passed
   323 tests plus 5 subtests. Production rollout results will be appended after
   completion.
+- **Production:** Commit `6dfc045` passed GitHub Actions and its server image
+  was deployed on Citadel at manifest `sha256:65d348adbf...` after a successful
+  quiesced recovery snapshot. The confirmed EUR 0.96 Mistral observation was
+  recorded as `quse_04e5e6fc3ee34434a9df`, covering all purchases through the
+  last settled reservation. It superseded the active estimate-based policy
+  with `qpol_5d74656af3d60dff0a69`, retained the EUR 12.75 billed limit, removed
+  the estimate ceiling from the active/future schedule, and released 25 quota
+  delays. SQLite `quick_check` is `ok`, public health is green, and there are no
+  processing jobs or unsettled Mistral reservations.
+- **Credential incident:** The Ansible `systemd_service` stop result included
+  systemd's complete `ExecStart` field, which exposed both the Mistral inference
+  key and BlobForge worker token in tool output. The Mistral worker remains
+  stopped. A replacement worker token is encrypted in local Gandalf commit
+  `2a90a4d6` and the desired worker state is disabled, but pushing/deploying that
+  emergency change requires explicit user approval. The provider key must be
+  revoked and replaced in Mistral's console before re-enabling the worker.
 
 ## 2026-08-31 (Mistral Console/Quota Discrepancy Diagnosis)
 

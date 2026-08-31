@@ -216,11 +216,15 @@ view; detailed research tasks remain in the sections below.
   packaging-failure recovery through integration failure injection before
   enabling unattended paid batches; retain the earlier bounded paid
   success-path canaries as provider-side evidence.
-- [ ] Add append-only provider-reported usage snapshots and a reconciled quota
+- [x] Add append-only provider-reported usage snapshots and a reconciled quota
   basis for subscription allowances. Preserve per-request list-price evidence,
   count fresh post-snapshot reservations conservatively, require a separate
   Mistral Admin API key for automation, and support audited manual snapshots
   when that credential is unavailable.
+- [ ] Revoke and replace the Mistral inference API key exposed by a verbose
+  systemd status result, deploy the already encrypted replacement BlobForge
+  worker credential with the Mistral unit disabled, then re-enable the worker
+  only after its provider key has been replaced.
 - [ ] Periodically reevaluate defaults and fallbacks without changing existing
   immutable artifact identities.
 
