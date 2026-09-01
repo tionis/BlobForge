@@ -38,6 +38,24 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-01:** Exclusive provider allowances need an explicit account flag,
+  not a fabricated manual console snapshot. For an opted-in account already
+  using provider-snapshot accounting, each scheduled window may receive one
+  system-authored zero-at-reset baseline; it can remain non-expiring because
+  all later purchases are conservatively represented by BlobForge reservations.
+  Manual observations remain append-only reconciliation evidence. Never apply
+  this behavior to a shared provider account, and restore the normal freshness
+  gate immediately when exclusivity is disabled.
+
+- **2026-09-01:** The production Mistral September quota window is active from
+  `2026-09-01 00:00:00 UTC` through `2026-10-01 00:00:00 UTC` (02:00 CEST at
+  both boundaries) with its EUR 12.75 limit. A worker may nevertheless report
+  `quota-exhausted` when the manual provider-snapshot policy has no observation
+  covering the new window. The latest snapshot covers only August, so the 22
+  assigned jobs are delayed for `snapshot_missing`; never confuse that safety
+  gate with an inactive or exhausted window, and never fabricate a zero
+  September snapshot without checking the provider console.
+
 - **2026-09-01:** Revision `2f9bd91` is deployed on Citadel as coordinator
   manifest `sha256:d0db743aa0ed...` and hosted-worker manifest
   `sha256:b816f6b7e22a...`; Gandalf revision `6be00d6c` is the canonical pin.

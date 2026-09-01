@@ -323,11 +323,15 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert "Snapshot JSON" not in root.text
         assert "Conversion recipes" not in root.text
         assert "script-src 'self'" in root.headers["content-security-policy"]
-        assert (await client.get("/static/management-v7.js")).status_code == 200
+        management = await client.get("/static/management-v8.js")
+        assert management.status_code == 200
+        assert "automatic reset baseline" in management.text
+        assert "exclusive_consumer" in management.text
         assert 'id="job-recipe"' in root.text
         assert "Plan upgrades" in root.text
         assert "Record provider usage" in root.text
         assert "Provider-reported usage snapshots" in root.text
+        assert "exclusive consumer of this allowance" in root.text
 
         uploaded = await client.post(
             "/api/v1/admin/uploads",

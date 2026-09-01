@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+import blobforge.server.database as database_module
 from blobforge.converters.contract import (
     PROVIDER_ATTEMPT_CONTRACT,
     PROVIDER_PROBE_CONTRACT,
@@ -556,6 +557,97 @@ def test_snapshot_accounting_requires_a_fresh_monotonic_snapshot(tmp_path):
         )
 
 
+def test_exclusive_consumer_bootstraps_each_window_and_uses_internal_ledger(
+    tmp_path, monkeypatch
+):
+    current = [_epoch("2026-08-31T12:00:00+00:00")]
+    monkeypatch.setattr(database_module, "now_ms", lambda: current[0])
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({"hosted": "worker-secret"})
+    database.register_capabilities("hosted", [_capability()])
+    database.configure_provider_account("test:primary", "test-provider")
+    database.configure_quota_schedule(
+        "test:primary",
+        timezone_name="UTC",
+        reset_day=1,
+        limit_estimated_micro_usd=100_000,
+        limit_billed_micro_usd=100_000,
+    )
+    database.record_provider_usage_snapshot(
+        "test:primary",
+        reported_billed_micro_usd=10_000,
+        observed_at=current[0],
+        coverage_through=current[0],
+        reason="August provider console observation",
+        actor="admin:test",
+        activate_snapshot_accounting=True,
+        snapshot_max_age_ms=6 * 60 * 60 * 1000,
+    )
+
+    current[0] = _epoch("2026-09-08T12:00:00+00:00")
+    _enqueue(database, "e" * 64)
+    delayed = _claim(database, "e" * 64)
+    denied = database.reserve_quota(
+        delayed["hash"],
+        "hosted",
+        delayed["lease_token"],
+        _probe(delayed),
+    )
+    assert not denied["authorized"]
+    assert denied["exceeded"][0]["reason"] == "snapshot_missing"
+
+    account = database.configure_provider_account(
+        "test:primary", "test-provider", exclusive_consumer=True
+    )
+    assert account["exclusive_consumer"] is True
+    retried = _claim(database, "e" * 64)
+    authorized = database.reserve_quota(
+        retried["hash"],
+        "hosted",
+        retried["lease_token"],
+        _probe(retried),
+    )
+    assert authorized["authorized"]
+
+    current[0] += 24 * 60 * 60 * 1000
+    summary = database.quota_summary()
+    september = next(
+        policy
+        for policy in summary["policies"]
+        if policy["window_start"] == _epoch("2026-09-01T00:00:00+00:00")
+        and not policy["superseded_at"]
+    )
+    snapshot = september["usage"]["snapshot"]
+    assert september["usage"]["billed_basis"] == "provider_snapshot"
+    assert september["usage"]["billed_exposure_micro_usd"] == 32_000
+    assert september["usage"]["post_snapshot_estimated_micro_usd"] == 32_000
+    assert snapshot["source"] == "automatic-exclusive-reset"
+    assert snapshot["reported_billed_micro_usd"] == 0
+    assert snapshot["coverage_through"] == september["window_start"]
+    assert snapshot["freshness_exempt"] is True
+
+    disabled = database.configure_provider_account(
+        "test:primary", "test-provider", exclusive_consumer=False
+    )
+    assert disabled["exclusive_consumer"] is False
+    september = next(
+        policy
+        for policy in database.quota_summary()["policies"]
+        if policy["window_start"] == _epoch("2026-09-01T00:00:00+00:00")
+        and not policy["superseded_at"]
+    )
+    assert september["usage"]["billed_basis"] == "snapshot_stale"
+
+
+def test_exclusive_consumer_requires_provider_snapshot_accounting(tmp_path):
+    database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
+    database.configure_provider_account("test:primary", "test-provider")
+    with pytest.raises(Conflict, match="requires provider-snapshot accounting"):
+        database.configure_provider_account(
+            "test:primary", "test-provider", exclusive_consumer=True
+        )
+
+
 def test_cache_hit_needs_no_policy_allowance_and_ambiguous_attempt_is_reconciled(tmp_path):
     database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
     database.bootstrap_workers({"hosted": "worker-secret"})
@@ -975,3 +1067,31 @@ async def test_admin_can_record_confirmed_manual_provider_usage_snapshot(tmp_pat
         active = next(item for item in summary["policies"] if item["active"])
         assert active["limit_estimated_micro_usd"] is None
         assert active["usage"]["billed_exposure_micro_usd"] == 960_000
+        invalid = await client.put(
+            "/api/v1/admin/provider-accounts/test%3Aprimary",
+            headers=admin,
+            json={
+                "provider": "test-provider",
+                "currency": "EUR",
+                "exclusive_consumer": "yes",
+            },
+        )
+        assert invalid.status_code == 400
+        exclusive = await client.put(
+            "/api/v1/admin/provider-accounts/test%3Aprimary",
+            headers=admin,
+            json={
+                "provider": "test-provider",
+                "currency": "EUR",
+                "exclusive_consumer": True,
+            },
+        )
+        assert exclusive.status_code == 200
+        assert exclusive.json()["exclusive_consumer"] is True
+        summary = (
+            await client.get("/api/v1/admin/quotas", headers=admin)
+        ).json()
+        assert summary["accounts"][0]["exclusive_consumer"] is True
+        event = app.state.database.audit_events(1)[0]
+        assert event["action"] == "quota.account.configure"
+        assert event["detail"]["exclusive_consumer"] is True

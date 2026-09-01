@@ -397,6 +397,25 @@ hours and can be configured from 15 minutes through seven days. A missing or
 stale snapshot prevents new paid reservations but does not prevent cache hits;
 recording a new snapshot releases quota-delayed jobs for recomputation.
 
+An account whose allowance is spent only by BlobForge may explicitly enable
+`exclusive_consumer` after provider-snapshot accounting has been activated.
+This is an administrator assertion about the provider account, not a statement
+inferred from a credential or from the absence of known external purchases.
+For every recurring quota window BlobForge then appends exactly one
+`automatic-exclusive-reset` snapshot with zero reported usage and
+`coverage_through` equal to the window start. The observation records when
+BlobForge materialized or inspected the window; it does not pretend that the
+provider console was queried.
+
+Exclusive reset baselines do not expire. BlobForge conservatively adds the
+full account-currency reservation amount for every later reserved, committed,
+or ambiguous purchase, so work can continue without six-hour console checks.
+Administrators may still append a real manual snapshot to reconcile delayed
+provider billing, discounts, or credits; subsequent reservations are counted
+after that snapshot's coverage cutoff. Disabling exclusivity immediately
+restores the ordinary missing/stale snapshot gate. Never enable this mode when
+another key, application, or person can consume the same provider allowance.
+
 The manual flow requires `confirm=true` and is available in the management
 quota console. Set `coverage_through` only as late as the provider display is
 known to include: an optimistic cutoff could omit a purchase during provider

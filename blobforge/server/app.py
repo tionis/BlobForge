@@ -548,6 +548,10 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         body = await request.json()
         if "enabled" in body and not isinstance(body["enabled"], bool):
             raise HTTPException(400, "enabled must be a boolean")
+        if "exclusive_consumer" in body and not isinstance(
+            body["exclusive_consumer"], bool
+        ):
+            raise HTTPException(400, "exclusive_consumer must be a boolean")
         try:
             value = database.configure_provider_account(
                 account_key,
@@ -555,6 +559,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 enabled=bool(body.get("enabled", True)),
                 concurrency_limit=body.get("concurrency_limit", 1),
                 currency=str(body.get("currency") or "USD"),
+                exclusive_consumer=body.get("exclusive_consumer"),
             )
         except Conflict as exc:
             raise HTTPException(409, str(exc)) from exc
@@ -563,7 +568,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         database.audit(principal_id(request), "quota.account.configure", account_key,
                        {"provider": value["provider"], "currency": value["currency"],
                         "enabled": value["enabled"],
-                        "concurrency_limit": value["concurrency_limit"]})
+                        "concurrency_limit": value["concurrency_limit"],
+                        "exclusive_consumer": value["exclusive_consumer"]})
         return value
 
     @app.put("/api/v1/admin/quota-schedules/{account_key:path}")

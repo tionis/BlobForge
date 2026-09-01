@@ -1,5 +1,61 @@
 # Work Log
 
+## 2026-09-01 (September Mistral Window Verification)
+
+- **Objective:** Verify whether the September allowance window is active and
+  distinguish schedule activation from the manual provider-usage gate.
+- **Inspection/tools:** Queried Citadel's production SQLite database read-only
+  through Ansible. The first direct query lacked permission to traverse the
+  protected service directory; the corrected become-enabled query made no
+  production changes. A preceding combined diagnostic produced truncated
+  client output and was replaced with narrow, sanitized policy/snapshot
+  queries.
+- **Finding:** The active Mistral window runs from `2026-09-01 00:00:00 UTC`
+  through `2026-10-01 00:00:00 UTC` with a EUR 12.75 limit. That is 02:00 CEST
+  at both boundaries. The latest provider snapshot still covers the August
+  window (`coverage_through=2026-08-31 00:17:17 UTC`, EUR 10.91), so September
+  jobs are delayed for `snapshot_missing`, not because the window has not
+  started. Record a fresh September snapshot only from confirmed provider
+  console usage; do not infer a zero balance.
+- **Verification:** Local time was `2026-09-01T13:58:20+02:00`, well after the
+  boundary. `git diff --check` passed; only the required Findings, TODO, and
+  work-log records from this inspection are uncommitted.
+
+## 2026-09-01 (Exclusive-Consumer Quota Mode — Implementation Start)
+
+- **Objective:** Remove recurring manual snapshot acknowledgements for a
+  provider allowance used exclusively by BlobForge without weakening quota
+  enforcement for shared accounts.
+- **Inspection/tools:** Used `git status`, `rg`, and targeted `sed` reads over
+  the provider-account schema/migrations, recurring policy materialization,
+  snapshot validation, reservation authorization, admin API/UI, tests, and
+  quota design. Updated the task plan before changing application logic.
+- **Decision:** Add an explicit, audited account-level exclusive-consumer flag.
+  For provider-snapshot accounts only, BlobForge creates one append-only zero
+  baseline for each scheduled window at its reset boundary and treats that
+  baseline as non-expiring while conservatively counting all later internal
+  reservations. Manual provider observations remain append-only reconciliation
+  evidence. Shared accounts retain the freshness gate, and disabling the flag
+  restores it immediately.
+- **Implementation:** Added the backward-compatible SQLite migration, preserved
+  exclusivity when older API clients omit the new field, required an existing
+  provider-snapshot basis before opt-in, and materialized one
+  `automatic-exclusive-reset` snapshot per billed scheduled window. Enabling
+  the mode clears matching quota delays; reservation authorization exempts only
+  opted-in accounts from snapshot age while continuing to count all purchases
+  after the reset or latest manual coverage cutoff. The admin API audit event,
+  quota summary, and cache-busted management UI expose the assertion and its
+  warning.
+- **Tests:** The quota rollover test simulated August activation, a September
+  `snapshot_missing` denial, automatic release, a reservation after reset,
+  continued conservative exposure after the normal six-hour expiry, and
+  immediate restoration of `snapshot_stale` after opt-out. The focused quota
+  and server suites pass 35 tests; extracted management JavaScript passes
+  `node --check`. The first full suite inherited production coordinator
+  environment variables and produced 16 network-only failures after 316 tests
+  passed. The clean rerun explicitly removed those variables and passed all
+  332 tests plus 5 subtests.
+
 ## 2026-09-01 (Coordinator, Marker, and Hydration Production Rollout)
 
 - **Objective:** Publish and deploy the coordinator UI/worker-state changes,

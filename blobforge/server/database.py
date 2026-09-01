@@ -179,6 +179,7 @@ class Database:
                     enabled INTEGER NOT NULL DEFAULT 1,
                     concurrency_limit INTEGER NOT NULL DEFAULT 1,
                     usage_basis TEXT NOT NULL DEFAULT 'reservation_estimate',
+                    exclusive_consumer INTEGER NOT NULL DEFAULT 0,
                     snapshot_max_age_ms INTEGER NOT NULL DEFAULT 21600000,
                     cooldown_until INTEGER, cooldown_reason TEXT,
                     created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
@@ -365,6 +366,11 @@ class Database:
                 db.execute(
                     "ALTER TABLE provider_accounts ADD COLUMN snapshot_max_age_ms "
                     f"INTEGER NOT NULL DEFAULT {DEFAULT_SNAPSHOT_MAX_AGE_MS}"
+                )
+            if "exclusive_consumer" not in provider_columns:
+                db.execute(
+                    "ALTER TABLE provider_accounts ADD COLUMN exclusive_consumer "
+                    "INTEGER NOT NULL DEFAULT 0"
                 )
             reservation_columns = {
                 row[1] for row in db.execute("PRAGMA table_info(quota_reservations)")
@@ -654,6 +660,7 @@ class Database:
         enabled: bool = True,
         concurrency_limit: int = 1,
         currency: str = "USD",
+        exclusive_consumer: bool | None = None,
     ) -> dict[str, Any]:
         account_key = account_key.strip().lower()
         provider = provider.strip().lower()
@@ -664,10 +671,12 @@ class Database:
             raise ValueError("currency must be a three-letter ISO 4217 code")
         if isinstance(concurrency_limit, bool) or concurrency_limit < 1:
             raise ValueError("concurrency_limit must be a positive integer")
+        if exclusive_consumer is not None and not isinstance(exclusive_consumer, bool):
+            raise ValueError("exclusive_consumer must be a boolean")
         timestamp = now_ms()
         with self.transaction() as db:
             existing = db.execute(
-                "SELECT provider,currency FROM provider_accounts WHERE account_key=?",
+                "SELECT * FROM provider_accounts WHERE account_key=?",
                 (account_key,),
             ).fetchone()
             if existing and existing["provider"] != provider and db.execute(
@@ -682,19 +691,58 @@ class Database:
                 (account_key, account_key),
             ).fetchone():
                 raise Conflict("currency cannot change after an account has quota history")
+            effective_exclusive = (
+                bool(existing["exclusive_consumer"])
+                if exclusive_consumer is None and existing
+                else bool(exclusive_consumer)
+            )
+            if effective_exclusive and (
+                not existing or existing["usage_basis"] != "provider_snapshot"
+            ):
+                raise Conflict(
+                    "exclusive-consumer mode requires provider-snapshot accounting"
+                )
             db.execute(
-                """INSERT INTO provider_accounts(account_key,provider,currency,enabled,concurrency_limit,created_at,updated_at)
-                VALUES(?,?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET
+                """INSERT INTO provider_accounts(account_key,provider,currency,enabled,
+                concurrency_limit,exclusive_consumer,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(account_key) DO UPDATE SET
                 provider=excluded.provider,enabled=excluded.enabled,
                 currency=excluded.currency,concurrency_limit=excluded.concurrency_limit,
+                exclusive_consumer=excluded.exclusive_consumer,
                 updated_at=excluded.updated_at""",
-                (account_key, provider, currency, int(enabled), concurrency_limit, timestamp, timestamp),
+                (
+                    account_key,
+                    provider,
+                    currency,
+                    int(enabled),
+                    concurrency_limit,
+                    int(effective_exclusive),
+                    timestamp,
+                    timestamp,
+                ),
             )
+            if effective_exclusive:
+                self._ensure_scheduled_policy(db, account_key, timestamp)
+                if not existing or not bool(existing["exclusive_consumer"]):
+                    db.execute(
+                        """UPDATE jobs SET not_before=NULL,blocked_reason=NULL,updated_at=?
+                        WHERE status='todo' AND (
+                          blocked_reason='quota' OR (
+                            json_valid(blocked_reason)
+                            AND json_extract(blocked_reason,'$.kind')='quota'
+                          )
+                        ) AND recipe_digest IN (
+                          SELECT recipe_digest FROM worker_recipes
+                          WHERE provider_account=?
+                        )""",
+                        (timestamp, account_key),
+                    )
             row = db.execute(
                 "SELECT * FROM provider_accounts WHERE account_key=?", (account_key,)
             ).fetchone()
         value = dict(row)
         value["enabled"] = bool(value["enabled"])
+        value["exclusive_consumer"] = bool(value["exclusive_consumer"])
         return value
 
     def record_provider_fx_rate(
@@ -982,20 +1030,14 @@ class Database:
             timezone_name=str(schedule["timezone"]),
         )
         existing = db.execute(
-            """SELECT 1 FROM quota_policies
+            """SELECT * FROM quota_policies
             WHERE account_key=? AND window_start=? AND window_end=?
             AND superseded_at IS NULL""",
             (account_key, start, end),
         ).fetchone()
         if existing:
-            return str(
-                db.execute(
-                    """SELECT id FROM quota_policies WHERE account_key=?
-                    AND window_start=? AND window_end=?
-                    AND superseded_at IS NULL""",
-                    (account_key, start, end),
-                ).fetchone()[0]
-            )
+            self._ensure_exclusive_reset_baseline(db, existing, timestamp)
+            return str(existing["id"])
         account = db.execute(
             "SELECT currency FROM provider_accounts WHERE account_key=?", (account_key,)
         ).fetchone()
@@ -1027,6 +1069,59 @@ class Database:
                 schedule["limit_billed_micro_usd"],
                 account["currency"],
                 now_ms(),
+            ),
+        )
+        policy = db.execute(
+            "SELECT * FROM quota_policies WHERE id=?", (identifier,)
+        ).fetchone()
+        self._ensure_exclusive_reset_baseline(db, policy, timestamp)
+        return identifier
+
+    @staticmethod
+    def _ensure_exclusive_reset_baseline(
+        db: sqlite3.Connection,
+        policy: Mapping[str, Any],
+        timestamp: int,
+    ) -> str | None:
+        """Append one zero-at-reset baseline for an exclusive scheduled account."""
+        if policy["limit_billed_micro_usd"] is None:
+            return None
+        account = db.execute(
+            "SELECT * FROM provider_accounts WHERE account_key=?",
+            (policy["account_key"],),
+        ).fetchone()
+        if (
+            not account
+            or account["usage_basis"] != "provider_snapshot"
+            or not bool(account["exclusive_consumer"])
+        ):
+            return None
+        existing = db.execute(
+            """SELECT id FROM provider_usage_snapshots WHERE account_key=?
+            AND window_start=? AND window_end=? LIMIT 1""",
+            (policy["account_key"], policy["window_start"], policy["window_end"]),
+        ).fetchone()
+        if existing:
+            return str(existing["id"])
+        identifier = "quse_" + secrets.token_hex(10)
+        db.execute(
+            """INSERT INTO provider_usage_snapshots(
+            id,account_key,window_start,window_end,observed_at,coverage_through,
+            reported_billed_micro_usd,currency,source,reason,actor,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                identifier,
+                policy["account_key"],
+                policy["window_start"],
+                policy["window_end"],
+                timestamp,
+                policy["window_start"],
+                0,
+                policy["currency"],
+                "automatic-exclusive-reset",
+                "exclusive BlobForge consumer: automatic zero baseline at quota reset",
+                "system:quota-schedule",
+                timestamp,
             ),
         )
         return identifier
@@ -1142,7 +1237,8 @@ class Database:
         snapshot_value = dict(snapshot)
         fresh_until = int(snapshot["observed_at"]) + int(account["snapshot_max_age_ms"])
         snapshot_value["fresh_until"] = fresh_until
-        snapshot_value["fresh"] = timestamp <= fresh_until
+        snapshot_value["fresh"] = bool(account["exclusive_consumer"]) or timestamp <= fresh_until
+        snapshot_value["freshness_exempt"] = bool(account["exclusive_consumer"])
         usage["snapshot"] = snapshot_value
         if not snapshot_value["fresh"]:
             usage["billed_basis"] = "snapshot_stale"
@@ -1968,6 +2064,7 @@ class Database:
             ]
         for account in accounts:
             account["enabled"] = bool(account["enabled"])
+            account["exclusive_consumer"] = bool(account["exclusive_consumer"])
         return {"accounts": accounts, "schedules": schedules,
                 "policies": policies, "usage": usage,
                 "ambiguous": ambiguous, "overrides": overrides,

@@ -228,6 +228,10 @@ view; detailed research tasks remain in the sections below.
   count fresh post-snapshot reservations conservatively, require a separate
   Mistral Admin API key for automation, and support audited manual snapshots
   when that credential is unavailable.
+- [ ] Implement and deploy the explicitly opted-in exclusive-consumer quota
+  mode, automatically establish the auditable September zero-at-reset baseline,
+  and verify that it releases the 22 `snapshot_missing` Mistral jobs while
+  preserving conservative reservation accounting.
 - [x] Separate each provider's list-price currency from the account billing
   currency. Require an explicit FX rate, observation time, and source when an
   estimate crosses currencies; never relabel Mistral's USD 0.004/page list
