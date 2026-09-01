@@ -55,6 +55,34 @@
   environment variables and produced 16 network-only failures after 316 tests
   passed. The clean rerun explicitly removed those variables and passed all
   332 tests plus 5 subtests.
+- **Publication/deployment:** Committed BlobForge revision `78f3874`, pushed it,
+  and observed the CI test/distribution, server-image, and hosted-image jobs
+  pass. The server tag resolves to immutable manifest
+  `sha256:80dd45bf1b...`. Gandalf commit `7814a69d` pins that coordinator image;
+  its focused role tests passed 4/4 and Citadel check mode completed with zero
+  failures while preserving two unrelated generated-wiki edits.
+- **Recovery/rollout:** Read-only preflight found all three units active,
+  SQLite `quick_check=ok`, zero processing jobs, and the unchanged 1,356 done /
+  453 todo queue. The quiesced recovery profile completed successfully at
+  14:16 CEST. The digest-pinned coordinator rollout completed 55 tasks with
+  zero failures, including readiness, OIDC, SCIM reconciliation, and the
+  backchannel SCIM canary. Public health and the cache-busted management-v8 GET
+  both return HTTP 200; the unsupported HEAD probe returned the expected 405.
+- **Production opt-in:** Before mutation, the new schema existed and the active
+  Sep 1–Oct 1 window had zero Mistral reservations. Enabled exclusivity only on
+  `mistral:monthly` with an explicit deployment audit event. BlobForge appended
+  the zero `automatic-exclusive-reset` baseline covering exactly Sep 1 00:00
+  UTC and released all 22 snapshot-delayed jobs. The next guard correctly
+  deferred work for an expired USD/EUR rate.
+- **FX and paid canary:** The latest available ECB reference (31 August 2026)
+  was 1 EUR = 1.1596 USD. Recorded a 24-hour 0.91 EUR/USD quota rate, including
+  about a 5.5% conservative buffer and full source/reason audit evidence; it
+  released five jobs that had reached the FX gate. The worker completed and
+  published one validated 495-page artifact under a committed EUR 1.8018
+  conservative reservation (actual billed cash remains unknown), then reserved
+  EUR 0.70616 for the next 194-page job. SQLite remained healthy, no jobs were
+  quota-delayed, and the worker continued processing within the EUR 12.75
+  September ceiling.
 
 ## 2026-09-01 (Coordinator, Marker, and Hydration Production Rollout)
 

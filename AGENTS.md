@@ -38,6 +38,19 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-01:** Exclusive-consumer quota mode is deployed at BlobForge
+  revision `78f3874` / coordinator manifest `sha256:80dd45bf1b...`, pinned by
+  Gandalf `7814a69d`. Production `mistral:monthly` is explicitly opted in and
+  has one zero `automatic-exclusive-reset` snapshot for the Sep 1 00:00 UTC to
+  Oct 1 00:00 UTC window. There were zero current-window reservations before
+  opt-in; all 22 `snapshot_missing` delays cleared. A sourced 24-hour 0.91
+  EUR/USD rate (ECB 31 August: 1 EUR = 1.1596 USD, plus a conservative buffer)
+  cleared the independent FX gate. The first 495-page job committed one EUR
+  1.8018 conservative reservation and published one artifact; a 194-page job
+  then reserved EUR 0.70616. Actual billed cash remains unknown. Future window
+  resets need no manual zero snapshot, but cross-currency purchases still need
+  a current explicit FX observation; never conflate those two controls.
+
 - **2026-09-01:** Exclusive provider allowances need an explicit account flag,
   not a fabricated manual console snapshot. For an opted-in account already
   using provider-snapshot accounting, each scheduled window may receive one

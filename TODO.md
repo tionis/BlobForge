@@ -228,7 +228,7 @@ view; detailed research tasks remain in the sections below.
   count fresh post-snapshot reservations conservatively, require a separate
   Mistral Admin API key for automation, and support audited manual snapshots
   when that credential is unavailable.
-- [ ] Implement and deploy the explicitly opted-in exclusive-consumer quota
+- [x] Implement and deploy the explicitly opted-in exclusive-consumer quota
   mode, automatically establish the auditable September zero-at-reset baseline,
   and verify that it releases the 22 `snapshot_missing` Mistral jobs while
   preserving conservative reservation accounting.
