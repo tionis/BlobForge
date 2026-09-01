@@ -38,13 +38,19 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
-- **2026-09-01:** Revisions `582575b`, `092e8f9`, and `58e23ca` are local-only:
-  `main` is three commits ahead of `origin/main`. The latest successful GitHub
-  image workflow is still revision `badfa8e`; therefore the coordinator UI,
-  Marker recipe registration, MDAF-native hydrate/preview/download, and direct
-  TextPack hydration changes are not deployed. A production rollout must first
-  push, build, pin the resulting immutable images in Gandalf, and pass the
-  usual queue-preserving deployment checks.
+- **2026-09-01:** Revision `2f9bd91` is deployed on Citadel as coordinator
+  manifest `sha256:d0db743aa0ed...` and hosted-worker manifest
+  `sha256:b816f6b7e22a...`; Gandalf revision `6be00d6c` is the canonical pin.
+  The rollout rotated the Mistral worker credential while keeping both hosted
+  workers enabled. A quiesced pre-deployment recovery snapshot succeeded;
+  Ansible readiness plus private SCIM, public health/OIDC/SCIM, SQLite, exact
+  image-revision, UI-v7, recipe, and worker-state canaries passed. Startup
+  assigned exactly 431 still-unassigned raw legacy jobs to the Marker 1.10.2
+  enrichment composite without changing the 1,356 done / 453 todo counts.
+  Mistral is correctly reported as quota-exhausted because all 22 assigned jobs
+  require a new current-window manual provider snapshot; Datalab is idle.
+  An actual 436-page production MDAF hydrated to a validated TextPack with 328
+  assets in an isolated temporary directory, which was removed afterward.
 
 - **2026-08-31:** Hydration, download, and preview select retained artifacts
   independently from mutable job state. Current `mdaf/v1` packages are staged

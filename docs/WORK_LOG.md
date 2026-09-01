@@ -1,5 +1,60 @@
 # Work Log
 
+## 2026-09-01 (Coordinator, Marker, and Hydration Production Rollout)
+
+- **Objective:** Publish and deploy the coordinator UI/worker-state changes,
+  Marker legacy recipe, and MDAF/TextPack hydration repairs.
+- **Publication:** Committed the prior deployment-status record as `2f9bd91`,
+  pushed `badfa8e..2f9bd91`, and monitored GitHub Actions run `33486366108`.
+  Its tests/distribution, multi-architecture server, and multi-architecture
+  hosted-worker jobs passed. Skopeo resolved and verified revision labels for
+  coordinator manifest `sha256:d0db743aa0ed0ba2f144228475b5e9f2e376bee6896b6224517fcc61c13eeda3`
+  and hosted-worker manifest
+  `sha256:b816f6b7e22aefe92488a2fdfef6fe62ba6501aa9debe197f3d8fb542120e1df`.
+  The unrelated CPU/CUDA matrix jobs were still building when the deployed
+  server/hosted artifacts and canaries had completed.
+- **Gandalf:** Preserved two unrelated user-modified generated wiki files.
+  Updated only the exact service image pins and restored the owner's requested
+  enabled Mistral desired state. The preceding unpushed Gandalf commit already
+  rotated the exposed worker credential; coordinator and worker receive that
+  same replacement in one rollout. BlobForge role tests passed 4/4 (with only
+  a read-only pytest-cache warning), diff checks passed, and Citadel check mode
+  completed with zero failures. Committed/pushed canonical Gandalf revision
+  `6be00d6c`.
+- **Preflight/recovery:** Sanitized inspection found all three units active,
+  SQLite `quick_check=ok`, no processing jobs, and 1,356 done / 453 todo. The
+  configured application-consistent `restic-profile-blobforge` snapshot then
+  completed with `Result=success` and restarted all enabled services.
+- **Deployment:** Applied `playbooks/hosts/citadel.yml --limit citadel --tags
+  blobforge`. All 55 tasks completed with zero failures; only the three
+  secret-bearing Quadlets changed. Coordinator readiness, Authentik OIDC
+  reconciliation, private SCIM reconciliation, and the backchannel SCIM canary
+  passed without exposing credentials.
+- **Production verification:** All three units are active. Podman reports the
+  exact pinned manifests and full revision `2f9bd91742ac...`; the coordinator
+  is healthy. SQLite remains `ok` and queue counts remain 1,356 done / 453 todo.
+  Startup installed enabled Marker composite
+  `blake3:8f299a9230dc20143695f0f67517e3ae1edd3f3a8b060f6aa6f418465662976c`
+  and assigned exactly 431 eligible raw-only legacy jobs. Both hosted workers
+  re-registered idle with rotated/current credentials; the authenticated API
+  reports Datalab `idle` and Mistral `quota-exhausted` because its 22 assigned
+  jobs await a current-window manual provider snapshot. The Sep 1–Oct 1
+  Mistral EUR 12.75 window and UTC/day-1 schedules remain intact.
+- **Public and functional canaries:** Public health returns HTTP 200 JSON,
+  unauthenticated GET `/` redirects 307 to `/auth/login`, public SCIM returns
+  404, and immutable `management-v7.js` contains recipe filtering, compact
+  digests, availability state, and supersession logic. A dry-run production
+  lookup found the retained rulebook artifact. A full isolated canary then
+  downloaded and validated the real 436-page MDAF and directly emitted a valid
+  TextPack with 2,195,933 Markdown bytes, 328 assets, 331 members, and exact
+  wiki-v3 recipe provenance. Its temporary PDF, index, and TextPack were
+  removed.
+- **Diagnostics:** One Podman format probe was rejected by Ansible/Jinja before
+  remote execution; a sanitized JSON query replaced it. One read-only SQL
+  query had shell-quoting syntax failure after already proving `quick_check`
+  and queue counts; the corrected query passed. A HEAD probe returned the
+  documented 405, so the supported GET redirect canary was used and passed.
+
 ## 2026-09-01 (Latest-Fix Deployment Status Inspection)
 
 - **Objective:** Determine whether the latest coordinator/Marker and hydration

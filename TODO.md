@@ -2,7 +2,8 @@
 
 ## Canonical Conversion Roadmap
 
-- [ ] Push revisions `582575b..58e23ca`, wait for the container workflow, and
+- [x] Push revisions `582575b..58e23ca`, wait for the server/hosted container
+  jobs, and
   deploy the resulting immutable coordinator/worker image pins to Citadel with
   a queue-preserving rollout and production canaries.
 
