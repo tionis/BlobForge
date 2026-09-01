@@ -83,6 +83,13 @@
   EUR 0.70616 for the next 194-page job. SQLite remained healthy, no jobs were
   quota-delayed, and the worker continued processing within the EUR 12.75
   September ceiling.
+- **Cooldown/resumption:** Continued read-only monitoring found three committed
+  September conversions totaling 891 pages and EUR 3.24324 conservative
+  exposure. Mistral then rate-limited the account; BlobForge released two
+  reservations, deferred four jobs under the shared cooldown without charging
+  them, and resumed a new processing lease immediately after the 12:25:01 UTC
+  boundary. This confirms the rollout did not merely clear the snapshot gate;
+  normal provider backpressure still operates independently.
 
 ## 2026-09-01 (Coordinator, Marker, and Hydration Production Rollout)
 

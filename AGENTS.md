@@ -47,9 +47,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
   EUR/USD rate (ECB 31 August: 1 EUR = 1.1596 USD, plus a conservative buffer)
   cleared the independent FX gate. The first 495-page job committed one EUR
   1.8018 conservative reservation and published one artifact; a 194-page job
-  then reserved EUR 0.70616. Actual billed cash remains unknown. Future window
-  resets need no manual zero snapshot, but cross-currency purchases still need
-  a current explicit FX observation; never conflate those two controls.
+  then reserved EUR 0.70616. Continued monitoring reached three committed
+  conversions / 891 pages / EUR 3.24324 conservative exposure. A provider rate
+  limit released two reservations, deferred four jobs, and automatically
+  resumed processing after the shared cooldown. Actual billed cash remains
+  unknown. Future window resets need no manual zero snapshot, but cross-currency
+  purchases still need a current explicit FX observation; never conflate those
+  two controls.
 
 - **2026-09-01:** Exclusive provider allowances need an explicit account flag,
   not a fabricated manual console snapshot. For an opted-in account already
