@@ -2,6 +2,10 @@
 
 ## Canonical Conversion Roadmap
 
+- [ ] Push revisions `582575b..58e23ca`, wait for the container workflow, and
+  deploy the resulting immutable coordinator/worker image pins to Citadel with
+  a queue-preserving rollout and production canaries.
+
 The ordered roadmap for legacy enrichment, recipe evaluation, and worker
 deployment is documented in `docs/conversion_program_roadmap.md`. Detailed
 source-alignment decisions and acceptance gates are in

@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-01:** Revisions `582575b`, `092e8f9`, and `58e23ca` are local-only:
+  `main` is three commits ahead of `origin/main`. The latest successful GitHub
+  image workflow is still revision `badfa8e`; therefore the coordinator UI,
+  Marker recipe registration, MDAF-native hydrate/preview/download, and direct
+  TextPack hydration changes are not deployed. A production rollout must first
+  push, build, pin the resulting immutable images in Gandalf, and pass the
+  usual queue-preserving deployment checks.
+
 - **2026-08-31:** Hydration, download, and preview select retained artifacts
   independently from mutable job state. Current `mdaf/v1` packages are staged
   with the required `.mdaf` suffix, validated, and read from `text.md`; only

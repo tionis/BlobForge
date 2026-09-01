@@ -1,5 +1,22 @@
 # Work Log
 
+## 2026-09-01 (Latest-Fix Deployment Status Inspection)
+
+- **Objective:** Determine whether the latest coordinator/Marker and hydration
+  repairs are deployed.
+- **Inspection/tools:** Used read-only `git status`, `rev-parse`, `log`, remote
+  configuration, `rg`, and targeted `sed` inspection. The first sandboxed
+  GitHub CLI request could not reach `api.github.com`; the approved network
+  retry used `gh run list` read-only and succeeded. No repository code,
+  production service, image pin, queue, or external state was changed.
+- **Finding:** Local `main` at `58e23ca` is three commits ahead of
+  `origin/main`. GitHub Actions has no build for those commits; its latest
+  successful image workflow is run `33379151268` for `badfa8e`. Consequently
+  revisions `582575b`, `092e8f9`, and `58e23ca` have not been deployed.
+- **Next gate:** Push the commits, require a green image workflow, pin exact
+  manifests through Gandalf, then perform the queue-preserving rollout and
+  health/database/UI/worker canaries.
+
 ## 2026-08-31 (MDAF-Native Hydration and Direct TextPack Output)
 
 - **Objective:** Repair hydration for current MDAFs, make retained-artifact
