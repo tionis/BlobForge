@@ -2,6 +2,11 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Move hosted-worker temporary conversion trees from the 128 MiB tmpfs to
+  the private persistent provider volume, deploy the Quadlet change, and replay
+  the failed Cortex Prime job from its committed Mistral checkpoint at zero
+  provider cost.
+
 - [x] Push revisions `582575b..58e23ca`, wait for the server/hosted container
   jobs, and
   deploy the resulting immutable coordinator/worker image pins to Citadel with

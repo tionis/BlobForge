@@ -38,6 +38,27 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-01:** Hosted conversion work cannot use a fixed 128 MiB `/tmp`
+  tmpfs. Cortex Prime combines a 109,792,283-byte source, a 15,261,836-byte
+  cached Mistral response, roughly 9,081,447 decoded image bytes, and MDAF
+  staging; it failed with `ENOSPC` despite 611 GiB of host space. Keep the small
+  tmpfs for incidental files, but set `TMPDIR` to a private directory on the
+  persistent provider volume so Python temporary trees are disk-backed and
+  automatically removed. Its 256-page provider purchase is already committed
+  under checkpoint `sha256:cd5b2e69...`; recover only by cached replay and
+  verify that no second paid request is created.
+
+- **2026-09-01:** The hosted-worker ENOSPC incident is closed by Gandalf
+  `a9158793`: both workers set `TMPDIR=/var/lib/blobforge-provider`, backed by
+  the private persistent/recovery volume with 611 GiB free, while retaining the
+  128 MiB tmpfs for uv and incidental files. Cortex Prime replayed checkpoint
+  `sha256:cd5b2e69...` with a zero-request/zero-page/zero-money cache-hit
+  reservation and published 19,278,999-byte artifact
+  `blake3:77c77b0293459b75a378b848fe572a59ecfcb83197737f4ff3447e8126df69d7`
+  at retry count 2. The original 256-page / EUR 0.93184 reservation remains the
+  sole paid purchase. Both provider roots were free of leftover
+  `blobforge-*` temporary trees after completion.
+
 - **2026-09-01:** Exclusive-consumer quota mode is deployed at BlobForge
   revision `78f3874` / coordinator manifest `sha256:80dd45bf1b...`, pinned by
   Gandalf `7814a69d`. Production `mistral:monthly` is explicitly opted in and

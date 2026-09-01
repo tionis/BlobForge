@@ -1,5 +1,46 @@
 # Work Log
 
+## 2026-09-01 (Hosted Worker Temporary-Storage Exhaustion)
+
+- **Objective:** Diagnose and recover the failed Cortex Prime Mistral job
+  without purchasing OCR twice, then prevent equivalent large-PDF failures.
+- **Inspection/tools:** Used read-only `rg`/`sed`, Citadel `df`, container `df`,
+  sanitized SQLite queries, and a bounded cached-response size calculation.
+  Updated the incident plan before changing deployment state.
+- **Finding:** Citadel has 611 GiB free, while each hosted worker receives only
+  a 128 MiB `/tmp` tmpfs. Cortex Prime is 109,792,283 bytes; its durable Mistral
+  response is 15,261,836 bytes and contains 333 images totaling approximately
+  9,081,447 decoded bytes. The recipe worker, converter runner, rendered bundle,
+  and final MDAF all stage beneath Python's temporary directory, so this valid
+  job cannot fit even though host storage is healthy.
+- **Purchase safety:** Reservation `qres_3693a7e878394f5f01e722b2` is committed
+  for exactly 256 pages / EUR 0.93184 conservative exposure and checkpoint
+  `sha256:cd5b2e69...`; the complete response JSON remains in the persistent
+  provider cache. The failed job has no new Mistral artifact. Retry only after
+  moving temporary work to disk; it must be a cache hit and must not create a
+  second paid request.
+- **Fix/deployment:** Gandalf commit `a9158793` sets `TMPDIR` to each worker's
+  private `/var/lib/blobforge-provider` mount while retaining the 128 MiB tmpfs
+  for uv and incidental files. Updated the role design and assertion test; all
+  4 focused tests passed. Citadel check mode completed with zero failures. A
+  quiesced backup completed successfully at 14:46 CEST before the worker
+  restart, preserving the paid response. The 55-task deployment passed
+  readiness, OIDC, SCIM, and backchannel canaries. Both containers report the
+  disk-backed directory through `tempfile.gettempdir()`, with 611 GiB free;
+  `/tmp` is empty.
+- **Recovery:** Requeued Cortex Prime without resetting its retry history. The
+  replay reservation was `cache_hit=1`, zero requests, zero pages, and zero
+  monetary exposure. It completed at retry count 2, published Mistral artifact
+  `blake3:77c77b0293459b75a378b848fe572a59ecfcb83197737f4ff3447e8126df69d7`
+  (19,278,999 bytes), and retained the original committed 256-page / EUR
+  0.93184 purchase exactly once. SQLite `quick_check` and ZIP integrity passed,
+  all three services are active, and neither provider volume retained a
+  `blobforge-*` temporary directory after completion.
+- **Diagnostics:** Two read-only verification queries used obsolete guessed
+  column names (`jobs.error` and `artifacts.object_key`) and failed without
+  changing state. Schema inspection corrected them to `blocked_reason` and
+  `storage_path`; all subsequent checks passed.
+
 ## 2026-09-01 (September Mistral Window Verification)
 
 - **Objective:** Verify whether the September allowance window is active and

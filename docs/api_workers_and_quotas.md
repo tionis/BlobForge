@@ -18,9 +18,22 @@ Podman Quadlet per provider account, with:
 - an unprivileged container UID with a provider-specific writable cache;
 - uv's disposable runtime cache explicitly rooted on the writable `/tmp`
   tmpfs, never under the read-only application tree;
-- a persistent, backed-up response-checkpoint volume;
+- a persistent, backed-up response-checkpoint volume which also provides the
+  worker's private disk-backed `TMPDIR`;
 - access to the coordinator over the host-local listener; and
 - conservative CPU, memory, process, and restart limits.
+
+The small `/tmp` tmpfs is not a conversion workspace. A single job can retain
+the source PDF while simultaneously staging the native provider response,
+decoded assets, bundle members, and final archive; its safe temporary capacity
+must therefore be sized for their combined peak, not merely the source file.
+Hosted containers set Python's `TMPDIR` to their private provider volume. The
+worker and converter use self-cleaning `TemporaryDirectory` trees there, while
+the response cache remains durable across retries and restarts. Application-
+consistent backups stop workers before snapshotting this shared recovery
+boundary, so no active temporary tree is captured. Startup or operational
+checks may remove only positively identified stale `blobforge-*` temporary
+directories after proving that no worker process owns them.
 
 The coordinator remains the sole scheduler and quota authority. A hosted
 worker can advertise multiple recipes for one provider account and can process
