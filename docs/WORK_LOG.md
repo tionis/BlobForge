@@ -1,5 +1,14 @@
 # Work Log
 
+- 2026-09-06: Read-only Citadel diagnosis found a request-only allowance on an
+  older recipe and a current monetary shortfall of EUR 1.267609. No allowance
+  or budget was increased. Show recipe versions/profiles in catalog/selectors,
+  explain last-probe shortfalls and exact-recipe scope, remove the misleading
+  eligibility toast, and replace unused allowances explicitly rather than
+  selecting an older insufficient approval. Nonqueued jobs require explicit
+  retry. Added executable browser and reservation regression tests. No MDAF,
+  extraction recipe or Vulcan agent workflow changes are required.
+
 - FX evidence follow-up: same-day reference-feed corrections append a new exact
   ratio instead of reusing an earlier quote for that date. Regression verifies
   the old immutable rate remains unchanged. Full suite/build revalidated.

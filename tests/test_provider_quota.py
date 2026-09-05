@@ -279,6 +279,22 @@ def test_claim_cannot_broaden_registered_explicit_only_capability(tmp_path):
     assert database.claim("hosted", ["3_normal"], [broadened]) is None
 
 
+@pytest.mark.parametrize("status", ["failed", "dead", "processing", "done"])
+def test_quota_allowance_requires_explicitly_queued_job(tmp_path, status):
+    database = _database(tmp_path)
+    _enqueue(database, "a" * 64)
+    _claim(database, "a" * 64)
+    with database.transaction() as db:
+        db.execute("UPDATE jobs SET status=?", (status,))
+    with pytest.raises(Conflict, match="queued job"):
+        database.create_quota_override(
+            "a" * 64, "hosted-recipe-v1", extra_requests=1, extra_pages=0,
+            extra_micro_usd=0, reason="test", actor="admin:test",
+            expires_at=now_ms() + 3_600_000,
+        )
+    assert database.quota_records("a" * 64)["overrides"] == []
+
+
 def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp_path):
     database = _database(tmp_path)
     _enqueue(database, "a" * 64)
@@ -317,6 +333,15 @@ def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp
     assert blocked["retry_count"] == 0
     assert blocked["not_before"] is not None
 
+    insufficient = database.create_quota_override(
+        second["hash"], "hosted-recipe-v1", extra_requests=1,
+        extra_pages=0, extra_micro_usd=0, reason="request only", actor="admin:test",
+        expires_at=now_ms() + 3_600_000,
+    )
+    attempted = _claim(database, second["hash"])
+    assert not database.reserve_quota(
+        attempted["hash"], "hosted", attempted["lease_token"], _probe(attempted)
+    )["authorized"]
     override = database.create_quota_override(
         second["hash"],
         "hosted-recipe-v1",
@@ -335,7 +360,10 @@ def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp
     assert overage["authorized"]
     assert overage["reservation"]["override_id"] == override["id"]
     records = database.quota_records(second["hash"])
-    assert records["overrides"][0]["consumed_by"] == overage["reservation"]["id"]
+    records_by_id = {row["id"]: row for row in records["overrides"]}
+    assert records_by_id[override["id"]]["consumed_by"] == overage["reservation"]["id"]
+    assert records_by_id[insufficient["id"]]["revoked_at"] is not None
+    assert records_by_id[insufficient["id"]]["consumed_by"] is None
 
 
 @pytest.mark.parametrize('budget,authorized', [(40000, True), (1, False)])

@@ -1505,8 +1505,16 @@ class Database:
                 raise KeyError(key)
             if job["recipe_digest"] != recipe_digest:
                 raise Conflict("quota override recipe must match the exact queued job recipe")
-            if job["status"] in {"processing", "done"}:
-                raise Conflict("quota overrides can be attached only before a provider attempt")
+            if job["status"] != "todo":
+                raise Conflict("quota overrides require a queued job; retry failed/dead jobs first")
+            # An updated allowance replaces, never stacks with, unused authority.
+            # Retain revoked rows as immutable approval history.
+            db.execute(
+                """UPDATE job_quota_overrides SET revoked_at=?
+                WHERE source_key=? AND recipe_digest=? AND revoked_at IS NULL
+                AND consumed_by IS NULL""",
+                (timestamp, key, recipe_digest),
+            )
             db.execute(
                 """INSERT INTO job_quota_overrides(id,source_key,recipe_digest,extra_requests,
                 extra_pages,extra_micro_usd,reason,actor,expires_at,created_at)

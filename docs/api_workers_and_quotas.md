@@ -235,6 +235,17 @@ The UI presents this as **Allow one quota overage**, and the API requires:
 - explicit `confirm=true` after the estimated allowance is known.
 
 There is intentionally no permanent `ignore_quota` job flag. The allowance is
+only accepted for a queued (`todo`) job; failed/dead jobs must be explicitly
+retried first. A new allowance replaces (revokes) any unused allowance for the
+same exact job and recipe; amounts never stack. Old approvals remain audited.
+Recipe upgrades do not transfer spending authority: approve the current recipe.
+The console shows lifecycle versions/profiles and digest identities in recipe
+lists and selectors. The allowance dialog shows the last recorded shortfall;
+request, page and spending limits are independent. An extra request with zero
+extra cost cannot exceed a monetary budget. Estimates and usage can change
+between that probe and the next reservation, which rechecks all safeguards.
+
+The allowance is
 consumed by one reservation, remains in the audit/usage ledger, and is visible
 on the job detail page. An administrator can revoke an unused allowance. The
 override changes only BlobForge budget arithmetic; rights, privacy, recipe

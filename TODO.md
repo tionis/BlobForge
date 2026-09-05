@@ -2,6 +2,9 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Distinguish recipe versions throughout console selection and explain
+  overage shortfalls; replace unused exact-recipe allowances without stacking.
+
 - [x] Refresh FX automatically with durable last-known/bootstrap fallback,
   auditable conservative estimates, admin warnings and no FX-related job gate.
 

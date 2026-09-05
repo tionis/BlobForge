@@ -38,6 +38,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** Quota allowances are independent request/page/money bounds,
+  not a bypass flag. Replacing an unused exact-recipe allowance revokes the old
+  row without stacking authority. Automatic recipe upgrades do not transfer
+  approvals. Diagnose the persisted quota shortfall before promising eligibility.
+
 - **2026-09-06:** FX retrieval is best-effort and must never gate provider
   availability. Keep HTTP outside reservation transactions; retain last-known
   evidence, bootstrap offline, warn admins, and preserve quota/purchase checks.
