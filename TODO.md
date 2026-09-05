@@ -2,6 +2,9 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Add filename-based and bulk CLI downloads with MDAF filtering, JSON/dry-run
+  manifests, collision checks and atomic no-clobber file publication.
+
 - [x] Show lifecycle recipe versions in job artifacts, normalize filename search,
   reject stale UI search responses and give downloads portable source filenames.
 

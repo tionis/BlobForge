@@ -38,6 +38,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** `download` is read-only with respect to coordinator state.
+  Filename/bulk lookup uses the admin search endpoint; source keys retain the
+  existing client API. Check every output collision before transfers and stage
+  beside the destination; never silently overwrite or queue a missing MDAF.
+
 - **2026-09-05:** Artifact format, lifecycle recipe version and normalization
   profile are separate axes (wiki-v5 is recipe 1.4.0/profile wiki-v4). Download
   filenames are presentation metadata, not storage identity. Job search must

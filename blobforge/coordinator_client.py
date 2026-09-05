@@ -227,6 +227,11 @@ class CoordinatorClient:
             raise CoordinatorError("Coordinator did not return an output download URL")
         return url
 
+    def list_jobs(self, *, search: str, limit: int = 200, offset: int = 0) -> Dict[str, Any]:
+        """Search source filenames, paths, tags and keys (administrator scope)."""
+        query = urlencode({"search": search, "limit": limit, "offset": offset})
+        return self._request("GET", f"/api/v1/admin/jobs?{query}") or {}
+
     def list_artifacts(self, file_hash: str) -> List[Dict[str, Any]]:
         """List every retained conversion artifact for a source document."""
         payload = self._request("GET", f"/api/v1/jobs/{file_hash}/artifacts") or {}

@@ -1,5 +1,12 @@
 # Work Log
 
+- CLI artifact downloads now resolve source keys or unambiguous filenames and
+  paginate explicit bulk searches. Added --mdaf/--dry-run/--json/--force, source
+  filenames and directory output, full-plan collision checks, atomic publication
+  and partial-transfer cleanup. Existing exact-recipe selection is preserved;
+  no conversion requests are issued. Added lookup, bulk, ambiguity, overwrite,
+  race and interrupted-download regressions; full pytest/build validation.
+
 - Artifact discovery: added lifecycle/profile UI labels, refreshed catalog on
   detail opening, Unicode/separator-aware search and out-of-order response
   protection. Downloads now use sanitized source basenames with RFC 5987 Unicode

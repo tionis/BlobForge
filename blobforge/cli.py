@@ -1764,49 +1764,44 @@ def cmd_watch(args):
 
 
 def cmd_download(args):
-    """Download completed job results."""
+    """Download retained artifacts by source identity or filename."""
+    from .downloads import download_one, plan_downloads, resolve_sources
+
     if not _apply_coordinator_overrides(args):
         return 1
-    coordinator = _coordinator_client()
-    if not coordinator:
-        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
-        return 1
-    job_hash = args.hash
-    output_path = args.output
-    recipe_digest = args.recipe_digest
-
-    job = coordinator.get_job(job_hash)
-    if not job:
-        print(f"Error: Job {job_hash} does not exist.")
-        return 1
+    json_output = getattr(args, "json", False)
+    completed = []
     try:
-        artifact = hydrator_module.select_artifact(
-            {**job, "artifacts": coordinator.list_artifacts(job_hash)}, recipe_digest
+        coordinator = _coordinator_client()
+        if not coordinator:
+            raise ValueError("BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        search = getattr(args, "search", None)
+        jobs = resolve_sources(coordinator, getattr(args, "hash", None), search)
+        plans, skipped = plan_downloads(
+            coordinator, jobs, output=args.output, recipe_digest=args.recipe_digest,
+            mdaf=getattr(args, "mdaf", False), bulk=search is not None,
+            force=getattr(args, "force", False),
         )
-    except RuntimeError as exc:
-        print(f"Error: {exc}")
-        return 1
-    if artifact is None:
-        print(f"Error: No retained artifact exists for job {job_hash} and that recipe.")
-        return 1
-    recipe_digest = artifact.get("recipe_digest")
-    artifact_type = str(artifact.get("artifact_type") or "legacy-archive")
-
-    if output_path is None:
-        suffix = f".{recipe_digest[:12]}" if recipe_digest else ""
-        extension = ".mdaf" if artifact_type == "mdaf/v1" else ".zip"
-        output_path = f"{job_hash}{suffix}{extension}"
-
-    selected = f" recipe {recipe_digest}" if recipe_digest else " selected recipe"
-    print(f"Downloading {job_hash}{selected} to {output_path}...")
-
-    try:
-        coordinator.download_output(job_hash, output_path, recipe_digest)
-        print(f"Downloaded: {output_path}")
-        print(f"Size: {os.path.getsize(output_path):,} bytes")
+        dry_run = getattr(args, "dry_run", False)
+        if not dry_run:
+            for plan in plans:
+                download_one(coordinator, plan, force=getattr(args, "force", False))
+                completed.append(plan)
+        if json_output:
+            print(json.dumps({"dry_run": dry_run, "downloads": plans, "skipped": skipped}, indent=2))
+        else:
+            for plan in plans:
+                print(f"{'Would download' if dry_run else 'Downloaded'}: {plan['output']} (recipe {plan['recipe_digest'] or 'legacy'})")
+            for item in skipped:
+                print(f"Skipped {item['hash']}: {item['reason']}")
         return 0
-    except Exception as e:
-        print(f"Error downloading: {e}")
+    except Exception as exc:
+        if json_output:
+            print(json.dumps({"error": str(exc), "completed": completed}))
+        else:
+            print(f"Error downloading: {exc}")
+            for plan in completed:
+                print(f"Already downloaded: {plan['output']}")
         return 1
 
 
@@ -2574,8 +2569,13 @@ def main():
     
     # Download
     p_download = subparsers.add_parser("download", help="Download completed job results")
-    p_download.add_argument("hash", help="SHA256 hash of the PDF")
-    p_download.add_argument("--output", "-o", help="Output path (default: <hash>.zip)")
+    p_download.add_argument("hash", nargs="?", help="Source key or unambiguous PDF filename")
+    p_download.add_argument("--search", help="Download all matching sources (filename/path/tag search; admin scope)")
+    p_download.add_argument("--output", "-o", help="Output file or existing directory (default: source name in current directory)")
+    p_download.add_argument("--mdaf", action="store_true", help="Only download retained MDAF artifacts; never convert")
+    p_download.add_argument("--dry-run", action="store_true", help="Preview selection and paths without downloading")
+    p_download.add_argument("--json", action="store_true", help="Emit a JSON download manifest")
+    p_download.add_argument("--force", action="store_true", help="Replace existing regular output files")
     p_download.add_argument("--recipe-digest", type=_recipe_digest_arg,
                             help="Download a retained recipe instead of the selected artifact")
     p_download.add_argument("--coordinator-url", help="Coordinator base URL")

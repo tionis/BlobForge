@@ -219,6 +219,10 @@ blobforge artifacts <document-hash>
 blobforge download <document-hash> --recipe-digest <recipe-digest>
 blobforge preview <document-hash> --recipe-digest <recipe-digest>
 
+# Download named MDAFs directly into a Vulcan reference directory
+blobforge download "My Rulebook.pdf" --mdaf -o ./references/
+blobforge download --search "rulebook" --mdaf -o ./references/ --dry-run --json
+
 # Preview, then select an existing artifact or queue an exact recipe
 blobforge request-conversion <document-hash> <recipe-digest> --dry-run
 blobforge request-conversion <document-hash> <recipe-digest>
