@@ -1,0 +1,78 @@
+{
+  "adapter": {
+    "contract": "dev.tionis.blobforge.converter-bundle/v1",
+    "generation": 6,
+    "name": "blobforge-mistral-adapter",
+    "version": "0.2.0"
+  },
+  "artifact": {
+    "format": "mdaf",
+    "version": 1
+  },
+  "base_recipe": {
+    "digest": "blake3:982a97ca1d45f5a0ac30dd8c7507efb594688d1b949f406ef4620f3352e723c7",
+    "path": "mistral-ocr-4.1-v1.json"
+  },
+  "engine": "mistral-ocr-wiki",
+  "lifecycle": {
+    "extraction": {
+      "expensive": true,
+      "major": 1,
+      "native_members": [
+        "renditions/ai.mistral/ocr-response.json"
+      ],
+      "recipe_digest": "blake3:982a97ca1d45f5a0ac30dd8c7507efb594688d1b949f406ef4620f3352e723c7",
+      "replace_requires_recipe_major": true,
+      "version": "1.0.0"
+    },
+    "family": "mistral-ocr-wiki",
+    "postprocessing": {
+      "generation": 4,
+      "profile": "wiki-v4",
+      "version": "4.0.0"
+    },
+    "recipe_version": "1.4.0",
+    "upgrade": {
+      "automatic": true,
+      "from_recipe_digests": [
+        "blake3:52d29542b2171c154f877d59e4e16019b85296ac4d12a6de97d2080a81a18dba",
+        "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026",
+        "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139",
+        "blake3:398abf64649330c58f1493898bd19c338e98d07aa3cd4459c965ebd384df3f6c"
+      ]
+    }
+  },
+  "markdown": {
+    "assets": "omit-unreferenced-after-normalization",
+    "features": [
+      "raw-html",
+      "semantic-html-table-v1"
+    ],
+    "lists": "provider-block-evidenced-decorative-glyph-normalization-v1",
+    "page_join": "two-line-feeds",
+    "tables": "strict-semantic-html-from-provider-pipe-grid-v1"
+  },
+  "normalization": {
+    "ambiguous_content": "retain",
+    "footer_images": "remove-only-bottom-ten-percent-and-height-at-most-fifteen-percent",
+    "headers_and_footers": "remove-provider-typed-blocks",
+    "list_decorations": "remove-only-after-existing-markdown-list-marker",
+    "list_recovery": "two-or-more-consecutive-provider-text-blocks-with-line-initial-decorative-glyph",
+    "profile": "wiki-v4",
+    "version": "4.0.0"
+  },
+  "publication": {
+    "mapping": "provider-page-boundaries-after-normalization-v1",
+    "unsupported_precision": "retain-native-only",
+    "outline": "toc-led-book-outline-v2",
+    "page_labels": "unique-observed-arabic-footer-label-v1",
+    "references": "explicit-local-singular-page-mentions-v1",
+    "hierarchy": {
+      "relative_geometry_ratio": 0.65,
+      "offset_minimum_votes": 3,
+      "offset_minimum_agreement": 0.75,
+      "inferred_labels_for_citations": false
+    }
+  },
+  "schema": "dev.tionis.blobforge.recipe/v3"
+}

@@ -2,6 +2,10 @@
 
 Date: 2026-09-05
 
+The expanded corpus and opt-in wiki-v5 follow-up are documented in
+[TOC-led hierarchy experiments](mdaf_hierarchy_experiments.md). The v4 results
+below remain the historical baseline, not the latest recommendation.
+
 ## Implemented repair and end-to-end results
 
 The new opt-in `mistral-ocr-4.1-wiki-v4.json` recipe uses normalization profile

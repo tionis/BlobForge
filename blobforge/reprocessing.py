@@ -153,13 +153,13 @@ def reprocess_mdaf(
             path
             for path, member in parent_members.items()
             if member.get("role") in {"rendition", "environment", "source"}
-            or (member.get("role") == "extension" and lifecycle.postprocessing_profile == "wiki-v3")
+            or (member.get("role") == "extension" and lifecycle.postprocessing_profile in {"wiki-v3", "wiki-v4"})
         }
         carry_paths.update(lifecycle.native_members)
         carry_paths.discard(RECIPE_MEMBER_PATH)
         replaced_paths = {PARENT_INFO_PATH, PARENT_PROVENANCE_PATH, PREVIOUS_RECIPE_PATH,
                           "extensions/dev.tionis.blobforge/hierarchy.json"}
-        if lifecycle.postprocessing_profile != "wiki-v3":
+        if lifecycle.postprocessing_profile not in {"wiki-v3", "wiki-v4"}:
             carry_paths.difference_update(replaced_paths)
         carried_members: list[MdafMemberInput] = []
         for path in sorted(carry_paths):

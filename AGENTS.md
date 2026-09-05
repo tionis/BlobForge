@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Expanded book hierarchy recovery is wiki-v5/profile wiki-v4.
+  Keep older recipes frozen. Use structural contents detection, explicit TOC
+  groups/numbered series before geometry, and same-column wrapped-title joins.
+  Do not assign a longer single-line title's geometry to its prefix. Inferred
+  hierarchy page offsets require corroboration and must never become observed
+  citation labels. Geometry recovery always requires review; see
+  `docs/mdaf_hierarchy_experiments.md` and the offline sweep script.
+
 - **2026-09-05:** Mistral wiki-v4 (normalization profile wiki-v3) is an opt-in
   evidence-backed book-outline recipe; frozen earlier recipes and the worker's
   v3 default are unchanged. It retains primary Markdown/native response bytes,

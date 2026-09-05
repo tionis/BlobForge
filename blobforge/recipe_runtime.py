@@ -160,6 +160,18 @@ def mistral_wiki_v4_recipe(**kwargs: Any) -> AdapterRecipe:
                    parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v3"})
 
 
+def mistral_wiki_v5_recipe(**kwargs: Any) -> AdapterRecipe:
+    """Opt-in TOC-led hierarchy, with the frozen extraction/cache identity."""
+    runtime = mistral_wiki_v3_recipe(**kwargs)
+    root = Path(kwargs.get("repository") or Path(__file__).resolve().parent.parent)
+    recipe = json.loads((root / "blobforge/recipes/mistral-ocr-4.1-wiki-v5.json").read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    if digest != "blake3:6ca8dda0c845605dd969134e208bfea44988f8ca72ff85fceea428359bf41eec":
+        raise RuntimeError(f"mistral-wiki-v5 recipe identity changed: {digest}")
+    return replace(runtime, key="mistral-wiki-v5", recipe=recipe, recipe_digest=digest,
+                   parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v4"})
+
+
 def datalab_wiki_v1_recipe(
     *,
     repository: str | Path | None = None,

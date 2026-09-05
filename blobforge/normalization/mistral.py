@@ -120,14 +120,14 @@ def render_mistral_response(
     source_id: str = "document",
 ) -> MistralRendered:
     """Create Markdown, page mappings, and assets without provider access."""
-    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3"}:
+    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4"}:
         raise ValueError("unsupported normalization_profile")
     pages = validate_response(native, source_pages)
     normalization_stats = None
-    if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3"}:
+    if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4"}:
         normalized_pages, normalization_stats = normalize_mistral_pages(
             pages,
-            normalize_lists=normalization_profile in {"wiki-v2", "wiki-v3"},
+            normalize_lists=normalization_profile in {"wiki-v2", "wiki-v3", "wiki-v4"},
         )
     else:
         normalized_pages = [page["markdown"] for page in pages]
@@ -196,13 +196,17 @@ def render_mistral_response(
             mappings.append(mapping)
     source_map = {"mappings": mappings, "references": []}
     outline = report = None
-    if normalization_profile == "wiki-v3":
+    if normalization_profile in {"wiki-v3", "wiki-v4"}:
         labels = page_labels(pages)
         for mapping in mappings:
             selector = mapping["source"]["selectors"][0]
             if selector["start"] in labels:
                 selector["label_start"] = labels[selector["start"]]
-        outline, report = book_outline(markdown, pages, source_map)
+        if normalization_profile == "wiki-v4":
+            from .book_structure import recover_book_structure
+            outline, report = recover_book_structure(markdown, pages, source_map)
+        else:
+            outline, report = book_outline(markdown, pages, source_map)
         source_map["references"] = page_references(markdown, labels, source_id)
         report["observed_page_labels"] = len(labels)
         report["source_references"] = len(source_map["references"])

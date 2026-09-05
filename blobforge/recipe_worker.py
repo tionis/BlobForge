@@ -283,7 +283,7 @@ class RecipeWorker:
                     started = time.monotonic()
                     if input_kind == "artifact":
                         metadata = {}
-                        if recipe.recipe.get("normalization", {}).get("profile") == "wiki-v3" and job.get("original_name"):
+                        if recipe.recipe.get("normalization", {}).get("profile") in {"wiki-v3", "wiki-v4"} and job.get("original_name"):
                             metadata["source_name"] = job["original_name"]
                         result = self.reprocessor(source, recipe.recipe, artifact, **metadata)
                         elapsed_seconds = time.monotonic() - started

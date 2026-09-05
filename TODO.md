@@ -10,7 +10,9 @@
   whole-book Vulcan output before promoting its exact recipe.
 - [x] Add normalized cross-reference targets only where printed-page labels
   and final Markdown spans are independently supported by retained evidence.
-- [ ] Promote the opt-in Mistral wiki-v4 recipe to hosted deployments only after
+- [x] Evaluate the expanded nine-book corpus and implement the separately
+  versioned TOC-led wiki-v5 recipe with recorded uncertainty and synthetic tests.
+- [ ] Promote the opt-in Mistral wiki-v5 recipe to hosted deployments only after
   operator review of the recorded whole-book results and exact recipe digest.
 
 - [x] Move hosted-worker temporary conversion trees from the 128 MiB tmpfs to

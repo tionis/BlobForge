@@ -1,5 +1,33 @@
 # Work Log
 
+## 2026-09-05 (Expanded TOC-led hierarchy tuning)
+
+- Evaluated all ten supplied filenames/nine distinct native responses without
+  provider calls. Read retained contents, title blocks, geometry, Markdown,
+  and source maps. Compared the frozen geometry-led baseline to structural TOC,
+  numbered-series, explicit-tier, and relative-geometry candidates using uv.
+- Added the offline JSONL sweep script and tested ratios 0.55/0.65/0.75.
+  Rejected global wide-title rescue and height-only selection after they
+  promoted scenarios/subsections. Retained 0.65 and review diagnostics for the
+  fallback; exact TOC groups dominate typography. Repaired same-column wrapped
+  titles, split authored titles, prefix geometry leakage, and topic depth.
+- Added recipe wiki-v5/profile wiki-v4 with unchanged extraction identity,
+  frozen earlier recipes, evaluator/worker selection, and offline reprocessing.
+  Native response and primary Markdown bytes are unchanged. Offset hypotheses
+  are hierarchy evidence only, never invented observed citation labels.
+- Added synthetic regressions, including negative and localized cases. Full
+  suite: 363 tests plus 5 subtests passed. New Python files pass ruff; uv builds
+  source and wheel packages. The separate quota fixture commit removes the
+  reproducible millisecond collision encountered during verification.
+- Actual Vulcan imports use disposable, separate vaults at both chapter and
+  topic depth, checking disjoint/full source spans, root remainders, asset byte
+  identity, and generated navigation/citation targets. The expanded results
+  are documented in `docs/mdaf_hierarchy_experiments.md` and Vulcan's pipeline
+  investigation. No deployment, source archive replacement, or paid OCR ran.
+- Reviewed the MDAF SPEC and bundled import skill: no new core fields, commands,
+  or provider-aware consumer logic are required. Existing explicit authority,
+  depth selection, and immutable-evidence guardrails remain applicable.
+
 ## 2026-09-05 (Deterministic quota concurrency fixture)
 
 - Repeated full-suite hierarchy verification exposed the existing concurrency

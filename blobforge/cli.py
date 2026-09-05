@@ -855,6 +855,7 @@ def cmd_evaluate_converter(args):
         "mistral-wiki-v2": "mistral",
         "mistral-wiki-v3": "mistral",
         "mistral-wiki-v4": "mistral",
+        "mistral-wiki-v5": "mistral",
         "datalab-wiki": "datalab",
     }.get(args.engine, args.engine)
     project = repository / "evaluators" / provider_engine
@@ -879,6 +880,7 @@ def cmd_evaluate_converter(args):
         "mistral-wiki-v2",
         "mistral-wiki-v3",
         "mistral-wiki-v4",
+        "mistral-wiki-v5",
     }:
         raw_recipe_path = (
             repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
@@ -890,7 +892,7 @@ def cmd_evaluate_converter(args):
             / "recipes"
             / (
                 f"mistral-ocr-4.1-wiki-{args.engine.rsplit('-', 1)[1]}.json"
-                if args.engine in {"mistral-wiki-v3", "mistral-wiki-v4"}
+                if args.engine in {"mistral-wiki-v3", "mistral-wiki-v4", "mistral-wiki-v5"}
                 else (
                     "mistral-ocr-4.1-wiki-v2.json"
                     if args.engine == "mistral-wiki-v2"
@@ -909,11 +911,11 @@ def cmd_evaluate_converter(args):
             parameters["provider_request_digest"] = blake3_bytes(
                 canonical_json_bytes(raw_recipe)
             )
-            parameters["normalization_profile"] = (
-                "wiki-v3" if args.engine == "mistral-wiki-v4" else "wiki-v2"
-                if args.engine in {"mistral-wiki-v2", "mistral-wiki-v3", "mistral-wiki-v4"}
-                else "wiki-v1"
-            )
+            parameters["normalization_profile"] = {
+                "mistral-wiki": "wiki-v1", "mistral-wiki-v2": "wiki-v2",
+                "mistral-wiki-v3": "wiki-v2", "mistral-wiki-v4": "wiki-v3",
+                "mistral-wiki-v5": "wiki-v4",
+            }[args.engine]
         parameters["api_rights_confirmed"] = args.confirm_api_rights
         response_cache = Path(
             args.response_cache
@@ -1253,7 +1255,7 @@ def cmd_worker(args):
 
 def cmd_recipe_worker(args):
     """Start the exact-recipe, isolated MDAF worker."""
-    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe, mistral_wiki_v4_recipe
+    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe, mistral_wiki_v4_recipe, mistral_wiki_v5_recipe
     from .recipe_worker import RecipeWorker
 
     coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
@@ -1270,7 +1272,7 @@ def cmd_recipe_worker(args):
         return 1
     try:
         factory = (
-            (mistral_wiki_v4_recipe if args.mistral_recipe == "v4" else mistral_wiki_v3_recipe)
+            {"v3": mistral_wiki_v3_recipe, "v4": mistral_wiki_v4_recipe, "v5": mistral_wiki_v5_recipe}[args.mistral_recipe]
             if args.provider == "mistral"
             else datalab_wiki_v1_recipe
         )
@@ -2282,6 +2284,7 @@ def main():
             "mistral-wiki-v2",
             "mistral-wiki-v3",
             "mistral-wiki-v4",
+            "mistral-wiki-v5",
             "datalab",
             "datalab-wiki",
         ),
@@ -2494,7 +2497,7 @@ def main():
         help="Start an isolated exact-recipe MDAF worker (canary)",
     )
     p_recipe_worker.add_argument("--run-once", action="store_true")
-    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4"], default="v3",
+    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4", "v5"], default="v3",
                                  help="Explicit Mistral post-processing release; v4 adds book hierarchy evidence")
     p_recipe_worker.add_argument(
         "--provider", choices=("mistral", "datalab"), default="mistral"
