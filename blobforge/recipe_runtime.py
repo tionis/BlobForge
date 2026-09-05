@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -146,6 +146,18 @@ def mistral_wiki_v3_recipe(
         provider="mistral-ai",
         claim_unassigned=False,
     )
+
+
+def mistral_wiki_v4_recipe(**kwargs: Any) -> AdapterRecipe:
+    """Opt-in book hierarchy recipe; reuse the exact frozen extraction runtime."""
+    runtime = mistral_wiki_v3_recipe(**kwargs)
+    root = Path(kwargs.get("repository") or Path(__file__).resolve().parent.parent)
+    recipe = json.loads((root / "blobforge/recipes/mistral-ocr-4.1-wiki-v4.json").read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    if digest != "blake3:398abf64649330c58f1493898bd19c338e98d07aa3cd4459c965ebd384df3f6c":
+        raise RuntimeError(f"mistral-wiki-v4 recipe identity changed: {digest}")
+    return replace(runtime, key="mistral-wiki-v4", recipe=recipe, recipe_digest=digest,
+                   parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v3"})
 
 
 def datalab_wiki_v1_recipe(

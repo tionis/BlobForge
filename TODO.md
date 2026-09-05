@@ -5,11 +5,13 @@
 - [x] Preserve coordinator source display names in recipe-worker MDAFs instead
   of publishing the temporary `source.pdf` filename; cover worker propagation,
   local fallback, portable names, and packaged metadata with regression tests.
-- [ ] Add a separately versioned, evidence-backed book hierarchy reprocessor:
+- [x] Add a separately versioned, evidence-backed book hierarchy reprocessor:
   align TOC entries to unique body headings, retain ambiguous cases, and review
   whole-book Vulcan output before promoting its exact recipe.
-- [ ] Add normalized cross-reference targets only where printed-page labels
+- [x] Add normalized cross-reference targets only where printed-page labels
   and final Markdown spans are independently supported by retained evidence.
+- [ ] Promote the opt-in Mistral wiki-v4 recipe to hosted deployments only after
+  operator review of the recorded whole-book results and exact recipe digest.
 
 - [x] Move hosted-worker temporary conversion trees from the 128 MiB tmpfs to
   the private persistent provider volume, deploy the Quadlet change, and replay

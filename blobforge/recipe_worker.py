@@ -282,7 +282,10 @@ class RecipeWorker:
                 ):
                     started = time.monotonic()
                     if input_kind == "artifact":
-                        result = self.reprocessor(source, recipe.recipe, artifact)
+                        metadata = {}
+                        if recipe.recipe.get("normalization", {}).get("profile") == "wiki-v3" and job.get("original_name"):
+                            metadata["source_name"] = job["original_name"]
+                        result = self.reprocessor(source, recipe.recipe, artifact, **metadata)
                         elapsed_seconds = time.monotonic() - started
                         diagnostics: list[dict] = []
                         identity = str(result.identity)

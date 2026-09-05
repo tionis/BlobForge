@@ -38,6 +38,17 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Mistral wiki-v4 (normalization profile wiki-v3) is an opt-in
+  evidence-backed book-outline recipe; frozen earlier recipes and the worker's
+  v3 default are unchanged. It retains primary Markdown/native response bytes,
+  uses numbered chapter openers or contents plus typed-title geometry, emits
+  a hierarchy evidence report, and binds only singular parenthetical citations
+  to uniquely observed numeric footer labels. Missing evidence is not a guessed
+  page offset. Vulcan must explicitly select outline authority. Reprocessing
+  can recover a known display name with `--source-name`; repeated upgrades
+  retain earlier lineage in identity-scoped extension paths. See the evaluation
+  document for verified results, limitations, and rollout commands.
+
 - **2026-09-05:** Recipe workers stage source bytes as `source.pdf`; that path
   is not the document's display name. Pass the coordinator's `original_name`
   separately to `run_converter`, which strips directory components and control

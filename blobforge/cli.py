@@ -854,6 +854,7 @@ def cmd_evaluate_converter(args):
         "mistral-wiki": "mistral",
         "mistral-wiki-v2": "mistral",
         "mistral-wiki-v3": "mistral",
+        "mistral-wiki-v4": "mistral",
         "datalab-wiki": "datalab",
     }.get(args.engine, args.engine)
     project = repository / "evaluators" / provider_engine
@@ -877,6 +878,7 @@ def cmd_evaluate_converter(args):
         "mistral-wiki",
         "mistral-wiki-v2",
         "mistral-wiki-v3",
+        "mistral-wiki-v4",
     }:
         raw_recipe_path = (
             repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
@@ -887,8 +889,8 @@ def cmd_evaluate_converter(args):
             / "blobforge"
             / "recipes"
             / (
-                "mistral-ocr-4.1-wiki-v3.json"
-                if args.engine == "mistral-wiki-v3"
+                f"mistral-ocr-4.1-wiki-{args.engine.rsplit('-', 1)[1]}.json"
+                if args.engine in {"mistral-wiki-v3", "mistral-wiki-v4"}
                 else (
                     "mistral-ocr-4.1-wiki-v2.json"
                     if args.engine == "mistral-wiki-v2"
@@ -903,13 +905,13 @@ def cmd_evaluate_converter(args):
         recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
         embedded_recipe = recipe if recipe.get("schema", "").endswith("/v3") else None
         parameters["recipe_digest"] = blake3_bytes(canonical_json_bytes(recipe))
-        if args.engine in {"mistral-wiki", "mistral-wiki-v2", "mistral-wiki-v3"}:
+        if args.engine.startswith("mistral-wiki"):
             parameters["provider_request_digest"] = blake3_bytes(
                 canonical_json_bytes(raw_recipe)
             )
             parameters["normalization_profile"] = (
-                "wiki-v2"
-                if args.engine in {"mistral-wiki-v2", "mistral-wiki-v3"}
+                "wiki-v3" if args.engine == "mistral-wiki-v4" else "wiki-v2"
+                if args.engine in {"mistral-wiki-v2", "mistral-wiki-v3", "mistral-wiki-v4"}
                 else "wiki-v1"
             )
         parameters["api_rights_confirmed"] = args.confirm_api_rights
@@ -932,7 +934,7 @@ def cmd_evaluate_converter(args):
             print(f"Pages:        {pages:,}")
             print(f"Bytes:        {Path(args.path).stat().st_size:,}")
             print(f"Recipe:       {parameters['recipe_digest']}")
-            if args.engine in {"mistral-wiki", "mistral-wiki-v2", "mistral-wiki-v3"}:
+            if args.engine.startswith("mistral-wiki"):
                 print(f"Provider key: {parameters['provider_request_digest']}")
             print(f"List price:   ${estimated_cost:.3f}")
             print(f"Page ceiling: {args.max_pages if args.max_pages is not None else 'missing'}")
@@ -1141,6 +1143,7 @@ def cmd_reprocess_mdaf(args):
         args.recipe,
         args.output,
         recipe_root=args.recipe_root,
+        source_name=args.source_name,
     )
     print(f"Artifact:      {result.path}")
     print(f"Identity:      {result.identity}")
@@ -1250,7 +1253,7 @@ def cmd_worker(args):
 
 def cmd_recipe_worker(args):
     """Start the exact-recipe, isolated MDAF worker."""
-    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe
+    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe, mistral_wiki_v4_recipe
     from .recipe_worker import RecipeWorker
 
     coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
@@ -1267,7 +1270,7 @@ def cmd_recipe_worker(args):
         return 1
     try:
         factory = (
-            mistral_wiki_v3_recipe
+            (mistral_wiki_v4_recipe if args.mistral_recipe == "v4" else mistral_wiki_v3_recipe)
             if args.provider == "mistral"
             else datalab_wiki_v1_recipe
         )
@@ -2278,6 +2281,7 @@ def main():
             "mistral-wiki",
             "mistral-wiki-v2",
             "mistral-wiki-v3",
+            "mistral-wiki-v4",
             "datalab",
             "datalab-wiki",
         ),
@@ -2365,6 +2369,7 @@ def main():
     p_reprocess.add_argument("parent", help="Existing parent .mdaf")
     p_reprocess.add_argument("--recipe", required=True, help="Target lifecycle recipe JSON")
     p_reprocess.add_argument("--output", "-o", required=True, help="New derivative .mdaf")
+    p_reprocess.add_argument("--source-name", help="Explicit recovered source filename, recorded in derivative provenance")
     p_reprocess.add_argument(
         "--recipe-root",
         help="Immutable recipe registry used only when the parent predates embedded recipes",
@@ -2489,6 +2494,8 @@ def main():
         help="Start an isolated exact-recipe MDAF worker (canary)",
     )
     p_recipe_worker.add_argument("--run-once", action="store_true")
+    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4"], default="v3",
+                                 help="Explicit Mistral post-processing release; v4 adds book hierarchy evidence")
     p_recipe_worker.add_argument(
         "--provider", choices=("mistral", "datalab"), default="mistral"
     )

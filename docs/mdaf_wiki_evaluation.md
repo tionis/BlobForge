@@ -2,6 +2,75 @@
 
 Date: 2026-09-05
 
+## Implemented repair and end-to-end results
+
+The new opt-in `mistral-ocr-4.1-wiki-v4.json` recipe uses normalization profile
+`wiki-v3`. Earlier frozen recipes are unchanged. It retains primary Markdown
+and native response bytes while publishing an alternative outline with level
+two major sections, level three-and-deeper topics, and explicit front matter.
+Numbered chapter openers take precedence; otherwise boundaries require contents
+membership and large provider-typed title geometry. Duplicate candidates need
+unique observed page-label evidence. Insufficient evidence falls back with a
+diagnostic in `extensions/dev.tionis.blobforge/hierarchy.json`.
+
+| Book | Chapter notes | Topic notes | Root source bytes | Assets |
+| --- | ---: | ---: | ---: | ---: |
+| London Falling | 7 | 325 | 0 | 32 |
+| Shadowrun 5E Core | 17 | 1,915 | 0 | 330 |
+| Storypath Ultra | 9 | 771 | 0 | 55 |
+
+Counts include root and front matter. All six actual imports had complete,
+non-overlapping source-span coverage, byte-identical assets, and existing
+targets for every generated navigation and citation link. Chapter imports
+resolve 0/152/15 plain page citations; finer topic imports resolve 0/16/2.
+Coarse page mappings often overlap multiple topics, so those references stay
+unchanged with diagnostics. Other rewritten links include existing heading
+links, which are not included in these citation counts.
+
+Only complete singular parenthetical `(p. N)`, `(page N)`, and `(see p. N)`
+mentions with a unique observed Arabic footer label are emitted as references.
+External/comma-qualified references, ranges, missing labels, and duplicate
+labels are not guessed. Vulcan protects code, existing links, and ambiguous
+output placements. Duplicate authored headings and mutable-model provenance
+remain visible warnings: this repair does not manufacture missing evidence.
+
+This remains heuristic structure recovery, not a guarantee of a publisher's
+exact TOC: large fiction titles can become peers, unrecognized sections can
+remain within the preceding chapter, and non-Arabic/unobserved labels are not
+resolved. Review the report and import preview before choosing chapter or topic
+depth. The second Storypath filename has the same original logical identity
+and need not be imported twice. Original artifacts must remain archived.
+
+### Local replay and rollout
+
+From the Blobforge checkout, replay without contacting the provider:
+
+```sh
+uv run blobforge reprocess original.mdaf \
+  --recipe blobforge/recipes/mistral-ocr-4.1-wiki-v4.json \
+  --output upgraded.mdaf --source-name 'Known Book.pdf'
+```
+
+`--source-name` is optional; use it only for a known recovered filename, not an
+inferred title. It changes display metadata and records the override in
+provenance. Older lineage is retained under identity-scoped extension paths.
+Existing output files are never overwritten.
+
+With the repaired Vulcan, preview and then apply to a new destination:
+
+```sh
+vulcan artifact import upgraded.mdaf --destination Books/Known \
+  --hierarchy outline --through-level 2 --dry-run --output json
+vulcan artifact import upgraded.mdaf --destination Books/Known \
+  --hierarchy outline --through-level 2 --no-commit --output json
+```
+
+Use level three for finer topics. New hosted runs can explicitly select
+`blobforge evaluate mistral-wiki-v4` or the existing recipe-worker command with
+`--mistral-recipe v4`. Existing quota, rights-confirmation, cache, and exact-job
+recipe requirements still apply. The worker default remains v3. Publish/deploy
+and coordinator recipe promotion are separate operator actions; none ran here.
+
 ## Observed behavior
 
 Three distinct full-book BlobForge 0.4.0 Mistral wiki-v3 artifacts were inspected

@@ -457,6 +457,12 @@ BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Teste
 
 ## MDAF migration and converter evaluation
 
+For evidence-backed book chapters and conservative page citations, the opt-in
+Mistral wiki-v4 recipe can replay retained OCR without another provider call.
+See [the wiki pipeline evaluation and rollout guide](docs/mdaf_wiki_evaluation.md)
+for source-name recovery, whole-book results, limitations, and Vulcan import
+commands. Existing hosted-worker defaults and earlier frozen recipes are unchanged.
+
 BlobForge's v2 path uses canonical BLAKE3 source identities and validated MDAF
 v1 Markdown artifacts while retaining SHA-256 as a legacy alias. Local Marker 1
 and Docling environments are isolated and CPU-pinned so they can be compared on

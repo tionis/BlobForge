@@ -7,6 +7,7 @@ import zipfile
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
+from dataclasses import replace
 from typing import Any, Mapping
 
 from .mdaf import (
@@ -17,6 +18,7 @@ from .mdaf import (
     validate_mdaf,
 )
 from .mdaf.builder import activity, markdown_outline
+from .converters.runner import source_display_name
 from .normalization import referenced_asset_names, render_mistral_response
 from .recipe_lifecycle import (
     PARENT_INFO_PATH,
@@ -93,6 +95,7 @@ def reprocess_mdaf(
     output_path: str | Path,
     *,
     recipe_root: str | Path | None = None,
+    source_name: str | None = None,
 ) -> ReprocessResult:
     """Re-run post-processing from an MDAF without source or provider access."""
     parent = Path(parent_path)
@@ -132,6 +135,9 @@ def reprocess_mdaf(
         sources = _sources(manifest)
         if len(sources) != 1:
             raise ValueError("Mistral OCR reprocessing requires exactly one source")
+        if source_name is not None:
+            name = source_display_name(Path(sources[0].name or "source"), source_name)
+            sources = [replace(sources[0], name=name)]
         rendered = render_mistral_response(
             native,
             normalization_profile=lifecycle.postprocessing_profile,
@@ -147,9 +153,14 @@ def reprocess_mdaf(
             path
             for path, member in parent_members.items()
             if member.get("role") in {"rendition", "environment", "source"}
+            or (member.get("role") == "extension" and lifecycle.postprocessing_profile == "wiki-v3")
         }
         carry_paths.update(lifecycle.native_members)
         carry_paths.discard(RECIPE_MEMBER_PATH)
+        replaced_paths = {PARENT_INFO_PATH, PARENT_PROVENANCE_PATH, PREVIOUS_RECIPE_PATH,
+                          "extensions/dev.tionis.blobforge/hierarchy.json"}
+        if lifecycle.postprocessing_profile != "wiki-v3":
+            carry_paths.difference_update(replaced_paths)
         carried_members: list[MdafMemberInput] = []
         for path in sorted(carry_paths):
             member = parent_members.get(path)
@@ -157,7 +168,10 @@ def reprocess_mdaf(
                 raise ValueError(f"parent manifest does not declare retained member {path}")
             carried_members.append(
                 MdafMemberInput(
-                    path=path,
+                    path=(
+                        f"extensions/dev.tionis.blobforge/ancestors/{validated.identity.split(':', 1)[1]}/{Path(path).name}"
+                        if path in replaced_paths else path
+                    ),
                     data=archive.read(path),
                     role=str(member["role"]),
                     created_by="activity:reuse-extraction",
@@ -203,6 +217,12 @@ def reprocess_mdaf(
         ),
     ]
     referenced = referenced_asset_names(rendered.text)
+    if rendered.hierarchy_report is not None:
+        evidence_members.append(MdafMemberInput(
+            "extensions/dev.tionis.blobforge/hierarchy.json",
+            canonical_json_bytes(rendered.hierarchy_report), "extension",
+            "activity:postprocess", "application/json", namespace="dev.tionis.blobforge",
+        ))
     for name, (data, media_type) in sorted(rendered.assets.items()):
         if name in referenced:
             evidence_members.append(
@@ -250,6 +270,7 @@ def reprocess_mdaf(
                 "network_access": False,
                 "parent_identity": validated.identity,
                 "source_recipe_digest": source_recipe_digest,
+                **({"source_name_override": sources[0].name} if source_name is not None else {}),
                 "extraction_recipe_digest": lifecycle.extraction_recipe_digest,
             },
         ),
@@ -288,13 +309,13 @@ def reprocess_mdaf(
     result = build_mdaf(
         destination,
         text=rendered.text,
-        title=manifest.get("title"),
+        title=Path(sources[0].name).stem if source_name is not None else manifest.get("title"),
         sources=sources,
         activities=activities,
         producer={"name": "blobforge", "version": tool_version},
         extra_members=evidence_members,
         source_map=rendered.source_map,
-        outline=markdown_outline(rendered.text),
+        outline=rendered.outline if rendered.outline is not None else markdown_outline(rendered.text),
         redactions=redactions if isinstance(redactions, list) else [],
         markdown_variant=manifest.get("markdown", {}).get("variant", "CommonMark"),
         markdown_features=features,

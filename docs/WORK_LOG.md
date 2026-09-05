@@ -1,5 +1,39 @@
 # Work Log
 
+## 2026-09-05 (Evidence-backed wiki pipeline repair)
+
+- Added immutable recipe Mistral wiki-v4, profile wiki-v3, and generation-five
+  adapter support. Existing recipe files, extraction/cache identity, provider
+  requests, and hosted-worker defaults are unchanged. Added explicit evaluator
+  and worker selection and offline source-name recovery.
+- Added contents/typed-title geometry and numbered-chapter outline recovery,
+  fence-aware heading projection for the new profile, observed page labels,
+  conservative source-reference spans, and machine-readable hierarchy evidence.
+  Reprocessing retains unknown extensions and earlier lineage for the new recipe.
+- Updated Vulcan separately to honor original authored anchors under alternative
+  outlines, reject unsupported bounded section layouts, preserve root titles,
+  surface warnings/root remainders, and resolve prose references only when both
+  placement and destination are unambiguous. Updated its MDAF v1 SPEC and docs.
+- Replayed retained OCR locally for three distinct private books, without PDFs,
+  provider requests, or spending. Imported all three at chapter and topic depth
+  into a disposable vault. Verified full disjoint byte-span coverage, all 417
+  assets byte-for-byte at each depth, and every generated navigation/citation
+  target. Chapter counts are 7/17/9 including root/front matter; root source
+  remainders are zero. Detailed results and limits are in the evaluation doc.
+- Added synthetic regression tests for hierarchy, fences, citation ambiguity,
+  UTF-8 offsets, recipe/cache identity, replay determinism, metadata, evaluator
+  selection, and repeated-upgrade provenance. Used apply_patch for edits and uv
+  for Python tests/build. Rust workspace tests pass in a private bwrap namespace
+  with an empty login profile and usable /dev; the host profile injects Bash
+  syntax into /bin/sh otherwise. No host profile changes or deployment occurred.
+- Final Python verification: 347 tests and 5 subtests passed; `uv build`
+  produced both wheel and source distribution. One preceding suite run exposed
+  an unrelated millisecond-window collision in the quota concurrency fixture;
+  the unchanged full suite passed on rerun. Build-backend resolution initially
+  hit sandbox DNS restrictions and succeeded with approved network access.
+  Replayed all three books again after final edits and confirmed identical
+  Markdown, source maps, and outlines to the six verified imports.
+
 ## 2026-09-05 (MDAF wiki evaluation and source-name propagation)
 
 - Inspected the four supplied private MDAFs using ZIP/JSON analysis and Vulcan

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .wiki import normalize_mistral_pages
+from .hierarchy import book_outline, page_labels, page_references
 
 LINK_RE = re.compile(r"(!?\[[^\]]*\]\()([^\)\s]+)(\))")
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -21,6 +22,8 @@ class MistralRendered:
     source_map: Mapping[str, Any]
     assets: Mapping[str, tuple[bytes, str]]
     normalization_stats: Mapping[str, int] | None
+    outline: Mapping[str, Any] | None = None
+    hierarchy_report: Mapping[str, Any] | None = None
 
 
 def decode_image(value: str) -> tuple[bytes, str | None]:
@@ -117,14 +120,14 @@ def render_mistral_response(
     source_id: str = "document",
 ) -> MistralRendered:
     """Create Markdown, page mappings, and assets without provider access."""
-    if normalization_profile not in {None, "wiki-v1", "wiki-v2"}:
+    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3"}:
         raise ValueError("unsupported normalization_profile")
     pages = validate_response(native, source_pages)
     normalization_stats = None
-    if normalization_profile in {"wiki-v1", "wiki-v2"}:
+    if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3"}:
         normalized_pages, normalization_stats = normalize_mistral_pages(
             pages,
-            normalize_lists=normalization_profile == "wiki-v2",
+            normalize_lists=normalization_profile in {"wiki-v2", "wiki-v3"},
         )
     else:
         normalized_pages = [page["markdown"] for page in pages]
@@ -191,9 +194,23 @@ def render_mistral_response(
             if confidence is not None:
                 mapping["confidence"] = confidence
             mappings.append(mapping)
+    source_map = {"mappings": mappings, "references": []}
+    outline = report = None
+    if normalization_profile == "wiki-v3":
+        labels = page_labels(pages)
+        for mapping in mappings:
+            selector = mapping["source"]["selectors"][0]
+            if selector["start"] in labels:
+                selector["label_start"] = labels[selector["start"]]
+        outline, report = book_outline(markdown, pages, source_map)
+        source_map["references"] = page_references(markdown, labels, source_id)
+        report["observed_page_labels"] = len(labels)
+        report["source_references"] = len(source_map["references"])
     return MistralRendered(
         text=markdown,
-        source_map={"mappings": mappings, "references": []},
+        source_map=source_map,
         assets=assets,
         normalization_stats=normalization_stats,
+        outline=outline,
+        hierarchy_report=report,
     )

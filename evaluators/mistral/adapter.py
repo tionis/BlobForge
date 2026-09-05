@@ -393,7 +393,7 @@ def main() -> int:
     if not re.fullmatch(r"blake3:[0-9a-f]{64}", provider_request_digest):
         raise ValueError("a canonical tagged provider_request_digest is required")
     normalization_profile = parameters.get("normalization_profile")
-    if normalization_profile not in {None, "wiki-v1", "wiki-v2"}:
+    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3"}:
         raise ValueError("unsupported normalization_profile")
 
     cache_root_value = os.environ.get("BLOBFORGE_MISTRAL_RESPONSE_CACHE")
@@ -540,9 +540,18 @@ def main() -> int:
         }
     ]
     referenced_assets = referenced_asset_names(markdown)
+    if rendered.outline is not None:
+        (data / "outline.json").write_text(json.dumps(rendered.outline) + "\n", encoding="utf-8")
+    if rendered.hierarchy_report is not None:
+        (data / "hierarchy.json").write_text(json.dumps(rendered.hierarchy_report, sort_keys=True) + "\n", encoding="utf-8")
+        members.append({
+            "path": "extensions/dev.tionis.blobforge/hierarchy.json",
+            "file": "data/hierarchy.json", "role": "extension", "media_type": "application/json",
+            "namespace": "dev.tionis.blobforge",
+        })
     for path in sorted(assets.iterdir()):
         if (
-            normalization_profile in {"wiki-v1", "wiki-v2"}
+            normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3"}
             and path.name not in referenced_assets
         ):
             continue
@@ -560,6 +569,7 @@ def main() -> int:
         "contract": CONTRACT,
         "text_path": "data/text.md",
         "source_map": "data/source-map.json",
+        **({"outline": "data/outline.json"} if rendered.outline is not None else {}),
         "members": members,
         "tool": {"name": "mistralai", "version": version("mistralai")},
         **(
@@ -569,15 +579,15 @@ def main() -> int:
                     {
                         "name": "blobforge-wiki-normalizer",
                         "version": (
-                            "2.0.0"
-                            if normalization_profile == "wiki-v2"
+                            "3.0.0" if normalization_profile == "wiki-v3" else "2.0.0"
+                            if normalization_profile in {"wiki-v2", "wiki-v3"}
                             else "1.0.0"
                         ),
                     }
                 ],
                 "markdown_features": ["raw-html", "semantic-html-table-v1"],
             }
-            if normalization_profile in {"wiki-v1", "wiki-v2"}
+            if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3"}
             else {}
         ),
         "models": [

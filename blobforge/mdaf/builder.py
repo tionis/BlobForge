@@ -100,10 +100,28 @@ def activity(
     return value
 
 
-def markdown_outline(text: str) -> dict[str, Any]:
+def markdown_outline(text: str, *, skip_fences: bool = False) -> dict[str, Any]:
     """Derive a conservative byte-aligned outline from ATX headings."""
     candidates = []
+    fenced_spans = []
+    if skip_fences:
+        offset = 0
+        fence = None
+        for line in text.splitlines(keepends=True):
+            match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line.rstrip("\r\n"))
+            if match:
+                marker, tail = match.groups()
+                if fence is None and not (marker[0] == "`" and "`" in tail):
+                    fence = (marker[0], len(marker), offset)
+                elif fence and marker[0] == fence[0] and len(marker) >= fence[1] and not tail.strip():
+                    fenced_spans.append((fence[2], offset + len(line)))
+                    fence = None
+            offset += len(line)
+        if fence:
+            fenced_spans.append((fence[2], len(text)))
     for heading in MARKDOWN_HEADING_RE.finditer(text):
+        if any(start <= heading.start() < end for start, end in fenced_spans):
+            continue
         title = re.sub(r"<[^>]+>", "", heading.group(2))
         title = re.sub(r"!?\[([^]]*)\]\([^)]*\)", r"\1", title)
         title = re.sub(r"[*_`~]", "", title).strip()
