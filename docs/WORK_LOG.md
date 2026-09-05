@@ -1,5 +1,14 @@
 # Work Log
 
+- 2026-09-06: Added hourly/startup ECB reference retrieval with bounded HTTP and
+  validated, restart-persistent snapshots. Added last-known, bundled reference
+  and warned emergency fallback; automatic quotes retain one 10% margin and an
+  immutable reservation rate ID. Removed the FX availability denial path and
+  release only old FX-specific delays at startup. Admin Quotas now shows refresh
+  health and pair warnings. Tests cover unavailable/malformed/stale feeds,
+  overrides, rounding, retention, quotas, lifecycle/config and scoped migration.
+  No MDAF or recipe revision is needed. Reference seed verified against ECB XML.
+
 - 2026-09-06: Investigated reported blake3 preflight traceback on Citadel.
   The isolated adapter import passed on the pinned repaired worker; live SQLite
   showed no failed/dead jobs or current matching errors, with 19 historical

@@ -18,6 +18,7 @@ class ServerSettings:
     capability_ttl_seconds: int = 900
     lease_seconds: int = 900
     max_retries: int = 3
+    fx_refresh_enabled: bool = True
     oidc_issuer: str | None = None
     oidc_client_id: str | None = None
     oidc_client_secret: str | None = None
@@ -63,6 +64,7 @@ class ServerSettings:
             capability_ttl_seconds=int(os.getenv("BLOBFORGE_SERVER_CAPABILITY_TTL", "900")),
             lease_seconds=int(os.getenv("BLOBFORGE_SERVER_LEASE_SECONDS", "900")),
             max_retries=int(os.getenv("BLOBFORGE_SERVER_MAX_RETRIES", "3")),
+            fx_refresh_enabled=os.getenv("BLOBFORGE_SERVER_FX_REFRESH", "true").lower() not in {"false", "0", "no"},
             oidc_issuer=os.getenv("BLOBFORGE_SERVER_OIDC_ISSUER") or None,
             oidc_client_id=os.getenv("BLOBFORGE_SERVER_OIDC_CLIENT_ID") or None,
             oidc_client_secret=os.getenv("BLOBFORGE_SERVER_OIDC_CLIENT_SECRET") or None,

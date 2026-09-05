@@ -38,6 +38,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** FX retrieval is best-effort and must never gate provider
+  availability. Keep HTTP outside reservation transactions; retain last-known
+  evidence, bootstrap offline, warn admins, and preserve quota/purchase checks.
+  Automatic quotes include one 10% margin; valid operator overrides do not.
+  See docs/fx_estimates.md. Async thread-lifecycle tests require the normal
+  network/socket environment: the restricted sandbox can stall executor teardown.
+
 - **2026-09-06:** Console failure history is retained audit evidence, not current
   failure state. Verify jobs.status/error_message and the actual worker image
   before retrying historical errors. UI routing uses URL fragments; polling must

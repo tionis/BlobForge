@@ -338,7 +338,29 @@ def test_quota_exhaustion_defers_without_retry_and_bounded_override_releases(tmp
     assert records["overrides"][0]["consumed_by"] == overage["reservation"]["id"]
 
 
-def test_cross_currency_estimate_requires_audited_fx_and_retains_both_amounts(
+@pytest.mark.parametrize('budget,authorized', [(40000, True), (1, False)])
+def test_fx_outage_falls_back_but_does_not_bypass_budget(tmp_path, budget, authorized):
+    database = Database(tmp_path / 'state.sqlite3', lease_seconds=60, max_retries=3)
+    database.bootstrap_workers({'hosted': 'worker-secret'})
+    database.register_capabilities('hosted', [_capability()])
+    database.configure_provider_account('test:primary', 'test-provider', currency='EUR')
+    timestamp = now_ms()
+    database.create_quota_policy('test:primary', window_start=timestamp-1000,
+        window_end=timestamp+86400000, label='fallback test', limit_estimated_micro_usd=budget)
+    key = '8' * 64
+    _enqueue(database, key)
+    job = _claim(database, key)
+    response = database.reserve_quota(key, 'hosted', job['lease_token'],
+        {**_probe(job), 'currency': 'EUR', 'estimate_currency': 'USD'})
+    assert response['authorized'] is authorized
+    assert 'FX rate' not in response.get('reason', '')
+    if authorized:
+        assert response['reservation']['fx_rate_id']
+        assert response['reservation']['reserved_estimated_micro_usd'] > 0
+    assert database.quota_summary()['fx_status']['warnings']
+
+
+def test_cross_currency_operator_fx_retains_both_amounts(
     tmp_path,
 ):
     database = Database(tmp_path / "state.sqlite3", lease_seconds=60, max_retries=3)
@@ -364,11 +386,6 @@ def test_cross_currency_estimate_requires_audited_fx_and_retains_both_amounts(
         "currency": "EUR",
         "estimate_currency": "USD",
     }
-    denied = database.reserve_quota(key, "hosted", job["lease_token"], probe)
-    assert denied["authorized"] is False
-    assert "USD/EUR FX rate" in denied["reason"]
-    assert database.get_job(key)["retry_count"] == 0
-
     rate = database.record_provider_fx_rate(
         "test:primary",
         source_currency="USD",
@@ -380,8 +397,8 @@ def test_cross_currency_estimate_requires_audited_fx_and_retains_both_amounts(
         reason="bound the EUR allowance without relabeling USD list price",
         actor="admin:test",
     )
-    assert rate["released_fx_delays"] == 1
-    retried = _claim(database, key)
+    assert rate["released_fx_delays"] == 0
+    retried = job
     reservation = database.reserve_quota(
         key,
         "hosted",

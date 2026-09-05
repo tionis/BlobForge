@@ -2,6 +2,9 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Refresh FX automatically with durable last-known/bootstrap fallback,
+  auditable conservative estimates, admin warnings and no FX-related job gate.
+
 - [x] Persist console navigation, job filters and open details across reloads;
   refresh active views without overlapping polls or disturbing edits, and
   distinguish previous failed attempts from current job failures.

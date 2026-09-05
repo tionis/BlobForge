@@ -182,14 +182,15 @@ console exposes these operations under **Quotas**.
 
 Cross-currency estimates use an optional `estimate_currency` in the v1 probe.
 The existing `currency` continues to identify the provider account's billing
-currency. If they differ, authorization selects the newest unexpired matching
-FX record, converts with integer ceiling division, and stores both amounts plus
-the rate ID. Missing or expired evidence returns the job to `todo` for five
-minutes without consuming a retry or creating a reservation. Recording a
-matching rate through `POST /api/v1/admin/provider-fx-rates` releases those
-delays. The endpoint requires `confirm=true`; rates cannot last more than 31
-days. BlobForge never fetches, guesses, or silently refreshes exchange rates.
-Operators must include any desired safety margin in the recorded rate.
+currency. If they differ, authorization prefers an unexpired operator FX rate.
+Otherwise it uses the automatic policy described in [FX estimates](fx_estimates.md).
+Conversion uses integer ceiling division and stores both amounts and the exact
+immutable rate ID. FX retrieval or freshness never denies/defer jobs. Existing
+FX-only delays are cleared and audited on coordinator startup; quota, provider,
+rights, cooldown, active-purchase and retry safeguards remain intact.
+The manual endpoint `POST /api/v1/admin/provider-fx-rates` still requires
+`confirm=true`, retains its 31-day validity ceiling, and takes precedence while
+valid. Operators include their desired safety margin in manual rates.
 
 Changing an enabled schedule's timezone or reset day materializes the
 replacement window and transactionally supersedes the old active scheduled

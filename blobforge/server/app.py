@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+from contextlib import asynccontextmanager
 import html
 import json
 import os
@@ -101,6 +103,12 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         lease_seconds=settings.lease_seconds,
         max_retries=settings.max_retries,
     )
+    with database.transaction() as db:
+        released_fx_delays = db.execute("""UPDATE jobs SET not_before=NULL,
+            blocked_reason=NULL,updated_at=? WHERE status='todo'
+            AND blocked_reason LIKE 'no current % FX rate%'""", (now_ms(),)).rowcount
+    if released_fx_delays:
+        database.audit("system:fx", "quota.fx_fallback.enable", "jobs", {"released_fx_delays": released_fx_delays})
     marker_recipe = marker1_enriched_v1_recipe()
     database.install_recipe(
         digest=marker_recipe.recipe_digest,
@@ -129,7 +137,34 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     storage = LocalStorage(settings.data_dir)
     signer = CapabilitySigner(settings.data_dir / "capability.key", settings.capability_ttl_seconds)
     client_hash = token_hash(settings.client_token)
-    app = FastAPI(title="BlobForge", version="1")
+    @asynccontextmanager
+    async def lifespan(_app):
+        from .fx import refresh
+        stop = asyncio.Event()
+
+        async def update_fx():
+            while not stop.is_set():
+                try:
+                    await asyncio.to_thread(refresh, database)
+                except Exception:
+                    # A DB outage must not kill the refresh loop; normal API
+                    # health/error handling remains responsible for storage.
+                    import logging
+                    logging.getLogger(__name__).warning("FX refresh unavailable; retrying in one hour")
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=3600)
+                except asyncio.TimeoutError:
+                    pass
+
+        task = asyncio.create_task(update_fx()) if settings.fx_refresh_enabled else None
+        try:
+            yield
+        finally:
+            stop.set()
+            if task:
+                await task
+
+    app = FastAPI(title="BlobForge", version="1", lifespan=lifespan)
     app.state.settings = settings
     app.state.database = database
     app.state.storage = storage

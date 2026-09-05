@@ -281,6 +281,15 @@ class Database:
                         account_key,source_currency,account_currency,
                         observed_at DESC,valid_until
                     );
+                CREATE TABLE IF NOT EXISTS provider_fx_cache (
+                    id INTEGER PRIMARY KEY CHECK(id=1), observed_at INTEGER,
+                    rates_json TEXT, last_attempt INTEGER, last_success INTEGER, error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS provider_fx_warnings (
+                    account_key TEXT NOT NULL, source_currency TEXT NOT NULL,
+                    message TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(account_key,source_currency)
+                );
                 CREATE TABLE IF NOT EXISTS scim_users (
                     id TEXT PRIMARY KEY, external_id TEXT UNIQUE, user_name TEXT NOT NULL UNIQUE,
                     display_name TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
@@ -834,6 +843,8 @@ class Database:
                 )
             except sqlite3.IntegrityError as exc:
                 raise Conflict("an FX observation already exists at this time") from exc
+            db.execute("DELETE FROM provider_fx_warnings WHERE account_key=? AND source_currency=?",
+                       (account_key, source_currency))
             released = db.execute(
                 """UPDATE jobs SET not_before=NULL,blocked_reason=NULL,updated_at=?
                 WHERE status='todo' AND blocked_reason LIKE 'no current % FX rate%'
@@ -874,7 +885,11 @@ class Database:
             ),
         ).fetchone()
         if not rate:
-            raise LookupError("no current FX rate for provider estimate")
+            from .fx import automatic_quote
+            rate = automatic_quote(db, str(account["account_key"]), source_currency, account_currency, timestamp)
+        else:
+            db.execute("DELETE FROM provider_fx_warnings WHERE account_key=? AND source_currency=?",
+                       (account["account_key"], source_currency))
         numerator = int(rate["rate_numerator"])
         denominator = int(rate["rate_denominator"])
         converted = (source_micro_units * numerator + denominator - 1) // denominator
@@ -1683,31 +1698,9 @@ class Database:
                         "provider checkpoint names a reservation that cannot be resumed; "
                         "reconcile it before retrying"
                     )
-            try:
-                estimated, fx_rate_id = self._converted_estimate(
-                    db,
-                    account,
-                    estimate_currency,
-                    source_estimated,
-                    timestamp,
-                ) if not cache_hit else (0, None)
-            except LookupError:
-                defer_until = timestamp + 300_000
-                reason = (
-                    f"no current {estimate_currency}/{account['currency']} FX rate "
-                    "for provider estimate"
-                )
-                db.execute(
-                    """UPDATE jobs SET status='todo',worker_id=NULL,lease_token=NULL,
-                    lease_expires_at=NULL,not_before=?,blocked_reason=?,updated_at=?
-                    WHERE source_key=?""",
-                    (defer_until, reason, timestamp, key),
-                )
-                return {
-                    "authorized": False,
-                    "reason": reason,
-                    "not_before": defer_until,
-                }
+            estimated, fx_rate_id = self._converted_estimate(
+                db, account, estimate_currency, source_estimated, timestamp,
+            ) if not cache_hit else (0, None)
             if account["cooldown_until"] and int(account["cooldown_until"]) > timestamp:
                 defer_until = int(account["cooldown_until"])
                 reason = str(account["cooldown_reason"] or "provider cooldown")
@@ -2076,6 +2069,9 @@ class Database:
                     ORDER BY observed_at DESC,created_at DESC LIMIT 500"""
                 )
             ]
+            fx_cache = db.execute("SELECT observed_at,last_attempt,last_success,error FROM provider_fx_cache WHERE id=1").fetchone()
+            fx_status = dict(fx_cache) if fx_cache else {"error": "FX refresh has not succeeded; bundled fallback available"}
+            fx_status["warnings"] = [dict(row) for row in db.execute("SELECT * FROM provider_fx_warnings ORDER BY updated_at DESC")]
         for account in accounts:
             account["enabled"] = bool(account["enabled"])
             account["exclusive_consumer"] = bool(account["exclusive_consumer"])
@@ -2084,6 +2080,7 @@ class Database:
                 "ambiguous": ambiguous, "overrides": overrides,
                 "provider_usage_snapshots": snapshots,
                 "provider_fx_rates": fx_rates,
+                "fx_status": fx_status,
                 "waiting_jobs": waiting, "generated_at": timestamp}
 
     def worker_for_token(self, token: str) -> str | None:
