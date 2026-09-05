@@ -2,6 +2,9 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Show lifecycle recipe versions in job artifacts, normalize filename search,
+  reject stale UI search responses and give downloads portable source filenames.
+
 - [x] Automatically follow compatible lifecycle recipe releases for retained
   artifacts and pending assigned sources, preserving major/extraction, account,
   active-purchase, retry, and quota-backoff boundaries; audit and test transitions.

@@ -38,6 +38,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Artifact format, lifecycle recipe version and normalization
+  profile are separate axes (wiki-v5 is recipe 1.4.0/profile wiki-v4). Download
+  filenames are presentation metadata, not storage identity. Job search must
+  decode JSON paths and Unicode-casefold before matching human filenames.
+
 - **2026-09-05:** Normalization used inside isolated provider adapters must not
   import MDAF packaging: mdaf initialization loads blake3/jsonschema, which are
   coordinator dependencies. Share the pure outline routine through

@@ -28,6 +28,7 @@ from .management_ui import ASSET_VERSION, CSS as MANAGEMENT_CSS, JS as MANAGEMEN
 from .storage import CapabilitySigner, LocalStorage
 from .scim import create_scim_router
 from ..routing import RoutingFeatures, route_pdf
+from ..download_names import artifact_filename, content_disposition
 from ..mdaf import canonical_json_bytes, validate_mdaf
 from ..recipe_lifecycle import RECIPE_MEMBER_PATH, recipe_digest
 from ..recipe_runtime import marker1_enriched_v1_recipe
@@ -260,7 +261,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                     yield chunk
         headers = {"Content-Length": str(path.stat().st_size)}
         if filename:
-            headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+            headers["Content-Disposition"] = content_disposition(filename)
         return StreamingResponse(body(), media_type=media_type, headers=headers)
 
     @app.exception_handler(Conflict)
@@ -1210,10 +1211,12 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     @app.get("/api/v1/transfers/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: int, request: Request) -> StreamingResponse:
         verify_capability(request, "GET", "artifact", str(artifact_id))
-        with database.connect() as db: row = db.execute("SELECT * FROM artifacts WHERE id=?", (artifact_id,)).fetchone()
+        with database.connect() as db:
+            row = db.execute("SELECT a.*,s.original_name FROM artifacts a JOIN sources s USING(source_key) WHERE a.id=?", (artifact_id,)).fetchone()
         if not row: raise HTTPException(404, "artifact not found")
         path = settings.data_dir / row["storage_path"]
         if not path.is_file(): raise HTTPException(404, "artifact object missing")
-        return local_file_response(path, row["media_type"], Path(path).name)
+        filename = artifact_filename(row["original_name"], row["source_key"], row["artifact_type"])
+        return local_file_response(path, row["media_type"], filename)
 
     return app

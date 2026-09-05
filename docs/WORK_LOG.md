@@ -1,5 +1,11 @@
 # Work Log
 
+- Artifact discovery: added lifecycle/profile UI labels, refreshed catalog on
+  detail opening, Unicode/separator-aware search and out-of-order response
+  protection. Downloads now use sanitized source basenames with RFC 5987 Unicode
+  headers. Added filename, SQL-search, executable JS and HTTP regressions.
+  Validation: full pytest suite and uv build (results recorded at commit time).
+
 ## 2026-09-05 (Hosted adapter isolation repair)
 
 - Deployed hosted image `e885fe7` at `sha256:6ac2cfb4f863...`, pinned by Gandalf

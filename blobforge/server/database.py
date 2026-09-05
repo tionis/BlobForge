@@ -7,6 +7,7 @@ import json
 import secrets
 import sqlite3
 import time
+import unicodedata
 from calendar import monthrange
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -25,6 +26,18 @@ def now_ms() -> int:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def search_text(value: str) -> str:
+    """Casefold human filenames; treat common filename separators like spaces."""
+    return " ".join(unicodedata.normalize("NFKC", value).casefold()
+                    .translate(str.maketrans({"_": " ", "-": " ", ".": " "})).split())
+
+
+def job_search(query: str, name: str, key: str, paths: str, tags: str) -> bool:
+    fields = [name, key, *json.loads(paths), *json.loads(tags)]
+    haystack = "\n".join(search_text(str(field)) for field in fields)
+    return all(token in haystack for token in search_text(query).split())
 
 
 def monthly_quota_window(
@@ -76,6 +89,7 @@ class Database:
     def _open(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
         db.row_factory = sqlite3.Row
+        db.create_function("job_search", 5, job_search, deterministic=True)
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA busy_timeout=30000")
         return db
@@ -2275,9 +2289,8 @@ class Database:
         conditions: list[str] = []
         params: list[Any] = []
         if search:
-            conditions.append("(LOWER(s.original_name) LIKE ? OR LOWER(j.source_key) LIKE ? OR LOWER(j.paths_json) LIKE ? OR LOWER(j.tags_json) LIKE ?)")
-            needle = f"%{search.lower()}%"
-            params.extend([needle, needle, needle, needle])
+            conditions.append("job_search(?,s.original_name,j.source_key,j.paths_json,j.tags_json)")
+            params.append(search)
         if status:
             conditions.append("j.status=?"); params.append(status)
         if priority:

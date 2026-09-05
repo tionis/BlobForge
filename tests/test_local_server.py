@@ -131,7 +131,9 @@ async def test_local_backend_ingest_claim_complete_download(tmp_path):
             headers=client_headers,
             json={"recipe_digest": "recipe-v1"},
         )).json()["url"]
-        assert (await client.get(download)).content == artifact
+        downloaded = await client.get(download)
+        assert downloaded.content == artifact
+        assert 'filename="fixture.zip"' in downloaded.headers["content-disposition"]
         snapshot = (await client.get("/api/v1/snapshot", headers=client_headers)).json()
         assert snapshot["counts"]["done"] == 1
         assert snapshot["backend"] == "sqlite-filesystem"
@@ -323,7 +325,7 @@ async def test_admin_console_job_upload_management_and_recoverable_delete(tmp_pa
         assert "Snapshot JSON" not in root.text
         assert "Conversion recipes" not in root.text
         assert "script-src 'self'" in root.headers["content-security-policy"]
-        management = await client.get("/static/management-v8.js")
+        management = await client.get("/static/management-v9.js")
         assert management.status_code == 200
         assert "automatic reset baseline" in management.text
         assert "exclusive_consumer" in management.text
