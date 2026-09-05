@@ -2,6 +2,21 @@
 
 ## 2026-09-05 (Hosted adapter isolation repair)
 
+- Deployed hosted image `e885fe7` at `sha256:6ac2cfb4f863...`, pinned by Gandalf
+  `7f686b12`; coordinator remains `b3f60a0` at `sha256:c6c01938fed1...`, pinned
+  by `3080baf1`. Scoped Ansible previews/applies and Gandalf checks passed.
+  The exact hosted image passed real-PDF preflight in a network-disabled,
+  credential-free temporary container on Citadel before workers resumed.
+- Retried only the 19 matching blake3 import failures after confirming no
+  non-released purchase reservations, with reset_retries=false. Final state:
+  35 completed v5 artifact jobs and 29 pending v5 source jobs (the original 16
+  plus 13 concurrent uploads), zero failures, exactly 16 automatic-upgrade audit
+  events. Existing FX/quota gates remain active. Provider accounting stayed at
+  40 committed reservations / 37 requests / 7,397 pages and 14 released records,
+  identical to baseline; no paid requests were added during this rollout.
+  SQLite quick_check, coordinator health and all three active services passed.
+  Wiki publication preview still requires the absent OUTLINE_API_TOKEN.
+
 - Automatic following deployed successfully and audited exactly 16 v3-to-v5
   pending-source transitions. Thirteen concurrent new uploads brought the v5
   source cohort to 29. Nineteen reached preflight and failed before provider
