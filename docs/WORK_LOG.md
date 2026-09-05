@@ -1,5 +1,10 @@
 # Work Log
 
+- Download verification follow-up: keep `.mdaf` on very long UTF-8 HTTP names,
+  reject truncated transfers against catalog byte lengths before publication,
+  and install Node in CI so executable UI regressions run there as well as
+  locally. Full suite: 404 passed plus five subtests; uv build succeeded.
+
 - CLI artifact downloads now resolve source keys or unambiguous filenames and
   paginate explicit bulk searches. Added --mdaf/--dry-run/--json/--force, source
   filenames and directory output, full-plan collision checks, atomic publication

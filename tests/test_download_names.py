@@ -22,3 +22,5 @@ def test_legacy_extension_and_unicode_header():
     assert "filename*=UTF-8''%C3%9Cber%20_Rules_.mdaf" in header
     header.encode("ascii")
     assert len(artifact_filename("é" * 300 + ".pdf", "abc", "mdaf/v1").encode()) < 255
+    long_name = artifact_filename("é" * 300 + ".pdf", "abc", "mdaf/v1")
+    assert content_disposition(long_name).endswith(".mdaf")

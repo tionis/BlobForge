@@ -74,6 +74,8 @@ def plan_downloads(client, jobs, *, output=None, recipe_digest=None, mdaf=False,
         plans.append({"hash": key, "original_name": job.get("original_name", ""),
                       "recipe_digest": artifact.get("recipe_digest"),
                       "artifact_type": artifact_type, "output": str(path)})
+        if isinstance(artifact.get("size_bytes"), int):
+            plans[-1]["size_bytes"] = artifact["size_bytes"]
     if not plans:
         raise ValueError("No matching sources have downloadable artifacts")
     return plans, skipped
@@ -86,6 +88,9 @@ def download_one(client, plan, *, force=False):
     os.close(fd)
     try:
         client.download_output(plan["hash"], temporary, plan["recipe_digest"])
+        expected = plan.get("size_bytes")
+        if expected is not None and Path(temporary).stat().st_size != expected:
+            raise ValueError("Downloaded size does not match the retained artifact")
         if force:
             if path.is_symlink():
                 raise ValueError(f"Refusing to replace a symlink: {path}")

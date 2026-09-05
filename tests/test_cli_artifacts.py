@@ -110,6 +110,11 @@ def test_partial_download_cleanup_force_and_race_protection(coordinator, tmp_pat
     coordinator.download_output = lambda key, path, recipe: Path(path).write_bytes(b"complete")
     download_one(coordinator, plan, force=True)
     assert target.read_bytes() == b"complete"
+    plan["size_bytes"] = 999
+    with pytest.raises(ValueError, match="size does not match"):
+        download_one(coordinator, plan, force=True)
+    assert target.read_bytes() == b"complete"
+    assert list(tmp_path.iterdir()) == [target]
 
 
 def test_filename_lookup_paginates_and_prefers_exact_match(coordinator):

@@ -22,7 +22,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install PDF test tools
-        run: apt-get update && apt-get install --yes poppler-utils
+        run: apt-get update && apt-get install --yes poppler-utils nodejs
       - name: Install test and server environments
         run: uv sync --frozen --extra dev --extra server
       - name: Run tests
