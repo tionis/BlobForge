@@ -150,6 +150,18 @@ def test_existing_target_is_selected_without_reprocessing(tmp_path):
     assert job['recipe_digest'] == new['recipe_digest']
 
 
+def test_existing_target_without_old_parent_is_never_reextracted(tmp_path):
+    database, old, new = setup(tmp_path)
+    parent(database, new)
+    with database.transaction() as db:
+        db.execute("UPDATE jobs SET status='todo',done_seq=NULL,completed_at=NULL")
+    assert database.claim('worker', ['3_normal'], [new]) is None
+    job = database.get_job('a' * 64)
+    assert job['status'] == 'done'
+    assert job['recipe_digest'] == new['recipe_digest']
+    assert job['done_seq'] is not None
+
+
 def test_highest_version_wins_and_equal_versions_fail_closed(tmp_path):
     database, old, new = setup(tmp_path)
     intermediate = copy.deepcopy(new)

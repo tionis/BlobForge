@@ -2460,6 +2460,19 @@ class Database:
                      'done' if existing else 'todo', parent["id"], parent["recipe_digest"],
                      bool(existing), bool(existing), timestamp, job["source_key"]))
                 kind = 'artifact'
+            elif existing:
+                # A retained target is sufficient even if its old parent was never
+                # imported. Selecting it must not become a new source conversion.
+                db.execute("""UPDATE jobs SET recipe_digest=?,recipe_json=?,status='done',
+                    input_kind='source',input_artifact_id=NULL,parent_recipe_digest=NULL,
+                    not_before=NULL,blocked_reason=NULL,error_message=NULL,progress_json=NULL,
+                    worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                    completed_at=COALESCE(completed_at,?),
+                    done_seq=COALESCE(done_seq,(SELECT COALESCE(MAX(done_seq),0)+1 FROM jobs)),
+                    updated_at=? WHERE source_key=?""",
+                    (lifecycle.digest, json.dumps(target["recipe"], sort_keys=True),
+                     timestamp, timestamp, job["source_key"]))
+                kind = 'source'
             elif job["status"] == 'todo' and job["input_kind"] == 'source' and 'source' in target["input_kinds"]:
                 account = db.execute("SELECT provider_account FROM recipes WHERE recipe_digest=?", (source,)).fetchone()
                 if not account or account["provider_account"] != target["provider_account"]:

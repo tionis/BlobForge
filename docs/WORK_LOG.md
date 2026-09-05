@@ -2,6 +2,10 @@
 
 ## 2026-09-05 (Automatic compatible release following)
 
+- Pre-deployment review added a guard for a retained newer target whose old
+  parent is absent locally: select the existing result instead of allowing a
+  pending source job to extract it again. Added a real-claim regression.
+
 - Operator requested newest compatible extraction/post-processing releases by
   default, including the 16 pending source assignments. Added transactional
   reconciliation inside constrained registered-worker claims, ordering by
