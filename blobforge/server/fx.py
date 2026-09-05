@@ -104,7 +104,7 @@ def automatic_quote(db, account_key, source_currency, account_currency, timestam
     elif (previous_auto := db.execute("""SELECT * FROM provider_fx_rates WHERE account_key=?
         AND source_currency=? AND account_currency=? AND actor='system:fx'
         AND source IN ('ecb-reference','last-known-operator')
-        ORDER BY created_at DESC LIMIT 1""", (account_key, source_currency, account_currency)).fetchone()):
+        ORDER BY created_at DESC,observed_at DESC LIMIT 1""", (account_key, source_currency, account_currency)).fetchone()):
         # A currency can disappear from a newer feed. Retain its last quote,
         # including its existing margin, rather than compounding that margin.
         db.execute("""INSERT INTO provider_fx_warnings(account_key,source_currency,message,updated_at)
@@ -131,7 +131,9 @@ def automatic_quote(db, account_key, source_currency, account_currency, timestam
     reason = f"{evidence}; 10% estimate safety margin; not a billing conversion"
     row = db.execute("""SELECT * FROM provider_fx_rates WHERE account_key=? AND source_currency=?
         AND account_currency=? AND source=? AND reason=? AND actor='system:fx'
-        ORDER BY created_at DESC LIMIT 1""", (account_key, source_currency, account_currency, source, reason)).fetchone()
+        AND rate_numerator=? AND rate_denominator=?
+        ORDER BY created_at DESC LIMIT 1""", (account_key, source_currency, account_currency, source, reason,
+                                            ratio.numerator, ratio.denominator)).fetchone()
     if row:
         return row
     import secrets

@@ -1,5 +1,9 @@
 # Work Log
 
+- FX evidence follow-up: same-day reference-feed corrections append a new exact
+  ratio instead of reusing an earlier quote for that date. Regression verifies
+  the old immutable rate remains unchanged. Full suite/build revalidated.
+
 - 2026-09-06: Added hourly/startup ECB reference retrieval with bounded HTTP and
   validated, restart-persistent snapshots. Added last-known, bundled reference
   and warned emergency fallback; automatic quotes retain one 10% margin and an

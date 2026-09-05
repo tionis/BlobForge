@@ -87,6 +87,20 @@ def test_removed_feed_currency_keeps_last_quote_without_compounding_margin(db, m
     assert db.quota_summary()['fx_status']['warnings']
 
 
+def test_same_day_feed_correction_appends_evidence_without_repricing_old_quote(db, monkeypatch):
+    timestamp = 1788652800000
+    monkeypatch.setattr('blobforge.server.database.now_ms', lambda: timestamp)
+    assert fx.refresh(db, lambda: feed(usd='1.25'))
+    old_amount, old_rate = quote(db, timestamp=timestamp)
+    assert fx.refresh(db, lambda: feed(usd='1.1'))
+    amount, rate = quote(db, timestamp=timestamp)
+    assert amount == 1000000 and old_amount == 880000
+    assert rate['id'] != old_rate['id']
+    with db.connect() as connection:
+        retained = connection.execute('SELECT * FROM provider_fx_rates WHERE id=?', (old_rate['id'],)).fetchone()
+    assert dict(retained) == old_rate
+
+
 @pytest.mark.parametrize('body', [b'broken', b'x'*65537, b'<!DOCTYPE a><a/>',
     feed(usd='0'), feed(usd='NaN'), feed(usd='-1'), feed(usd='1e999'),
     feed(date='2099-01-01'), feed(date='2001-01-01')])
