@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..converters.contract import PROVIDER_ATTEMPT_CONTRACT, PROVIDER_PROBE_CONTRACT
 from ..mdaf import blake3_bytes, canonical_json_bytes
-from ..recipe_lifecycle import assert_reprocessable, load_known_recipe
+from ..recipe_lifecycle import assert_reprocessable, load_known_recipe, parse_recipe_lifecycle
 
 
 def now_ms() -> int:
@@ -2387,6 +2387,98 @@ class Database:
             updated_at=? WHERE status='processing' AND lease_expires_at<?""", (timestamp, timestamp))
         return cursor.rowcount
 
+    def _upgrade_assigned_recipes(self, db, capabilities, timestamp):
+        """Follow available compatible releases without authorizing new extraction.
+
+        Called inside the claim transaction, after constraining worker capabilities.
+        Completed results only become artifact-input jobs. Already authorized source
+        jobs keep retry/backoff state and cannot move across unsettled purchases.
+        """
+        targets = []
+        for capability in capabilities:
+            row = db.execute("SELECT enabled FROM recipes WHERE recipe_digest=?",
+                             (capability["recipe_digest"],)).fetchone()
+            if not row or not row["enabled"]:
+                continue
+            try:
+                lifecycle = parse_recipe_lifecycle(capability["recipe"])
+            except ValueError:
+                continue
+            targets.append((lifecycle, capability))
+        if not targets:
+            return
+        definitions = {}
+        rows = list(db.execute("""SELECT j.*,s.media_type FROM jobs j JOIN sources s USING(source_key)
+            WHERE j.status IN ('done','todo') AND j.recipe_digest IS NOT NULL"""))
+        for job in rows:
+            source = job["recipe_digest"]
+            if source not in definitions:
+                try:
+                    definitions[source] = self._recipe_from_db(db, source)
+                except (ValueError, json.JSONDecodeError):
+                    definitions[source] = None
+            if definitions[source] is None:
+                continue
+            compatible = []
+            for lifecycle, capability in targets:
+                if job["media_type"] not in capability["media_types"]:
+                    continue
+                try:
+                    assert_reprocessable(definitions[source], capability["recipe"])
+                except ValueError:
+                    continue
+                compatible.append((lifecycle, capability))
+            if not compatible:
+                continue
+            newest = max(item[0].version for item in compatible)
+            choices = {item[0].digest: item for item in compatible if item[0].version == newest}
+            if len(choices) != 1:
+                continue  # Equal-version competing releases need explicit reconciliation.
+            lifecycle, target = next(iter(choices.values()))
+            parent = db.execute("SELECT id,recipe_digest FROM artifacts WHERE source_key=? AND recipe_digest=?",
+                                (job["source_key"], source)).fetchone()
+            if parent is None and job["input_kind"] == 'artifact':
+                parent = db.execute("SELECT id,recipe_digest FROM artifacts WHERE id=? AND source_key=?",
+                                    (job["input_artifact_id"], job["source_key"])).fetchone()
+                if parent is not None:
+                    try:
+                        assert_reprocessable(self._recipe_from_db(db, parent["recipe_digest"]), target["recipe"])
+                    except ValueError:
+                        continue
+            existing = db.execute("SELECT 1 FROM artifacts WHERE source_key=? AND recipe_digest=?",
+                                  (job["source_key"], lifecycle.digest)).fetchone()
+            if parent is not None:
+                if 'artifact' not in target["input_kinds"]:
+                    continue
+                db.execute("""UPDATE jobs SET recipe_digest=?,recipe_json=?,status=?,
+                    input_kind='artifact',input_artifact_id=?,parent_recipe_digest=?,
+                    retry_count=0,not_before=NULL,blocked_reason=NULL,error_message=NULL,
+                    worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress_json=NULL,
+                    completed_at=CASE WHEN ? THEN completed_at ELSE NULL END,
+                    done_seq=CASE WHEN ? THEN done_seq ELSE NULL END,updated_at=? WHERE source_key=?""",
+                    (lifecycle.digest, json.dumps(target["recipe"], sort_keys=True),
+                     'done' if existing else 'todo', parent["id"], parent["recipe_digest"],
+                     bool(existing), bool(existing), timestamp, job["source_key"]))
+                kind = 'artifact'
+            elif job["status"] == 'todo' and job["input_kind"] == 'source' and 'source' in target["input_kinds"]:
+                account = db.execute("SELECT provider_account FROM recipes WHERE recipe_digest=?", (source,)).fetchone()
+                if not account or account["provider_account"] != target["provider_account"]:
+                    continue
+                purchased = db.execute("""SELECT 1 FROM quota_reservations
+                    WHERE source_key=? AND state!='released' LIMIT 1""", (job["source_key"],)).fetchone()
+                if purchased:
+                    continue
+                db.execute("""UPDATE jobs SET recipe_digest=?,recipe_json=?,updated_at=?
+                    WHERE source_key=?""", (lifecycle.digest, json.dumps(target["recipe"], sort_keys=True),
+                                             timestamp, job["source_key"]))
+                kind = 'source'
+            else:
+                continue  # Never turn absent/failed retained evidence into source OCR.
+            db.execute("""INSERT INTO audit_log(principal,action,target,detail_json,created_at)
+                VALUES('system:recipe-upgrade','job.recipe-upgrade',?,?,?)""",
+                (job["source_key"], json.dumps({'source_recipe': source,
+                 'target_recipe': lifecycle.digest, 'input_kind': kind}), timestamp))
+
     def claim(self, worker_id: str, priorities: list[str], capabilities: list[Mapping[str, Any]]) -> dict[str, Any] | None:
         timestamp = now_ms()
         normalized = [self._normalize_capability(value) for value in capabilities]
@@ -2450,6 +2542,8 @@ class Database:
             if not normalized:
                 return None
             self.recover_expired(db)
+            if registered:
+                self._upgrade_assigned_recipes(db, normalized, timestamp)
             placeholders = ",".join("?" for _ in priorities) or "''"
             predicates: list[str] = []
             capability_params: list[Any] = []

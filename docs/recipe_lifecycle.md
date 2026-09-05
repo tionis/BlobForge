@@ -159,6 +159,39 @@ recipe page and from each individual artifact. Planning and execution are
 separate audited actions. Jobs already processing are reported but never
 retargeted, and existing target artifacts are counted without being queued.
 
+## Automatic compatible release following
+
+The coordinator follows the newest compatible release offered by a registered
+worker during its claim transaction. No per-upgrade opt-in is needed. Release
+ordering uses the lifecycle semantic version, not filenames, backend aliases,
+or the numerical suffix in a display name. The target must be enabled, support
+the source media/input kind, explicitly allow the old digest, and retain the
+same family, recipe/extraction major, and exact extraction-request digest.
+Equal-version competing digests are not automatically chosen.
+
+- Completed artifacts become offline artifact-input jobs with an exact immutable
+  parent. Existing target artifacts are selected without another conversion.
+  Missing native bytes fail validation; they never trigger source OCR.
+- Pending, already-assigned source jobs move to compatible post-processing
+  releases only within the same provider account and without any non-released
+  provider reservation for that source. Retry history, priority, tags, and quota
+  backoff are preserved. These jobs still require their originally authorized
+  extraction and remain subject to all normal worker spending/rights gates.
+- Active, failed/dead, unassigned, unsupported, and incompatible jobs stay put.
+  A source with a committed or unsettled purchase requires checkpoint recovery
+  before automatic retargeting; changing a recipe is not a recovery shortcut.
+- A finished old worker result is picked up on a subsequent compatible worker
+  claim. A failed derivative is not repeatedly requeued by this policy.
+
+Each change emits a `job.recipe-upgrade` audit event with old/target recipe and
+input kind. Explicit old artifact retrieval remains available for rollback;
+selecting an old completed recipe does not permanently pin it against future
+automatic following. New expensive extraction, including an extraction-digest
+change without a major bump, always requires explicit operator action.
+
+This is coordinator scheduling policy, not a change to the MDAF v1 format or
+the immutable recipe JSON/SPEC contract.
+
 ## Current scope
 
 Mistral wiki recipe `1.2.0` is the first lifecycle-aware family. It can upgrade

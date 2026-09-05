@@ -145,6 +145,12 @@ preview/execute contract are documented in `recipe_lifecycle.md`.
 
 ## Wiki-v5 rollout and historical migration
 
+The coordinator now automatically follows compatible releases during registered
+worker claims; see `recipe_lifecycle.md`. Manual preview/reprocessing remains
+available for inspection and explicitly scoped maintenance. Pending source jobs
+follow only when their existing purchase boundary can be preserved, not by
+turning completed artifacts into new paid conversions.
+
 The target is `blobforge/recipes/mistral-ocr-4.1-wiki-v5.json`, exact digest
 `blake3:6ca8dda0c845605dd969134e208bfea44988f8ca72ff85fceea428359bf41eec`.
 See `mdaf_hierarchy_experiments.md` for the evidence and remaining uncertainty.

@@ -2,6 +2,12 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Automatically follow compatible lifecycle recipe releases for retained
+  artifacts and pending assigned sources, preserving major/extraction, account,
+  active-purchase, retry, and quota-backoff boundaries; audit and test transitions.
+- [ ] Deploy automatic release following and verify the 16 reviewed pending
+  Mistral v3 assignments move to v5 without new purchases or lost backoff.
+
 - [x] Preserve coordinator source display names in recipe-worker MDAFs instead
   of publishing the temporary `source.pdf` filename; cover worker propagation,
   local fallback, portable names, and packaged metadata with regression tests.

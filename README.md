@@ -464,8 +464,10 @@ expanded nine-book evaluation, tuning evidence, and the latest replay commands.
 See [the wiki pipeline evaluation and rollout guide](docs/mdaf_wiki_evaluation.md)
 for source-name recovery, whole-book results, limitations, and Vulcan import
 commands. New Mistral workers and routing policy revision 3 select wiki-v5;
-earlier recipes remain frozen. Existing deployments need an image/config rollout,
-and historical artifacts need explicit offline reprocessing, not another OCR run.
+earlier recipes remain frozen. The coordinator automatically follows available
+compatible lifecycle releases: retained artifacts replay offline and pending
+source assignments preserve their spending gates. New paid extraction or major
+changes remain explicit. See [release following](docs/recipe_lifecycle.md#automatic-compatible-release-following).
 
 BlobForge's v2 path uses canonical BLAKE3 source identities and validated MDAF
 v1 Markdown artifacts while retaining SHA-256 as a legacy alias. Local Marker 1

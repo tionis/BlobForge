@@ -1,5 +1,23 @@
 # Work Log
 
+## 2026-09-05 (Automatic compatible release following)
+
+- Operator requested newest compatible extraction/post-processing releases by
+  default, including the 16 pending source assignments. Added transactional
+  reconciliation inside constrained registered-worker claims, ordering by
+  lifecycle version and enforcing the existing immutable compatibility contract.
+- Retained artifacts replay offline; pending sources preserve provider account,
+  retry history and quota backoff, and do not cross non-released reservations.
+  Active/failed/dead/unassigned jobs, absent parents, changed extraction, major
+  changes, retired targets and ambiguous equal-version candidates fail closed.
+  Every applied transition is audited. No MDAF SPEC/schema change is necessary.
+- Added 20 synthetic regression cases including actual claim integration,
+  idempotency, preserved parent artifacts, available target selection, competing
+  versions, capabilities, and reserved/ambiguous/committed/released purchases.
+- Full validation: 387 tests plus 5 subtests passed, source/wheel packages
+  built offline, and git diff --check passed. Ruff is not installed in the
+  project environment; no lint success is claimed for this item.
+
 ## 2026-09-05 (Production wiki-v5 rollout)
 
 - Corrected Gandalf upstream supplied the active service contract. Connected

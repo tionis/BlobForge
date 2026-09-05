@@ -38,6 +38,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Registered worker claims automatically follow newer compatible
+  lifecycle releases. Retained results use artifact input only; pending source
+  jobs preserve retry/backoff and cannot cross provider accounts or non-released
+  purchase reservations. Major/extraction changes remain explicit. Never infer
+  compatibility from recipe display suffixes; use the immutable lifecycle and
+  exact extraction digest. See `docs/recipe_lifecycle.md`.
+
 - **2026-09-05:** Wiki-v5 is deployed at `26ba2f5`, pinned by Gandalf
   `88c566b9`. The infrastructure upstream is GitHub tionis/gandalf; use its
   managed SSH config with the deploy certificate. All 35 compatible retained
