@@ -14,9 +14,8 @@
   versioned TOC-led wiki-v5 recipe with recorded uncertainty and synthetic tests.
 - [x] Following operator review, make wiki-v5 the Mistral worker default and
   publish routing policy revision 3 without changing rights or cost gates.
-- [ ] Deploy wiki-v5 and reprocess eligible historical artifacts from retained
-  OCR. Blocked on current infrastructure definition and trusted deployment access;
-  do not repurchase OCR or discard original artifacts.
+- [x] Deploy wiki-v5 and reprocess 35 compatible historical artifacts from
+  retained OCR, preserving originals and provider accounting.
 
 - [x] Move hosted-worker temporary conversion trees from the 128 MiB tmpfs to
   the private persistent provider volume, deploy the Quadlet change, and replay

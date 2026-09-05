@@ -12,7 +12,8 @@ instead of modifying the frozen v4 recipe. This is major-section recovery for
 reviewable wiki imports, not a guarantee of reproducing every printed part,
 chapter, and subsection relationship. Following operator review, the worker
 default and routing policy revision 3 now select v5. Production deployment and
-historical replay remain pending; see [rollout guidance](routing_and_recipe_workers.md#wiki-v5-rollout-and-historical-migration).
+35 compatible historical artifact upgrades completed on September 5; see
+[rollout guidance](routing_and_recipe_workers.md#wiki-v5-rollout-and-historical-migration).
 
 The original geometry-led rules failed on combined/localized contents labels,
 unlabelled multi-page tables, split chapter titles, and missing title blocks.

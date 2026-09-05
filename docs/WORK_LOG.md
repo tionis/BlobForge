@@ -1,5 +1,41 @@
 # Work Log
 
+## 2026-09-05 (Production wiki-v5 rollout)
+
+- Corrected Gandalf upstream supplied the active service contract. Connected
+  through its managed SSH configuration and the operator's deploy certificate;
+  host verification remained enabled and credentials remained private.
+- Published tested revision `26ba2f5`. CI tests and server/hosted image builds
+  passed; Gandalf `88c566b9` pins server `sha256:be88cc30c694...` and hosted
+  `sha256:db3bf3a299d0...`. The established quiesced snapshot succeeded, scoped
+  Ansible check/apply passed, and the deployed revision and image pins match.
+  Identity, ingress, cache volumes, credentials, and quota limits were unchanged.
+- Validated all 35 retained Mistral wiki-v3 parent MDAFs before scheduling.
+  Previewed the exact cohort, upgraded one canary (328 unchanged assets), then
+  queued the remaining 34 as artifact-input derivatives. All completed; all
+  original artifacts remain. No provider requests were added by the migration.
+- Final SQLite quick_check passed and all three services are active. Public
+  health passed and public SCIM still returns 404. Six concurrent uploads account
+  for the queue changing from 1368 done/441 todo to 1362 done/447 todo; they were
+  not migration changes. The final queue matches the pre-rollout post-upload
+  counts. Pending source assignments and incompatible Marker/Datalab parents
+  were not retargeted by offline migration.
+- Validated all 35 derivatives and parent selections, comparing every retained
+  primary Markdown/native OCR member and 3,746 asset members byte-for-byte.
+  Hierarchy strategies: numbered TOC 7, TOC/relative geometry 17, explicit TOC
+  tiers 2, compact flat TOC 1, retained Markdown 8; 30 reports carry diagnostics.
+  Provider reservation aggregates remained identical to the pre-migration
+  baseline. Repeated full validation inside the coordinator hit its 128 MiB
+  memory-high threshold; stopped only the identified verifier and completed
+  in a disposable 512 MiB/one-CPU, network-disabled, read-only container.
+  Coordinator memory recovered to approximately 56 MB and health passed.
+- Gandalf's mandatory check passed with 767 tests, 1 skip, 4 subtests and 13
+  Deno tests. Its admin wiki publication preview was attempted but requires
+  OUTLINE_API_TOKEN; committed local runbook changes were not published remotely.
+- Blobforge documentation validation: 367 tests and 5 subtests passed; source
+  and wheel builds plus git diff --check passed. No additional MDAF SPEC change
+  is required for deployment of the already specified recipe contract.
+
 ## 2026-09-05 (Approved default promotion; deployment pending)
 
 - Operator approved wiki-v5 as the successor/default and offline replay of old

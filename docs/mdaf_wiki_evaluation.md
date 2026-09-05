@@ -74,7 +74,7 @@ Use level three for finer topics. New hosted runs can explicitly select
 `--mistral-recipe v4`. Existing quota, rights-confirmation, cache, and exact-job
 recipe requirements still apply. At this baseline evaluation the default was
 v3; the subsequent approved promotion changes it to v5. Production rollout
-and historical replay remain separate, pending operator-access steps described
+and 35 compatible historical upgrades subsequently completed as described
 in [the rollout guide](routing_and_recipe_workers.md#wiki-v5-rollout-and-historical-migration).
 
 ## Observed behavior

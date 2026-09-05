@@ -169,9 +169,16 @@ There is no MDAF format change in this promotion.
    explicitly retrievable with `--recipe-digest` for rollback; do not delete
    them or requeue a source conversion to recover the old output.
 
-As of this local promotion, production deployment and historical scheduling
-have **not** run: fetched Gandalf main lacks the previously documented Blobforge
-service definition and the plain `citadel` SSH alias fails host-key verification.
-Resolve the current deployment checkout and trusted access before pushing an
-image-triggering main update. Privacy/local routing remains unavailable rather
-than silently substituting a hosted recipe.
+The 2026-09-05 rollout deployed revision `26ba2f5` through Gandalf `88c566b9`
+after correcting the infrastructure upstream and using its managed SSH config.
+The quiesced recovery snapshot and scoped Ansible preview/apply passed. All 35
+retained Mistral wiki-v3 artifacts completed offline upgrades after a successful
+single-artifact canary; original artifacts remain available. Full validation
+confirmed unchanged Markdown, native OCR, and 3,746 assets, with no additional
+provider purchases. Eight books retained Markdown hierarchy for insufficient
+TOC evidence. Run bulk validation in an isolated read-only container rather than
+under the coordinator's small memory budget. Legacy Marker and
+Datalab artifacts are not compatible parents for this recipe and were untouched.
+Existing unconverted source assignments are separate from this offline batch.
+Privacy/local routing remains unavailable rather than silently substituting a
+hosted recipe.
