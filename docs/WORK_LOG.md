@@ -1,5 +1,22 @@
 # Work Log
 
+## 2026-09-05 (Hosted adapter isolation repair)
+
+- Automatic following deployed successfully and audited exactly 16 v3-to-v5
+  pending-source transitions. Thirteen concurrent new uploads brought the v5
+  source cohort to 29. Nineteen reached preflight and failed before provider
+  access because the hierarchy helper imported MDAF packaging, transitively
+  requiring coordinator-only blake3/jsonschema inside isolated evaluators.
+- Moved the unchanged pure Markdown outline routine into a dependency-free
+  shared module. MDAF builder retains its callable import; both hierarchy
+  normalizers avoid importing packaging. This repairs both Mistral and Datalab
+  isolation without changing OCR parameters or adding packaging dependencies
+  to provider environments. Added -I/-S subprocess import regressions for both
+  adapters and matching hosted-container build gates.
+- Validation: 390 tests plus 5 subtests passed; source/wheel builds and
+  git diff --check passed. A real blank PDF preflight passed in the separately
+  synced Mistral environment without an API key or provider request.
+
 ## 2026-09-05 (Automatic compatible release following)
 
 - Pre-deployment review added a guard for a retained newer target whose old

@@ -11,7 +11,7 @@ import re
 import statistics
 from collections import Counter
 
-from ..mdaf.builder import markdown_outline
+from ..markdown_outline import markdown_outline
 from .hierarchy import _key, _title, _toc_entries, page_labels
 
 SERIES = re.compile(

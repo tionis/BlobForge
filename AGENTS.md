@@ -38,6 +38,12 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Normalization used inside isolated provider adapters must not
+  import MDAF packaging: mdaf initialization loads blake3/jsonschema, which are
+  coordinator dependencies. Share the pure outline routine through
+  `blobforge.markdown_outline`, not `mdaf.builder`. Test adapter imports with
+  isolated Python (-I -S) and include that check in the hosted image build.
+
 - **2026-09-05:** Registered worker claims automatically follow newer compatible
   lifecycle releases. Retained results use artifact input only; pending source
   jobs preserve retry/backoff and cannot cross provider accounts or non-released

@@ -13,7 +13,7 @@ import statistics
 from collections import Counter
 from typing import Any, Mapping, Sequence
 
-from ..mdaf.builder import markdown_outline
+from ..markdown_outline import markdown_outline
 
 CHAPTER = re.compile(r"^chapter\s+(?:[0-9]+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b", re.I)
 

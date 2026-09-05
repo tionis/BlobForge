@@ -13,6 +13,8 @@ COPY evaluators/datalab/adapter.py ./evaluators/datalab/adapter.py
 RUN uv sync --frozen --no-dev \
     && uv sync --frozen --project evaluators/mistral \
     && uv sync --frozen --project evaluators/datalab
+RUN /app/evaluators/mistral/.venv/bin/python -I -S -c "import runpy; runpy.run_path('/app/evaluators/mistral/adapter.py')" \
+    && /app/evaluators/datalab/.venv/bin/python -I -S -c "import runpy; runpy.run_path('/app/evaluators/datalab/adapter.py')"
 
 FROM python:3.12-slim
 
