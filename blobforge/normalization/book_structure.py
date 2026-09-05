@@ -221,12 +221,12 @@ def _body_candidates(nodes, pages, mappings, text):
     return candidates
 
 
-def recover_book_structure(text, pages, source_map, *, geometry_ratio=0.65):
+def recover_book_structure(text, pages, source_map, *, geometry_ratio=0.65, reconcile_conflicts=False):
     outline = markdown_outline(text, skip_fences=True)
     nodes = outline["nodes"]
     toc = contents_pages(pages)
     report = {
-        "method": "dev.tionis.blobforge/toc-led-book-outline-v2",
+        "method": "dev.tionis.blobforge/toc-led-book-outline-v3" if reconcile_conflicts else "dev.tionis.blobforge/toc-led-book-outline-v2",
         "toc_pages": toc,
         "major_sections": [],
         "diagnostics": [],
@@ -367,11 +367,48 @@ def recover_book_structure(text, pages, source_map, *, geometry_ratio=0.65):
                 for label in entry["labels"]
                 if label not in label_pages
             )
+        observed_targets = {label_pages[label] for label in entry["labels"] if label in label_pages}
+        # A missing opener label may be bracketed by two independently observed
+        # consecutive labels. This is hierarchy-only evidence, never a new
+        # observed label or citation target.
+        opener_targets = observed_targets | {
+            p for p in target_pages
+            if p - 1 in labels and p + 1 in labels
+            and any(int(labels[p - 1]) + 1 == int(label) == int(labels[p + 1]) - 1 for label in entry["labels"])
+        }
+        occupied_pages = {matched[other]["page"] for other in selected if other != key and other in matched}
+        explicit_opener = len(opener_targets) == 1 and not opener_targets & occupied_pages
+        if reconcile_conflicts and not value and candidates.get(key):
+            if explicit_opener:
+                target_pages = opener_targets
+                report["diagnostics"].append(f"corroborated_page_with_ambiguous_body_title; review_required: {entry['title']}")
+            else:
+                report["unmatched_entries"].append(entry["title"])
+                report["diagnostics"].append(f"ambiguous_body_title; boundary_not_inferred: {entry['title']}")
+                continue
         if value and target_pages and value["page"] not in target_pages:
             report["diagnostics"].append(
                 f"toc_title_page_disagreement: {entry['title']}"
             )
-            if report["strategy"] != "toc-and-relative-geometry":
+            if reconcile_conflicts:
+                # A separately numbered opener can precede its title page.
+                # Retain an observed adjacent opener only when it is not another
+                # selected chapter; inferred offsets alone cannot justify this.
+                if explicit_opener and value["page"] - next(iter(opener_targets)) == 1:
+                    target_pages = opener_targets
+                    value = None
+                    report["diagnostics"].append(f"corroborated_adjacent_opener_retained; review_required: {entry['title']}")
+                # A corroborated document-wide offset is not evidence that an
+                # individual contents entry is correct. Never discard a unique
+                # authored body title in favour of an unrelated page boundary.
+                starts = {c["node"]["heading"]["start"] for c in candidates.get(key, [])}
+                if value and len(starts) != 1:
+                    report["unmatched_entries"].append(entry["title"])
+                    report["diagnostics"].append(f"conflicting_ambiguous_title; boundary_not_inferred: {entry['title']}")
+                    continue
+                if value:
+                    report["diagnostics"].append(f"conflict_resolved_by_unique_body_title: {entry['title']}")
+            elif report["strategy"] != "toc-and-relative-geometry":
                 value = None
         if value:
             page = value["page"]

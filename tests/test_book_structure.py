@@ -47,6 +47,62 @@ def check_forest(result):
         stack.append(n)
 
 
+def test_v6_unique_body_title_wins_over_wrong_contents_page():
+    native = book()
+    native['pages'][0]['blocks'][-1]['content'] = '## Chapter 3: Realm 3 2'
+    native['pages'][0]['markdown'] = native['pages'][0]['markdown'].replace('Realm 3 3', 'Realm 3 2')
+    old = render_mistral_response(native, normalization_profile='wiki-v4')
+    new = render_mistral_response(native, normalization_profile='wiki-v5')
+    assert old.text == new.text
+    third = next(m for m in new.hierarchy_report['major_sections'] if 'Realm 3' in m['title'])
+    assert third['source_page'] == 3
+    assert third['evidence'] == 'title-match'
+    assert any('conflict_resolved_by_unique_body_title' in d for d in new.hierarchy_report['diagnostics'])
+    check_forest(new)
+
+
+def test_v6_does_not_guess_between_repeated_body_titles():
+    native = book()
+    native['pages'][0]['blocks'][-1]['content'] = '## Chapter 3: Realm 3 2'
+    native['pages'][0]['markdown'] = native['pages'][0]['markdown'].replace('Realm 3 3', 'Realm 3 2')
+    native['pages'].append(_page(4, [_block('title', '# Chapter 3: Realm 3'), _block('text', 'Repeated heading.')]))
+    native['usage_info']['pages_processed'] = 5
+    new = render_mistral_response(native, normalization_profile='wiki-v5')
+    assert 'Chapter 3: Realm 3' in new.hierarchy_report['unmatched_entries']
+    assert not any('Realm 3' in m['title'] for m in new.hierarchy_report['major_sections'])
+    check_forest(new)
+
+
+def test_v6_retains_observed_unoccupied_opener_before_title_page():
+    native = book()
+    native['pages'][2]['blocks'] = [_block('title', '# Opening vignette'), _block('text', 'Fiction.'), _block('footer', '2')]
+    native['pages'][2]['markdown'] = '# Opening vignette\n\nFiction.\n\n2'
+    # The chapter title is on the immediately following physical page, while
+    # the next chapter moves later; neither opener belongs to another chapter.
+    native['pages'].insert(3, _page(3, [_block('title', '# Chapter 2: Realm 2'), _block('text', 'Rules.')]))
+    native['pages'][4]['index'] = 4
+    native['usage_info']['pages_processed'] = 5
+    new = render_mistral_response(native, normalization_profile='wiki-v5')
+    middle = next(m for m in new.hierarchy_report['major_sections'] if 'Realm 2' in m['title'])
+    assert middle['source_page'] == 2
+    assert any('corroborated_adjacent_opener_retained' in d for d in new.hierarchy_report['diagnostics'])
+    check_forest(new)
+
+
+def test_v6_recipe_keeps_extraction_identity_and_allows_v5_replay(tmp_path):
+    from blobforge.recipe_lifecycle import assert_reprocessable
+    root = Path(__file__).parents[1] / 'blobforge/recipes'
+    old = json.loads((root/'mistral-ocr-4.1-wiki-v5.json').read_text())
+    new = json.loads((root/'mistral-ocr-4.1-wiki-v6.json').read_text())
+    assert_reprocessable(old, new)
+    assert old['lifecycle']['extraction'] == new['lifecycle']['extraction']
+    parent, _, native, _ = _parent(tmp_path)
+    result = reprocess_mdaf(parent, root/'mistral-ocr-4.1-wiki-v6.json', tmp_path/'new.mdaf')
+    with zipfile.ZipFile(result.path) as archive:
+        assert archive.read('renditions/ai.mistral/ocr-response.json') == native
+        assert json.loads(archive.read('extensions/dev.tionis.blobforge/hierarchy.json'))['method'].endswith('v3')
+
+
 @pytest.mark.parametrize(
     "label,prefix",
     [

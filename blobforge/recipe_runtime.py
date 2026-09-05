@@ -172,6 +172,18 @@ def mistral_wiki_v5_recipe(**kwargs: Any) -> AdapterRecipe:
                    parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v4"})
 
 
+def mistral_wiki_v6_recipe(**kwargs: Any) -> AdapterRecipe:
+    """Conflict-aware hierarchy; identical extraction and provider cache key."""
+    runtime = mistral_wiki_v3_recipe(**kwargs)
+    root = Path(kwargs.get("repository") or Path(__file__).resolve().parent.parent)
+    recipe = json.loads((root / "blobforge/recipes/mistral-ocr-4.1-wiki-v6.json").read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    if digest != "blake3:2684bcccbb062f4ed78aeab8ad60945c4ef1a0132ab07224a30af841f41303ad":
+        raise RuntimeError(f"mistral-wiki-v6 recipe identity changed: {digest}")
+    return replace(runtime, key="mistral-wiki-v6", recipe=recipe, recipe_digest=digest,
+                   parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v5"})
+
+
 def datalab_wiki_v1_recipe(
     *,
     repository: str | Path | None = None,

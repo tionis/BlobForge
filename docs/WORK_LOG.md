@@ -1,5 +1,14 @@
 # Work Log
 
+- 2026-09-06: Added immutable recipe 1.5.0/wiki-v6 and routing revision 4, made
+  the compatible release the worker default, and threaded profile wiki-v5 through
+  runtime, evaluator, isolated adapter and retained-artifact reprocessing.
+  Synthetic tests cover wrong TOC pages, repeated titles and adjacent openers.
+  Corpus experiments caught the opening-fiction exception before promotion:
+  preserve corroborated unoccupied opener pages, flag remaining uncertainty,
+  and keep primary Markdown/native extraction unchanged. Full suite/build and
+  deployed replay checks are release gates. No MDAF schema change is required.
+
 - 2026-09-06: Read-only Citadel diagnosis found a request-only allowance on an
   older recipe and a current monetary shortfall of EUR 1.267609. No allowance
   or budget was increased. Show recipe versions/profiles in catalog/selectors,

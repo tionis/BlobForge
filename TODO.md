@@ -2,6 +2,9 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Release conflict-aware wiki-v6/recipe 1.5.0, preserving frozen profiles,
+  extraction identity, native bytes and all existing quota/purchase safeguards.
+
 - [x] Distinguish recipe versions throughout console selection and explain
   overage shortfalls; replace unused exact-recipe allowances without stacking.
 

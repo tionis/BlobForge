@@ -1,0 +1,36 @@
+{
+  "candidates": {
+    "hosted-quality": {
+      "backend": "mistral-ocr-wiki",
+      "cost_usd_per_page": 0.004,
+      "data_handling": "external-api",
+      "recipe_digest": "blake3:2684bcccbb062f4ed78aeab8ad60945c4ef1a0132ab07224a30af841f41303ad",
+      "recipe_path": "../recipes/mistral-ocr-4.1-wiki-v6.json",
+      "status": "production"
+    }
+  },
+  "policy": "pdf-rulebooks",
+  "revision": 4,
+  "schema": "dev.tionis.blobforge.routing-policy/v1",
+  "scope": {
+    "equations": "not-evaluated",
+    "layout_classes": [
+      "standard",
+      "complex-tables"
+    ],
+    "languages": [
+      "en",
+      "und"
+    ],
+    "media_types": [
+      "application/pdf"
+    ],
+    "minimum_native_text_ratio": 0.8,
+    "source_class": "born-digital-pnp-rulebook"
+  },
+  "selection": {
+    "complex_tables": "hosted-quality",
+    "quality": "hosted-quality"
+  },
+  "status": "active"
+}

@@ -38,6 +38,12 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** Recipe 1.5.0/wiki-v6 (normalization wiki-v5) reconciles wrong
+  contents pages with unique body titles. A corroborated adjacent opening page
+  remains with its section; ambiguity never authorizes arbitrary first matches.
+  Bracketed label evidence is hierarchy-only and cannot create citation labels.
+  Earlier normalization profiles and recipe/policy JSON remain frozen.
+
 - **2026-09-06:** Quota allowances are independent request/page/money bounds,
   not a bypass flag. Replacing an unused exact-recipe allowance revokes the old
   row without stacking authority. Automatic recipe upgrades do not transfer
