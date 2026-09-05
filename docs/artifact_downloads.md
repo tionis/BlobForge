@@ -1,5 +1,15 @@
 # Finding and downloading retained artifacts
 
+The management console keeps its page, job search/filters, pagination and open
+job in the URL fragment, preserving them on reload and browser Back/Forward.
+Fragments are not sent to the server. Copying the URL shares those filters and
+the source key, so avoid sharing private job URLs outside the intended audience.
+The active view refreshes every ten seconds, with no overlapping polling cycles;
+hidden tabs, open editing dialogs, focused inputs and selected text pause polling.
+Job details retain scroll and recipe selection during background updates. Old
+attempt errors are labeled as audit history alongside the current job state;
+they are never deleted just because a job was retried successfully.
+
 The job UI displays the immutable recipe's lifecycle version and post-processing
 profile separately from the artifact format (`mdaf/v1`). For example, the
 wiki-v5 release declares recipe **1.4.0** and profile **wiki-v4**. These are

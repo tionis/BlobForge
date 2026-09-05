@@ -1,5 +1,14 @@
 # Work Log
 
+- 2026-09-06: Investigated reported blake3 preflight traceback on Citadel.
+  The isolated adapter import passed on the pinned repaired worker; live SQLite
+  showed no failed/dead jobs or current matching errors, with 19 historical
+  failures attached to queued jobs. No jobs were retried or purchases issued.
+  Added fragment-based reload/Back/Forward navigation and guarded ten-second
+  polling, preserved job detail selection/scroll and clarified historical errors.
+  Added executable route/poll/stale-response regressions and updated HTTP asset
+  version coverage; validation uses full pytest and uv build.
+
 - Download verification follow-up: keep `.mdaf` on very long UTF-8 HTTP names,
   reject truncated transfers against catalog byte lengths before publication,
   and install Node in CI so executable UI regressions run there as well as

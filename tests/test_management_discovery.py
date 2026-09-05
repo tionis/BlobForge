@@ -27,13 +27,13 @@ def test_search_decodes_paths_casefolds_and_matches_filename_words(tmp_path):
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required for browser JS regression")
 def test_ui_versions_and_search_response_order():
     declarations = "\n".join(line for line in JS.splitlines() if line.startswith((
-        "const recipeName=", "let jobsRequest=", "async function loadJobs()")))
+        "const recipeName=", "let jobsRequest=", "async function loadJobs(")))
     script = """
 const assert=require('node:assert/strict');
 const state={recipes:[{recipe_digest:'new',backend:'mistral',recipe:{lifecycle:{recipe_version:'1.4.0',postprocessing:{profile:'wiki-v4'}}}}],offset:0,limit:50};
 let params='old';const pending=[];const elements={};
 const $=s=>elements[s]??=( {} ),$$=()=>[],jobRow=()=>'',toast=e=>{throw Error(e)};
-const jobParams=()=>params,api=()=>new Promise(resolve=>pending.push(resolve));
+const saveNavigation=()=>{},jobParams=()=>params,api=()=>new Promise(resolve=>pending.push(resolve));
 """ + declarations + """
 assert.match(recipeName('new'),/recipe 1.4.0.*wiki-v4/);
 assert.match(recipeName('unknown'),/version unavailable/);

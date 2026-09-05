@@ -2,6 +2,10 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Persist console navigation, job filters and open details across reloads;
+  refresh active views without overlapping polls or disturbing edits, and
+  distinguish previous failed attempts from current job failures.
+
 - [x] Add filename-based and bulk CLI downloads with MDAF filtering, JSON/dry-run
   manifests, collision checks and atomic no-clobber file publication.
 

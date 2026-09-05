@@ -38,6 +38,11 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** Console failure history is retained audit evidence, not current
+  failure state. Verify jobs.status/error_message and the actual worker image
+  before retrying historical errors. UI routing uses URL fragments; polling must
+  pause for hidden tabs/edits and fence stale detail responses after close.
+
 - **2026-09-05:** `download` is read-only with respect to coordinator state.
   Filename/bulk lookup uses the admin search endpoint; source keys retain the
   existing client API. Check every output collision before transfers and stage
