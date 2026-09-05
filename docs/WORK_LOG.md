@@ -1,5 +1,14 @@
 # Work Log
 
+## 2026-09-05 (Deterministic quota concurrency fixture)
+
+- Repeated full-suite hierarchy verification exposed the existing concurrency
+  fixture's dependence on two calls landing in different milliseconds. The
+  helper and test could create identical account/window keys before testing
+  concurrency at all. Give the second policy a distinct two-day endpoint;
+  overlapping active windows and production quota semantics remain unchanged.
+- This is a separate test-only maintenance item from the hierarchy recipe.
+
 ## 2026-09-05 (Evidence-backed wiki pipeline repair)
 
 - Added immutable recipe Mistral wiki-v4, profile wiki-v3, and generation-five

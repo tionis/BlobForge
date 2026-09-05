@@ -767,7 +767,8 @@ def test_provider_account_concurrency_defers_second_purchase(tmp_path):
     database.create_quota_policy(
         "test:primary",
         window_start=timestamp - 1000,
-        window_end=timestamp + 86_400_000,
+        # Explicitly differ from the helper's one-day window, even in the same millisecond.
+        window_end=timestamp + 2 * 86_400_000,
         label="larger concurrency test budget",
         limit_requests=10,
         limit_pages=100,
