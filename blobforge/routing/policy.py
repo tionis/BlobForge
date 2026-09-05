@@ -12,7 +12,7 @@ from ..mdaf import blake3_bytes, canonical_json_bytes
 
 # Policy documents are immutable once used. Advance this pointer to a new file;
 # never repurpose an earlier revision for a different recipe.
-POLICY_PATH = Path(__file__).with_name("pdf-rulebooks-v2.json")
+POLICY_PATH = Path(__file__).with_name("pdf-rulebooks-v3.json")
 
 
 @dataclass(frozen=True)

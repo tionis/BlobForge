@@ -7,10 +7,12 @@ not committed as fixtures.
 
 ## Decision
 
-Publish an opt-in `mistral-ocr-4.1-wiki-v5.json` recipe, normalization `wiki-v4`,
+Publish `mistral-ocr-4.1-wiki-v5.json`, normalization `wiki-v4`,
 instead of modifying the frozen v4 recipe. This is major-section recovery for
 reviewable wiki imports, not a guarantee of reproducing every printed part,
-chapter, and subsection relationship. The hosted worker still defaults to v3.
+chapter, and subsection relationship. Following operator review, the worker
+default and routing policy revision 3 now select v5. Production deployment and
+historical replay remain pending; see [rollout guidance](routing_and_recipe_workers.md#wiki-v5-rollout-and-historical-migration).
 
 The original geometry-led rules failed on combined/localized contents labels,
 unlabelled multi-page tables, split chapter titles, and missing title blocks.
@@ -95,7 +97,8 @@ The full corpus is now development/regression evidence, not an independent
 holdout. Remaining risks include erroneous OCR labels, mixed page-number
 sequences, flattened TOC tiers, unusual typography, and partial title loss.
 The geometry route cannot report a true missing-chapter rate without an
-independently annotated hierarchy. It must remain reviewable and opt-in.
+independently annotated hierarchy. Its evidence and diagnostics must remain
+reviewable; Vulcan still explicitly selects the alternative outline authority.
 
 MDAF v1 needs no schema or SPEC change: these are existing alternative outlines,
 source intervals, immutable derivatives, and namespaced evidence reports.

@@ -24,14 +24,14 @@ def _features(**changes):
     return RoutingFeatures(**values)
 
 
-def test_quality_route_resolves_exact_canary_recipe():
-    decision = route_pdf(_features(), allow_canary=True)
+def test_quality_route_resolves_default_promoted_recipe():
+    decision = route_pdf(_features())
     assert decision.eligible
     assert decision.recipe_digest == (
-        "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
+        "blake3:6ca8dda0c845605dd969134e208bfea44988f8ca72ff85fceea428359bf41eec"
     )
     assert decision.estimated_cost_usd == 0.4
-    assert decision.policy_revision == 2
+    assert decision.policy_revision == 3
     assert decision.policy_digest.startswith("blake3:")
 
 
@@ -44,9 +44,9 @@ def test_routing_policy_revisions_are_immutable_and_distinct():
     assert old["candidates"]["hosted-quality"]["recipe_digest"] == (
         "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026"
     )
-    assert current["revision"] == 2
+    assert current["revision"] == 3
     assert current["candidates"]["hosted-quality"]["recipe_digest"] == (
-        "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
+        "blake3:6ca8dda0c845605dd969134e208bfea44988f8ca72ff85fceea428359bf41eec"
     )
     assert blake3_bytes(canonical_json_bytes(old)) != blake3_bytes(
         canonical_json_bytes(current)
@@ -66,7 +66,8 @@ def test_routing_fails_closed_for_privacy_scan_cost_and_canary_status():
     assert not expensive.eligible
     assert "exceeds" in " ".join(expensive.rationale)
 
-    not_promoted = route_pdf(_features())
+    previous = json.loads(POLICY_PATH.with_name("pdf-rulebooks-v2.json").read_text())
+    not_promoted = route_pdf(_features(), policy=previous)
     assert not not_promoted.eligible
     assert "canary-only" in " ".join(not_promoted.rationale)
 
@@ -76,7 +77,7 @@ def test_routing_fails_closed_for_privacy_scan_cost_and_canary_status():
 
 
 def test_override_cannot_bypass_policy_or_rights():
-    digest = "blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139"
+    digest = "blake3:6ca8dda0c845605dd969134e208bfea44988f8ca72ff85fceea428359bf41eec"
     blocked = route_pdf(
         _features(external_processing_allowed=False),
         allow_canary=True,

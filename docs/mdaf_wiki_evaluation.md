@@ -2,7 +2,7 @@
 
 Date: 2026-09-05
 
-The expanded corpus and opt-in wiki-v5 follow-up are documented in
+The expanded corpus and now-default wiki-v5 follow-up are documented in
 [TOC-led hierarchy experiments](mdaf_hierarchy_experiments.md). The v4 results
 below remain the historical baseline, not the latest recommendation.
 
@@ -72,8 +72,10 @@ vulcan artifact import upgraded.mdaf --destination Books/Known \
 Use level three for finer topics. New hosted runs can explicitly select
 `blobforge evaluate mistral-wiki-v4` or the existing recipe-worker command with
 `--mistral-recipe v4`. Existing quota, rights-confirmation, cache, and exact-job
-recipe requirements still apply. The worker default remains v3. Publish/deploy
-and coordinator recipe promotion are separate operator actions; none ran here.
+recipe requirements still apply. At this baseline evaluation the default was
+v3; the subsequent approved promotion changes it to v5. Production rollout
+and historical replay remain separate, pending operator-access steps described
+in [the rollout guide](routing_and_recipe_workers.md#wiki-v5-rollout-and-historical-migration).
 
 ## Observed behavior
 

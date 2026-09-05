@@ -1,5 +1,25 @@
 # Work Log
 
+## 2026-09-05 (Approved default promotion; deployment pending)
+
+- Operator approved wiki-v5 as the successor/default and offline replay of old
+  runs. Changed the Mistral CLI default and added immutable routing revision 3;
+  retained all applicability, rights, spending, and unassigned-queue gates.
+- Added default/explicit-release CLI regressions and exercised default routing
+  through the coordinator without a canary opt-in. Updated rollout guidance to
+  use reviewed, deduplicated artifact-input cohorts and preserve originals.
+- Read deployment history, fetched Blobforge/Gandalf refs, and inspected a
+  separate Gandalf worktree. Its main lacks the documented Blobforge role.
+  Noninteractive SSH to the plain citadel alias failed host-key verification;
+  no verification bypass, secret inspection, push, deployment, or production
+  queue mutation was performed. Current infrastructure and trusted access are
+  needed to continue the production rollout.
+- Validation: `UV_CACHE_DIR=/tmp/blobforge-uv-cache uv run --no-sync pytest -q`
+  passed 367 tests plus 5 subtests; `uv build --offline` built source and wheel
+  packages, and `git diff --check` passed. Promotion changes no MDAF contract,
+  so no additional SPEC or Vulcan bundled-skill update is required beyond the
+  preceding pipeline commits.
+
 ## 2026-09-05 (Expanded TOC-led hierarchy tuning)
 
 - Evaluated all ten supplied filenames/nine distinct native responses without

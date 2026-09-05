@@ -457,13 +457,15 @@ BlobForge requires S3 conditional writes (`If-None-Match` and `If-Match`). Teste
 
 ## MDAF migration and converter evaluation
 
-For evidence-backed book chapters and conservative page citations, the opt-in
+For evidence-backed book chapters and conservative page citations, the default
 Mistral wiki-v5 recipe can replay retained OCR without another provider call.
 See [TOC-led hierarchy experiments](docs/mdaf_hierarchy_experiments.md) for the
 expanded nine-book evaluation, tuning evidence, and the latest replay commands.
 See [the wiki pipeline evaluation and rollout guide](docs/mdaf_wiki_evaluation.md)
 for source-name recovery, whole-book results, limitations, and Vulcan import
-commands. Existing hosted-worker defaults and earlier frozen recipes are unchanged.
+commands. New Mistral workers and routing policy revision 3 select wiki-v5;
+earlier recipes remain frozen. Existing deployments need an image/config rollout,
+and historical artifacts need explicit offline reprocessing, not another OCR run.
 
 BlobForge's v2 path uses canonical BLAKE3 source identities and validated MDAF
 v1 Markdown artifacts while retaining SHA-256 as a legacy alias. Local Marker 1
@@ -478,7 +480,7 @@ uv run blobforge evaluate docling ./book.pdf -o ./book.docling.mdaf
 uv run blobforge review-bundle ./book.pdf ./book.marker1.mdaf ./book.docling.mdaf \
   --pages 1-8 --output ./book-review
 uv run blobforge reprocess ./book.old.mdaf \
-  --recipe blobforge/recipes/mistral-ocr-4.1-wiki-v3.json \
+  --recipe blobforge/recipes/mistral-ocr-4.1-wiki-v5.json \
   --output ./book.upgraded.mdaf
 uv run blobforge reprocess-plan \
   --source-recipe blake3:OLD --target-recipe blake3:NEW

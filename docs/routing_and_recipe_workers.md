@@ -1,16 +1,18 @@
 # Routing and Exact-recipe Workers
 
-BlobForge now has an advisory, versioned routing policy and an isolated MDAF
-worker path. Both are deliberately canary-scoped: the evaluated Mistral
-candidate is useful enough to test on real jobs, but its managed model alias,
-provider billing evidence, hidden holdout, and production rollback canary are
-not yet frozen.
+BlobForge has a versioned routing policy and an isolated MDAF worker path.
+Following operator review of the nine-book offline evaluation, Mistral wiki-v5
+is the default worker recipe and the production candidate in policy revision 3.
+This promotes post-processing, not a new OCR purchase or broader source scope.
+The managed provider model alias remains a reproducibility limitation; retained
+native responses remain the replay boundary. Deployment status is separate from
+these code defaults (see rollout below).
 
 ## Policy contract
 
-`blobforge/routing/pdf-rulebooks-v2.json` is the current canonical policy
-document. Revision 1 remains frozen on Mistral wiki-v2 rather than being edited
-in place. The canonical BLAKE3 digest and integer revision accompany every decision. The
+`blobforge/routing/pdf-rulebooks-v3.json` is the current canonical policy
+document. Revisions 1 and 2 remain frozen on wiki-v2 and wiki-v3 respectively.
+The canonical BLAKE3 digest and integer revision accompany every decision. The
 resolver accepts media type, source class, native-text ratio, language, layout
 class, complex-table/equation flags, quality tier, external-processing
 authorization, page count, and a hard cost ceiling. It either returns one exact
@@ -25,7 +27,7 @@ The first policy is intentionally narrow:
 - equation-heavy and unknown-layout documents have no route;
 - hosted processing requires explicit rights confirmation and a sufficient
   per-document spend ceiling;
-- Mistral wiki-v3 is status `canary`, so the caller must opt into canary use;
+- Mistral wiki-v5 requires no canary opt-in; old policies retain their gates;
 - privacy/local-only routing returns no recipe until an exact, model-pinned
   local MDAF recipe passes its remaining gates.
 
@@ -40,8 +42,7 @@ An eight-page Storypath example is read-only and does not enqueue work:
 uv run blobforge route-plan source.pdf \
   --language en \
   --max-cost-usd 0.04 \
-  --confirm-api-rights \
-  --allow-canary
+  --confirm-api-rights
 ```
 
 Pass `--apply-job <source-key>` plus coordinator credentials to apply a plan.
@@ -53,7 +54,7 @@ recipe, status, and rationale in one `job.route` audit event. The management UI
 still offers the lower-level manual exact-recipe selection for exceptional
 operator decisions.
 
-## Mistral wiki-v3 lifecycle recipe
+## Historical Mistral wiki-v3 lifecycle recipe
 
 Recipe
 `blake3:3f504116b8747b311f07310ea48b53eddaf4a37330ffe6c29e015f06d4185139`
@@ -97,8 +98,8 @@ trusted digest. Offline/revoked workers do not satisfy the routing endpoint's
 availability gate.
 
 The dispatcher is media-neutral and tests alternate audio/PDF capabilities in
-one worker process. The hosted catalog contains the PDF Mistral wiki-v3 and
-Datalab accurate wiki-v1 canaries. They run under separate provider-account
+one worker process. The hosted catalog contains the PDF Mistral wiki-v5 default
+and Datalab accurate wiki-v1 candidate. They run under separate provider-account
 credentials and quota ledgers. Adding audio later means another exact `AdapterRecipe`;
 the claim/dispatch loop does not need to become media-specific.
 
@@ -109,7 +110,7 @@ provider worker starts. Registered capabilities are authoritative for recipe,
 media/input kinds, provider account, and assignment mode; claim payloads may
 narrow but cannot broaden them.
 
-Run a bounded hosted canary worker with:
+Run a bounded hosted worker with:
 
 ```bash
 uv run blobforge recipe-worker \
@@ -135,19 +136,42 @@ later fails. Completed cache hits create zero-purchase ledger entries. See
 `api_workers_and_quotas.md` for policies, cooldowns, operator overages, and
 ambiguous-attempt reconciliation.
 
-The wiki-v3 worker advertises both source and artifact input. Source claims run
+The Mistral worker advertises both source and artifact input. Source claims run
 the isolated hosted adapter; artifact claims download the exact immutable
 parent MDAF and run `blobforge reprocess` without credentials or provider
 access. Capabilities and claims are input-kind constrained, so a source-only
 worker cannot accidentally consume an upgrade job. Bulk scheduling and its
 preview/execute contract are documented in `recipe_lifecycle.md`.
 
-## Promotion gates
+## Wiki-v5 rollout and historical migration
 
-Before this becomes the default or is broadly deployed:
+The target is `blobforge/recipes/mistral-ocr-4.1-wiki-v5.json`, exact digest
+`blake3:6ca8dda0c845605dd969134e208bfea44988f8ca72ff85fceea428359bf41eec`.
+See `mdaf_hierarchy_experiments.md` for the evidence and remaining uncertainty.
+There is no MDAF format change in this promotion.
 
-- run the hidden holdout and a small coordinator production canary;
-- confirm provider billing/credit accounting and response-cache backup;
-- document rollback to the retained legacy artifact;
-- address or explicitly accept the managed model alias/checkpoint limitation;
-- add the exact local/privacy recipe rather than routing to a backend alias.
+1. Deploy verified, pinned coordinator/worker images through the current
+   infrastructure definition. Remove any explicit `--mistral-recipe v3/v4`
+   override or set it to `v5`; check the registered exact capability. Preserve
+   provider ledgers, response-cache storage, and `claim_unassigned=false`.
+2. Preview `reprocess-plan` for each compatible v1–v4 parent recipe, targeting
+   the digest above. Review explicit source keys, select only one parent per
+   source (prefer the newest compatible retained artifact), and skip active
+   work/already-existing targets. Do not blindly execute overlapping cohorts.
+3. Execute those reviewed source-key lists. The scheduler queues
+   `input_kind=artifact`; this worker path invokes the offline reprocessor,
+   never the source converter. Missing native evidence is a reported failure,
+   not permission to buy OCR. A bounded `--cache-only` migration worker also
+   prevents paid extraction if an unrelated source job is claimed.
+4. Verify completed target artifacts, selected recipe, preserved parents,
+   hierarchy diagnostics, and unchanged provider purchase totals. Inspect a
+   small production canary before processing the rest. Originals remain
+   explicitly retrievable with `--recipe-digest` for rollback; do not delete
+   them or requeue a source conversion to recover the old output.
+
+As of this local promotion, production deployment and historical scheduling
+have **not** run: fetched Gandalf main lacks the previously documented Blobforge
+service definition and the plain `citadel` SSH alias fails host-key verification.
+Resolve the current deployment checkout and trusted access before pushing an
+image-triggering main update. Privacy/local routing remains unavailable rather
+than silently substituting a hosted recipe.

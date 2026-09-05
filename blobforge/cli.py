@@ -2494,11 +2494,11 @@ def main():
 
     p_recipe_worker = subparsers.add_parser(
         "recipe-worker",
-        help="Start an isolated exact-recipe MDAF worker (canary)",
+        help="Start an isolated exact-recipe MDAF worker",
     )
     p_recipe_worker.add_argument("--run-once", action="store_true")
-    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4", "v5"], default="v3",
-                                 help="Explicit Mistral post-processing release; v4 adds book hierarchy evidence")
+    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4", "v5"], default="v5",
+                                 help="Mistral post-processing release (default: v5, TOC-led book hierarchy)")
     p_recipe_worker.add_argument(
         "--provider", choices=("mistral", "datalab"), default="mistral"
     )

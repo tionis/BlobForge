@@ -38,6 +38,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Operator-approved wiki-v5 promotion changes the CLI default
+  and adds routing policy revision 3; revisions 1/2 remain frozen. This is a
+  code default, not evidence of a completed production rollout. Historical
+  migration uses artifact-input reprocessing only, retains original artifacts,
+  and must not fall back to paid OCR. Current fetched Gandalf main lacks the
+  documented Blobforge service role; resolve deployment history/access first.
+
 - **2026-09-05:** Expanded book hierarchy recovery is wiki-v5/profile wiki-v4.
   Keep older recipes frozen. Use structural contents detection, explicit TOC
   groups/numbered series before geometry, and same-column wrapped-title joins.

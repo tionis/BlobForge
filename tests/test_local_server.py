@@ -18,7 +18,7 @@ from blobforge.mdaf import (
 )
 from blobforge.mdaf.builder import activity, markdown_outline
 from blobforge.recipe_lifecycle import RECIPE_MEMBER_PATH
-from blobforge.recipe_runtime import marker1_enriched_v1_recipe, mistral_wiki_v3_recipe
+from blobforge.recipe_runtime import marker1_enriched_v1_recipe, mistral_wiki_v3_recipe, mistral_wiki_v5_recipe
 
 
 def _zip_bytes() -> bytes:
@@ -691,7 +691,7 @@ async def test_versioned_route_is_recomputed_exact_and_fully_audited(tmp_path):
         "priority": "3_normal",
         "original_name": "rulebook.pdf",
     })
-    runtime = mistral_wiki_v3_recipe(
+    runtime = mistral_wiki_v5_recipe(
         max_pages=100,
         max_cost_usd=1.0,
         response_cache=tmp_path / "cache",
@@ -718,7 +718,6 @@ async def test_versioned_route_is_recomputed_exact_and_fully_audited(tmp_path):
             "layout_class": "standard",
             "external_processing_allowed": True,
             "max_cost_usd": 0.04,
-            "allow_canary": True,
         }
         routed = await client.post(
             f"/api/v1/jobs/{source_key}/route",
