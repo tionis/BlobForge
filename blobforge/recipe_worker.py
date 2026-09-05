@@ -294,6 +294,7 @@ class RecipeWorker:
                                 artifact,
                                 parameters=recipe.parameters,
                                 recipe=recipe.recipe,
+                                original_name=job.get("original_name"),
                                 timeout_seconds=self.timeout_seconds,
                                 environment=recipe.environment,
                                 attempt_report_path=quota_report_path,

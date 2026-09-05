@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -75,6 +76,21 @@ class ConverterExecutionError(RuntimeError):
     ):
         super().__init__(message)
         self.provider_attempt = provider_attempt
+
+
+def source_display_name(source: Path, original_name: str | None) -> str:
+    """Keep source metadata independent of worker staging paths.
+
+    Names are display metadata only. Strip either platform's directory syntax
+    and control characters; never use the supplied name to open a local file.
+    """
+    if not original_name:
+        return source.name
+    name = original_name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = unicodedata.normalize("NFC", name)
+    name = "".join(char for char in name if not unicodedata.category(char).startswith("C"))
+    name = name.strip()
+    return name if name not in {"", ".", ".."} else source.name
 
 
 def _load_provider_attempt(
@@ -256,6 +272,7 @@ def run_converter(
     *,
     parameters: Mapping[str, Any] | None = None,
     recipe: Mapping[str, Any] | None = None,
+    original_name: str | None = None,
     timeout_seconds: int = 86_400,
     environment: Mapping[str, str] | None = None,
     attempt_report_path: str | Path | None = None,
@@ -266,6 +283,7 @@ def run_converter(
     source = Path(source_path).resolve()
     if not source.is_file():
         raise ValueError(f"source is not a file: {source}")
+    display_name = source_display_name(source, original_name)
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="blobforge-converter-") as temporary:
         root = Path(temporary)
@@ -408,14 +426,14 @@ def run_converter(
         result = build_mdaf(
             output_path,
             text=text,
-            title=source.stem,
+            title=Path(display_name).stem,
             sources=[
                 MdafSource(
                     "document",
                     "application/pdf",
                     blake3_file(source),
                     (f"sha256:{_sha256_file(source)}",),
-                    source.name,
+                    display_name,
                 )
             ],
             activities=activities,

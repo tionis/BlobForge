@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-05:** Recipe workers stage source bytes as `source.pdf`; that path
+  is not the document's display name. Pass the coordinator's `original_name`
+  separately to `run_converter`, which strips directory components and control
+  characters before populating the MDAF title/source name. Keep staging and
+  provider request identities unchanged. Existing MDAFs remain immutable.
+  The current Mistral outline is an ATX projection, not a recovered book TOC;
+  see `docs/mdaf_wiki_evaluation.md` before attempting hierarchy upgrades.
+
 - **2026-09-01:** Hosted conversion work cannot use a fixed 128 MiB `/tmp`
   tmpfs. Cortex Prime combines a 109,792,283-byte source, a 15,261,836-byte
   cached Mistral response, roughly 9,081,447 decoded image bytes, and MDAF

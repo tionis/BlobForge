@@ -2,6 +2,15 @@
 
 ## Canonical Conversion Roadmap
 
+- [x] Preserve coordinator source display names in recipe-worker MDAFs instead
+  of publishing the temporary `source.pdf` filename; cover worker propagation,
+  local fallback, portable names, and packaged metadata with regression tests.
+- [ ] Add a separately versioned, evidence-backed book hierarchy reprocessor:
+  align TOC entries to unique body headings, retain ambiguous cases, and review
+  whole-book Vulcan output before promoting its exact recipe.
+- [ ] Add normalized cross-reference targets only where printed-page labels
+  and final Markdown spans are independently supported by retained evidence.
+
 - [x] Move hosted-worker temporary conversion trees from the 128 MiB tmpfs to
   the private persistent provider volume, deploy the Quadlet change, and replay
   the failed Cortex Prime job from its committed Mistral checkpoint at zero

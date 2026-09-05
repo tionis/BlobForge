@@ -1,5 +1,26 @@
 # Work Log
 
+## 2026-09-05 (MDAF wiki evaluation and source-name propagation)
+
+- Inspected the four supplied private MDAFs using ZIP/JSON analysis and Vulcan
+  inspect/import previews. Completed a London import in a disposable vault and
+  checked asset bytes and navigation targets. No private corpus was committed.
+- Read repository guidance and conversion, lifecycle, worker, coordinator,
+  normalization, and test code using `rg`, `sed`, and file reads. The supplied
+  checkout was stale at `a1e43f1`; fetched origin and created isolated branch
+  `fix/mdaf-wiki-evidence` at upstream `ff6273a` in `/tmp/blobforge-mdaf-wiki`.
+- Located the lost-name boundary between coordinator metadata, fixed worker
+  staging paths, and shared packaging. Patched worker propagation and portable
+  display-name handling using `apply_patch`; provider requests remain unchanged.
+- Installed locked dev/server dependencies using `uv sync --frozen --extra dev
+  --extra server`. Focused worker/packager tests: 22 passed. The full Python
+  suite with coordinator environment variables empty passed 337 tests and 5
+  subtests. `git diff --check` passed; `uv build` produced both the source
+  distribution and wheel successfully.
+- Documented hierarchy limitations and the separate recipe-based follow-up in
+  `docs/mdaf_wiki_evaluation.md`; updated TODO and repository findings. No
+  provider purchases, production writes, image publication, or deployment ran.
+
 ## 2026-09-01 (Hosted Worker Temporary-Storage Exhaustion)
 
 - **Objective:** Diagnose and recover the failed Cortex Prime Mistral job

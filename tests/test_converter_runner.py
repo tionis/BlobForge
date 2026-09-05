@@ -96,7 +96,15 @@ raise RuntimeError("post-provider packaging failure")
     assert raised.value.provider_attempt["reservation_id"] == "qres_test"
 
 
-def test_converter_bundle_is_packaged_by_shared_builder(tmp_path):
+@pytest.mark.parametrize("original_name,expected_name", [
+    (None, "source.pdf"),
+    ("Storypath Ultra.pdf", "Storypath Ultra.pdf"),
+    ("/private/books/London Falling.pdf", "London Falling.pdf"),
+    (r"C:\books\London Falling.pdf", "London Falling.pdf"),
+    ("Cafe\u0301\n.pdf", "Café.pdf"),
+    ("../", "source.pdf"),
+])
+def test_converter_bundle_is_packaged_by_shared_builder(tmp_path, original_name, expected_name):
     source = tmp_path / "source.pdf"
     source.write_bytes(b"%PDF synthetic")
     adapter = tmp_path / "adapter.py"
@@ -129,10 +137,14 @@ root = pathlib.Path(request["output_dir"])
         encoding="utf-8",
     )
     output = tmp_path / "fake.mdaf"
-    result = run_converter([sys.executable, str(adapter)], source, output)
+    result = run_converter(
+        [sys.executable, str(adapter)], source, output, original_name=original_name
+    )
     assert result.artifact_path == output
     with zipfile.ZipFile(output) as archive:
         manifest = json.loads(archive.read("info.json"))
+        assert manifest["title"] == Path(expected_name).stem
+        assert manifest["sources"][0]["name"] == expected_name
         assert manifest["sources"][0]["digest"].startswith("blake3:")
         assert "native-renditions" in manifest["capabilities"]
         assert "outline" in manifest["capabilities"]

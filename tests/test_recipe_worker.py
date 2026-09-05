@@ -120,9 +120,13 @@ def test_worker_advertises_and_dispatches_alternating_media_recipes(tmp_path):
     pdf = _recipe("pdf-v1", "application/pdf")
     audio = _recipe("audio-v1", "audio/flac")
     coordinator = FakeCoordinator([_job("a", audio, "audio/flac"), _job("b", pdf, "application/pdf")])
+    coordinator.jobs[1]["original_name"] = "London Falling.pdf"
     calls = []
 
     def convert(command, source, output, **kwargs):
+        assert kwargs["original_name"] == (
+            "London Falling.pdf" if command[-1] == "pdf-v1" else None
+        )
         calls.append(
             (command[-1], Path(source).suffix, Path(source).read_bytes(), kwargs["parameters"])
         )
