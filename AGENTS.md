@@ -38,6 +38,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** Recipe 1.7.0/profile wiki-v7 combines chapter-local contents
+  styles, repeated native indentation and corroborated title aliases. Body
+  heading size alone overpromotes topics and procedure steps. Preserve frozen
+  profiles and test actual parent ownership, not just smaller note counts.
+  Full tests must clear BLOBFORGE_COORDINATOR_URL/TOKEN to avoid inheriting a
+  developer's live coordinator configuration. No schema/import workflow change.
+
 - **2026-09-06:** Chapter recovery and smaller note counts do not prove wiki
   readability. Recipe 1.6.0/profile wiki-v6 uses styled contents tiers only with
   chapter-local alignment; unsupported evidence is diagnosed. Table emphasis

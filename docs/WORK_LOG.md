@@ -1,5 +1,18 @@
 # Work Log
 
+- 2026-09-06: Expanded private-corpus experiments identified split/typo chapter
+  aliases, lost contents styling, column indentation, duplicate/interleaved rows
+  and parenthetical body qualifiers. Rejected broad font-only promotion after
+  cross-book false positives and replaced equal-font procedure inference with
+  consecutive-step evidence. Added recipe 1.7.0/profile wiki-v7 and routing 6;
+  retained all prior release files and threaded the new profile through worker,
+  isolated adapter, evaluator and offline reprocessing. Reviewed Vulcan SPEC and
+  bundled import skill: no contract or command changes required. Tests include
+  synthetic manuals, safe fallbacks and compatible offline replay. Full pytest
+  initially exposed stale default assertions and inherited coordinator config;
+  rerun with coordinator variables empty. Corpus imports use new ignored local
+  destinations and preserve originals; no paid OCR or quota changes requested.
+
 - 2026-09-06: Investigated Storypath chapter dumps against native contents and
   body evidence. Added versioned styled-topic recovery, multi-column reading,
   page-scoped repeated-title handling, explicit fallback diagnostics and table

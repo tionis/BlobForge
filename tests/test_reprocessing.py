@@ -138,3 +138,21 @@ def test_reprocessing_is_deterministic_and_refuses_overwrite(tmp_path):
     assert first.path.read_bytes() == second.path.read_bytes()
     with pytest.raises(FileExistsError):
         reprocess_mdaf(parent, target, first.path)
+
+
+def test_latest_contents_recipe_reuses_native_without_provider_access(tmp_path):
+    from blobforge.recipe_runtime import mistral_wiki_v7_recipe, mistral_wiki_v8_recipe
+    from blobforge.recipe_lifecycle import assert_reprocessable
+    args = dict(max_pages=10, max_cost_usd=1, response_cache=tmp_path, api_rights_confirmed=True)
+    old, new = mistral_wiki_v7_recipe(**args), mistral_wiki_v8_recipe(**args)
+    assert old.parameters['normalization_profile'] == 'wiki-v6'
+    assert new.parameters['normalization_profile'] == 'wiki-v7'
+    assert old.recipe['lifecycle']['extraction'] == new.recipe['lifecycle']['extraction']
+    assert_reprocessable(old.recipe, new.recipe)
+    parent, _, native, _ = _parent(tmp_path)
+    result = reprocess_mdaf(parent, RECIPES / 'mistral-ocr-4.1-wiki-v8.json', tmp_path / 'latest.mdaf')
+    with zipfile.ZipFile(result.path) as archive:
+        assert archive.read('renditions/ai.mistral/ocr-response.json') == native
+        assert archive.read('text.md').decode() == '- First\n\n- Second'
+        report = json.loads(archive.read('extensions/dev.tionis.blobforge/hierarchy.json'))
+        assert report['topic_hierarchy']['method'] == 'multi-evidence-contents-v1'

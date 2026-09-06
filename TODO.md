@@ -1,5 +1,12 @@
 # TODO List
 
+- [x] Extend compatible contents recovery across capitalization, explicit
+  headings, column indentation, mixed styles and corroborated chapter aliases;
+  exercise synthetic manuals and the expanded offline reference corpus.
+- [ ] Improve chapter-only contents and corrupted/interleaved topic evidence
+  without promoting captions or overriding established semantic ownership.
+  Large retained sections remain review items, not automatic readiness passes.
+
 - [x] Recover detailed styled contents tiers in a compatible immutable recipe;
   test Storypath semantic topic ownership and the broader retained corpus.
 

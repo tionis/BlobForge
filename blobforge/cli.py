@@ -856,7 +856,7 @@ def cmd_evaluate_converter(args):
         "mistral-wiki-v3": "mistral",
         "mistral-wiki-v4": "mistral",
         "mistral-wiki-v5": "mistral",
-        "mistral-wiki-v6": "mistral", "mistral-wiki-v7": "mistral",
+        "mistral-wiki-v6": "mistral", "mistral-wiki-v7": "mistral", "mistral-wiki-v8": "mistral",
         "datalab-wiki": "datalab",
     }.get(args.engine, args.engine)
     project = repository / "evaluators" / provider_engine
@@ -882,7 +882,7 @@ def cmd_evaluate_converter(args):
         "mistral-wiki-v3",
         "mistral-wiki-v4",
         "mistral-wiki-v5",
-        "mistral-wiki-v6", "mistral-wiki-v7",
+        "mistral-wiki-v6", "mistral-wiki-v7", "mistral-wiki-v8",
     }:
         raw_recipe_path = (
             repository / "blobforge" / "recipes" / "mistral-ocr-4.1-v1.json"
@@ -894,7 +894,7 @@ def cmd_evaluate_converter(args):
             / "recipes"
             / (
                 f"mistral-ocr-4.1-wiki-{args.engine.rsplit('-', 1)[1]}.json"
-                if args.engine in {"mistral-wiki-v3", "mistral-wiki-v4", "mistral-wiki-v5", "mistral-wiki-v6", "mistral-wiki-v7"}
+                if args.engine in {"mistral-wiki-v3", "mistral-wiki-v4", "mistral-wiki-v5", "mistral-wiki-v6", "mistral-wiki-v7", "mistral-wiki-v8"}
                 else (
                     "mistral-ocr-4.1-wiki-v2.json"
                     if args.engine == "mistral-wiki-v2"
@@ -916,7 +916,7 @@ def cmd_evaluate_converter(args):
             parameters["normalization_profile"] = {
                 "mistral-wiki": "wiki-v1", "mistral-wiki-v2": "wiki-v2",
                 "mistral-wiki-v3": "wiki-v2", "mistral-wiki-v4": "wiki-v3",
-                "mistral-wiki-v5": "wiki-v4", "mistral-wiki-v6": "wiki-v5", "mistral-wiki-v7": "wiki-v6",
+                "mistral-wiki-v5": "wiki-v4", "mistral-wiki-v6": "wiki-v5", "mistral-wiki-v7": "wiki-v6", "mistral-wiki-v8": "wiki-v7",
             }[args.engine]
         parameters["api_rights_confirmed"] = args.confirm_api_rights
         response_cache = Path(
@@ -1257,7 +1257,7 @@ def cmd_worker(args):
 
 def cmd_recipe_worker(args):
     """Start the exact-recipe, isolated MDAF worker."""
-    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe, mistral_wiki_v4_recipe, mistral_wiki_v5_recipe, mistral_wiki_v6_recipe, mistral_wiki_v7_recipe
+    from .recipe_runtime import datalab_wiki_v1_recipe, mistral_wiki_v3_recipe, mistral_wiki_v4_recipe, mistral_wiki_v5_recipe, mistral_wiki_v6_recipe, mistral_wiki_v7_recipe, mistral_wiki_v8_recipe
     from .recipe_worker import RecipeWorker
 
     coordinator_url = args.coordinator_url or os.getenv("BLOBFORGE_COORDINATOR_URL", "")
@@ -1274,7 +1274,7 @@ def cmd_recipe_worker(args):
         return 1
     try:
         factory = (
-            {"v3": mistral_wiki_v3_recipe, "v4": mistral_wiki_v4_recipe, "v5": mistral_wiki_v5_recipe, "v6": mistral_wiki_v6_recipe, "v7": mistral_wiki_v7_recipe}[args.mistral_recipe]
+            {"v3": mistral_wiki_v3_recipe, "v4": mistral_wiki_v4_recipe, "v5": mistral_wiki_v5_recipe, "v6": mistral_wiki_v6_recipe, "v7": mistral_wiki_v7_recipe, "v8": mistral_wiki_v8_recipe}[args.mistral_recipe]
             if args.provider == "mistral"
             else datalab_wiki_v1_recipe
         )
@@ -2282,7 +2282,7 @@ def main():
             "mistral-wiki-v3",
             "mistral-wiki-v4",
             "mistral-wiki-v5",
-        "mistral-wiki-v6", "mistral-wiki-v7",
+        "mistral-wiki-v6", "mistral-wiki-v7", "mistral-wiki-v8",
             "datalab",
             "datalab-wiki",
         ),
@@ -2495,8 +2495,8 @@ def main():
         help="Start an isolated exact-recipe MDAF worker",
     )
     p_recipe_worker.add_argument("--run-once", action="store_true")
-    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4", "v5", "v6", "v7"], default="v7",
-                                 help="Mistral post-processing release (default: v7, detailed contents hierarchy)")
+    p_recipe_worker.add_argument("--mistral-recipe", choices=["v3", "v4", "v5", "v6", "v7", "v8"], default="v8",
+                                 help="Mistral post-processing release (default: v8, multi-evidence contents hierarchy)")
     p_recipe_worker.add_argument(
         "--provider", choices=("mistral", "datalab"), default="mistral"
     )

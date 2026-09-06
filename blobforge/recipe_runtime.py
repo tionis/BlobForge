@@ -196,6 +196,18 @@ def mistral_wiki_v7_recipe(**kwargs: Any) -> AdapterRecipe:
                    parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v6"})
 
 
+def mistral_wiki_v8_recipe(**kwargs: Any) -> AdapterRecipe:
+    """Multi-evidence contents recovery; retained extraction remains reusable."""
+    runtime = mistral_wiki_v3_recipe(**kwargs)
+    root = Path(kwargs.get("repository") or Path(__file__).resolve().parent.parent)
+    recipe = json.loads((root / "blobforge/recipes/mistral-ocr-4.1-wiki-v8.json").read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    if digest != "blake3:8498970c373b0ba187fd0620e9532ac848c8c107f82f6a02ee37733cbb903681":
+        raise RuntimeError(f"mistral-wiki-v8 recipe identity changed: {digest}")
+    return replace(runtime, key="mistral-wiki-v8", recipe=recipe, recipe_digest=digest,
+                   parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v7"})
+
+
 def datalab_wiki_v1_recipe(
     *,
     repository: str | Path | None = None,
