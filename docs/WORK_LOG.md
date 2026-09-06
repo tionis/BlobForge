@@ -1,5 +1,14 @@
 # Work Log
 
+- 2026-09-06: Investigated Storypath chapter dumps against native contents and
+  body evidence. Added versioned styled-topic recovery, multi-column reading,
+  page-scoped repeated-title handling, explicit fallback diagnostics and table
+  emphasis rendering. Added synthetic regressions and offline nine-book replay
+  with native/assets preservation and semantic ownership assertions. Reviewed
+  Vulcan's aligned-outline rendering and updated its SPEC and import skill.
+  Validation uses uv pytest, the full Vulcan workspace gates and fresh imports;
+  no provider extraction request is part of the experiments.
+
 - 2026-09-06: Added immutable recipe 1.5.0/wiki-v6 and routing revision 4, made
   the compatible release the worker default, and threaded profile wiki-v5 through
   runtime, evaluator, isolated adapter and retained-artifact reprocessing.

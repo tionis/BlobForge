@@ -184,6 +184,18 @@ def mistral_wiki_v6_recipe(**kwargs: Any) -> AdapterRecipe:
                    parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v5"})
 
 
+def mistral_wiki_v7_recipe(**kwargs: Any) -> AdapterRecipe:
+    """Detailed contents hierarchy; no extraction or provider-cache change."""
+    runtime = mistral_wiki_v3_recipe(**kwargs)
+    root = Path(kwargs.get("repository") or Path(__file__).resolve().parent.parent)
+    recipe = json.loads((root / "blobforge/recipes/mistral-ocr-4.1-wiki-v7.json").read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    if digest != "blake3:276564fcde1f0a2b55b8dae785944e4cc8c1ba15fec4402f3f5b438a7094c4c4":
+        raise RuntimeError(f"mistral-wiki-v7 recipe identity changed: {digest}")
+    return replace(runtime, key="mistral-wiki-v7", recipe=recipe, recipe_digest=digest,
+                   parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v6"})
+
+
 def datalab_wiki_v1_recipe(
     *,
     repository: str | Path | None = None,

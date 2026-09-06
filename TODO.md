@@ -1,5 +1,8 @@
 # TODO List
 
+- [x] Recover detailed styled contents tiers in a compatible immutable recipe;
+  test Storypath semantic topic ownership and the broader retained corpus.
+
 ## Canonical Conversion Roadmap
 
 - [x] Release conflict-aware wiki-v6/recipe 1.5.0, preserving frozen profiles,

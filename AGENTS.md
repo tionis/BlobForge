@@ -38,6 +38,12 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** Chapter recovery and smaller note counts do not prove wiki
+  readability. Recipe 1.6.0/profile wiki-v6 uses styled contents tiers only with
+  chapter-local alignment; unsupported evidence is diagnosed. Table emphasis
+  changes primary markup, requiring regenerated offsets, while native OCR and
+  assets remain immutable. See docs/mdaf_topic_hierarchy.md.
+
 - **2026-09-06:** Recipe 1.5.0/wiki-v6 (normalization wiki-v5) reconciles wrong
   contents pages with unique body titles. A corroborated adjacent opening page
   remains with its section; ambiguity never authorizes arbitrary first matches.
