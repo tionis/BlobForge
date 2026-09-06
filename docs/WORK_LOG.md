@@ -1,5 +1,16 @@
 # Work Log
 
+- 2026-09-06: Tested bounded chapter recovery against the expanded retained
+  corpus. Found missing top-level entries rejecting complete chapters, wrapped
+  section labels leaking into preceding chapters and page-confirmed accent/
+  conjunction variants. Rejected false topic promotions after italic styling
+  disappears. Added frozen profile wiki-v8, recipe 1.8.0 and routing revision 7,
+  synthetic ownership/fallback tests and all runtime/default/replay plumbing.
+  Review reports retain uncertainty regions. Vulcan gains source-byte sizes,
+  coverage and diagnostic summaries with tests, SPEC clarification and bundled
+  skill updates. Validation includes uv pytest, formatting, package build,
+  offline corpus replay and fresh wiki imports; no paid OCR is authorized.
+
 - 2026-09-06: Expanded private-corpus experiments identified split/typo chapter
   aliases, lost contents styling, column indentation, duplicate/interleaved rows
   and parenthetical body qualifiers. Rejected broad font-only promotion after

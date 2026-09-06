@@ -38,6 +38,13 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-06:** Bounded contents recovery must retain the preceding topic
+  around an unlocated heading on a known page; page evidence alone cannot locate
+  its paragraphs. Require usable topics outside uncertainty regions and report
+  those regions. Lost italic styling can falsely promote a whole contents tail.
+  Accent/conjunction aliases require a unique aligned-page match, not first-hit
+  selection. Recipe 1.8.0/profile wiki-v8 leaves earlier profiles frozen.
+
 - **2026-09-06:** Recipe 1.7.0/profile wiki-v7 combines chapter-local contents
   styles, repeated native indentation and corroborated title aliases. Body
   heading size alone overpromotes topics and procedure steps. Preserve frozen

@@ -1,5 +1,40 @@
 # Detailed topic hierarchy and wiki readability
 
+## Compatible bounded recovery release
+
+Recipe 1.8.0 (`mistral-ocr-4.1-wiki-v9.json`, profile wiki-v8) adds
+`bounded-contents-v2`; routing revision 7 and the default worker select it.
+All previous recipes and profiles remain frozen. The extraction identity and
+primary/native/asset bytes remain unchanged from 1.7.0. Automatic replay uses
+retained evidence only, never a new provider request or transferred allowance.
+
+A missing top-level contents anchor no longer rejects every confirmed topic in
+its chapter. Its aligned source page must be independently locatable. Retain
+the original hierarchy from the preceding confirmed topic (extended to an
+original chapter child when needed) through the uncertainty page, ending at
+the next confirmed topic after that page. Unlocatable gaps, less than 85%
+alignment or fewer than three confirmed topics outside these guarded regions
+reject recovery. The report records `unverified_regions` as primary UTF-8 byte
+ranges with source pages and emits `contents_unverified_regions_retained`.
+These are uncertainty fences, not repaired text or inferred citation labels.
+
+Wrapped contents headings ending with a colon may join the following numbered
+title in a temporary parsing view. Unrecognized section/fiction boundaries
+become uncertainty fences rather than ordinary topics of the preceding section.
+Accent and `and`/`&` differences may match only a unique body heading on the
+aligned page. Ambiguous aliases are never resolved by choosing the first one.
+An unstyled tail after italic children requires corroborating indentation;
+otherwise recovery is rejected with `contents_style_transition_unresolved`.
+
+Synthetic workshop manuals exercise missing and ambiguous evidence, preserved
+regions, Unicode aliases, wrapped labels, formatting loss and coverage-wide
+fallback. Private corpus checks must assert actual parent ownership and preserve
+the approved Storypath outline. Scion Powers' lost contents styles and books
+with chapter-only contents still require stronger evidence; no general font-only
+fallback is enabled. Vulcan's source-size/coverage summary assists review but is
+not a semantic readiness score. MDAF v1 remains unchanged; its consumer guidance
+clarifies this distinction.
+
 ## Compatible multi-evidence release
 
 Recipe 1.7.0 (`mistral-ocr-4.1-wiki-v8.json`, profile wiki-v7) extends the

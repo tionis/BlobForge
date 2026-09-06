@@ -1,5 +1,9 @@
 # TODO List
 
+- [x] Recover confirmed contents regions around independently located gaps;
+  reconcile wrapped labels and page-confirmed Unicode/conjunction aliases;
+  reject lost italic styling and test synthetic, publication-neutral manuals.
+
 - [x] Extend compatible contents recovery across capitalization, explicit
   headings, column indentation, mixed styles and corroborated chapter aliases;
   exercise synthetic manuals and the expanded offline reference corpus.

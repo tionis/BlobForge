@@ -28,10 +28,10 @@ def test_quality_route_resolves_default_promoted_recipe():
     decision = route_pdf(_features())
     assert decision.eligible
     assert decision.recipe_digest == (
-        "blake3:8498970c373b0ba187fd0620e9532ac848c8c107f82f6a02ee37733cbb903681"
+        "blake3:02e1757ce94449aa900bf984d9a44cdf1ced83516a0df0c06f6377da5f8e0894"
     )
     assert decision.estimated_cost_usd == 0.4
-    assert decision.policy_revision == 6
+    assert decision.policy_revision == 7
     assert decision.policy_digest.startswith("blake3:")
 
 
@@ -44,9 +44,9 @@ def test_routing_policy_revisions_are_immutable_and_distinct():
     assert old["candidates"]["hosted-quality"]["recipe_digest"] == (
         "blake3:bdd3e060e88f64277834245a42528a54b6b077774123c3806bdd827cf8ea3026"
     )
-    assert current["revision"] == 6
+    assert current["revision"] == 7
     assert current["candidates"]["hosted-quality"]["recipe_digest"] == (
-        "blake3:8498970c373b0ba187fd0620e9532ac848c8c107f82f6a02ee37733cbb903681"
+        "blake3:02e1757ce94449aa900bf984d9a44cdf1ced83516a0df0c06f6377da5f8e0894"
     )
     assert blake3_bytes(canonical_json_bytes(old)) != blake3_bytes(
         canonical_json_bytes(current)
@@ -77,7 +77,7 @@ def test_routing_fails_closed_for_privacy_scan_cost_and_canary_status():
 
 
 def test_override_cannot_bypass_policy_or_rights():
-    digest = "blake3:8498970c373b0ba187fd0620e9532ac848c8c107f82f6a02ee37733cbb903681"
+    digest = "blake3:02e1757ce94449aa900bf984d9a44cdf1ced83516a0df0c06f6377da5f8e0894"
     blocked = route_pdf(
         _features(external_processing_allowed=False),
         allow_canary=True,

@@ -140,19 +140,24 @@ def test_reprocessing_is_deterministic_and_refuses_overwrite(tmp_path):
         reprocess_mdaf(parent, target, first.path)
 
 
-def test_latest_contents_recipe_reuses_native_without_provider_access(tmp_path):
-    from blobforge.recipe_runtime import mistral_wiki_v7_recipe, mistral_wiki_v8_recipe
+@pytest.mark.parametrize('release,profile,method', [
+    ('v8', 'wiki-v7', 'multi-evidence-contents-v1'),
+    ('v9', 'wiki-v8', 'bounded-contents-v2'),
+])
+def test_latest_contents_recipe_reuses_native_without_provider_access(tmp_path, release, profile, method):
+    from blobforge.recipe_runtime import mistral_wiki_v7_recipe, mistral_wiki_v8_recipe, mistral_wiki_v9_recipe
     from blobforge.recipe_lifecycle import assert_reprocessable
     args = dict(max_pages=10, max_cost_usd=1, response_cache=tmp_path, api_rights_confirmed=True)
-    old, new = mistral_wiki_v7_recipe(**args), mistral_wiki_v8_recipe(**args)
+    old = mistral_wiki_v7_recipe(**args)
+    new = {'v8': mistral_wiki_v8_recipe, 'v9': mistral_wiki_v9_recipe}[release](**args)
     assert old.parameters['normalization_profile'] == 'wiki-v6'
-    assert new.parameters['normalization_profile'] == 'wiki-v7'
+    assert new.parameters['normalization_profile'] == profile
     assert old.recipe['lifecycle']['extraction'] == new.recipe['lifecycle']['extraction']
     assert_reprocessable(old.recipe, new.recipe)
     parent, _, native, _ = _parent(tmp_path)
-    result = reprocess_mdaf(parent, RECIPES / 'mistral-ocr-4.1-wiki-v8.json', tmp_path / 'latest.mdaf')
+    result = reprocess_mdaf(parent, RECIPES / f'mistral-ocr-4.1-wiki-{release}.json', tmp_path / 'latest.mdaf')
     with zipfile.ZipFile(result.path) as archive:
         assert archive.read('renditions/ai.mistral/ocr-response.json') == native
         assert archive.read('text.md').decode() == '- First\n\n- Second'
         report = json.loads(archive.read('extensions/dev.tionis.blobforge/hierarchy.json'))
-        assert report['topic_hierarchy']['method'] == 'multi-evidence-contents-v1'
+        assert report['topic_hierarchy']['method'] == method

@@ -208,6 +208,19 @@ def mistral_wiki_v8_recipe(**kwargs: Any) -> AdapterRecipe:
                    parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v7"})
 
 
+def mistral_wiki_v9_recipe(**kwargs: Any) -> AdapterRecipe:
+    """Bounded contents recovery; retained extraction remains reusable."""
+    runtime = mistral_wiki_v3_recipe(**kwargs)
+    root = Path(kwargs.get("repository") or Path(__file__).resolve().parent.parent)
+    recipe = json.loads((root / "blobforge/recipes/mistral-ocr-4.1-wiki-v9.json").read_text(encoding="utf-8"))
+    digest = blake3_bytes(canonical_json_bytes(recipe))
+    if digest != "blake3:02e1757ce94449aa900bf984d9a44cdf1ced83516a0df0c06f6377da5f8e0894":
+        raise RuntimeError(f"mistral-wiki-v9 recipe identity changed: {digest}")
+    return replace(runtime, key="mistral-wiki-v9", recipe=recipe, recipe_digest=digest,
+                   parameters={**runtime.parameters, "recipe_digest": digest, "normalization_profile": "wiki-v8"})
+
+
+
 def datalab_wiki_v1_recipe(
     *,
     repository: str | Path | None = None,
