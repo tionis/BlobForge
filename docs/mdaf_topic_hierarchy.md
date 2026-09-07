@@ -1,9 +1,53 @@
 # Detailed topic hierarchy and wiki readability
 
-## Compatible bounded recovery release
+## Compatible landmark and wrapped-title release
+
+Recipe 1.9.0 (`mistral-ocr-4.1-wiki-v10.json`, profile wiki-v9) adds
+`corroborated-wrapped-contents-v3`; routing revision 8 and the default worker
+select it. All previous recipe/profile files remain immutable. Existing native
+OCR is replayed offline, so automatic upgrades do not authorize or perform a
+provider request.
+
+Visually wrapped contents titles may be joined only inside one native block or
+across adjacent blocks whose vertical gap, indentation, and right edge establish
+continuity. The joined title must then match one unique body heading (or one
+contiguous body-heading pair) on the aligned printed page. Conversely, adjacent
+body headings are joined only when an aligned contents row names the combined
+title and there is no intervening content. These rules repair line wrapping in
+both directions without recognizing publishers, games, chapter names, or fonts.
+They change only the alternative outline and its report, never primary Markdown
+or retained native evidence.
+
+Front matter larger than 50,000 source bytes is split at an observed contents
+cluster and independently corroborated authored landmarks: the first authored
+heading after contents, a native running header matching a contents title, or a
+unique unlabeled multiline contents title found in the body. Raw contents rows
+remain inside one Contents note rather than becoming navigation children.
+Smaller front matter is unchanged. At the other end of a document, an authored
+heading followed by at least five monotonically ordered alphabetic headings may
+form a back-matter branch; repeated OCR copies of the same letter are collapsed.
+This recognizes indexes structurally rather than by an English title.
+
+The retained acceptance corpus loses no previously recovered topic chapter.
+It additionally recovers Shadowrun's character-creation steps, two Mage
+appendices, and Howling Shadows' mundane-critter topics. Real indexes become
+separate branches in the English/German Shadowrun core books and Chronicles of
+Darkness. Storypath's approved topic tree is unchanged. The Shadowrun master
+index still contains some large letter ranges where OCR omitted a heading; the
+normalizer does not invent missing letters from index prose.
+
+For the English Shadowrun core book, Vulcan import through outline level 3 is
+the balanced projection: creation steps become sibling notes and front/back
+matter is separated. Level 4 creates many equipment/procedure leaves while the
+largest advancement span remains large, so it is not promoted as a global
+default. MDAF v1 and Vulcan's importer contract do not change; this release only
+publishes a new recipe-scoped alternative outline and diagnostics.
+
+## Previous bounded recovery release
 
 Recipe 1.8.0 (`mistral-ocr-4.1-wiki-v9.json`, profile wiki-v8) adds
-`bounded-contents-v2`; routing revision 7 and the default worker select it.
+`bounded-contents-v2`; routing revision 7 and the default worker selected it for
+that release.
 All previous recipes and profiles remain frozen. The extraction identity and
 primary/native/asset bytes remain unchanged from 1.7.0. Automatic replay uses
 retained evidence only, never a new provider request or transferred allowance.

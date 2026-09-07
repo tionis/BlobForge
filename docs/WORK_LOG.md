@@ -1,5 +1,18 @@
 # Work Log
 
+- 2026-09-07: Investigated the English and German Shadowrun core-book wiki
+  trees against retained OCR, source maps, contents blocks and body headings.
+  Found bidirectionally split titles, oversized front matter and an appended
+  master index incorrectly owned by Street Gear. Added profile wiki-v9, recipe
+  1.9.0 and routing revision 8 with page/geometry-corroborated title joins,
+  evidence-bounded front landmarks and monotonic alphabetical back matter.
+  Synthetic tests cover positive and rejection cases, duplicate index letters,
+  frozen replay, routing and defaults. The full retained corpus gains three
+  topic chapters without losing prior recovery; Storypath is unchanged. Vulcan
+  level-3/level-4 imports were compared and level 3 remains the balanced default.
+  Primary Markdown, native OCR, assets, MDAF v1 and provider accounting are
+  unchanged; rollout reuses retained artifacts without paid requests.
+
 - 2026-09-06: Tested bounded chapter recovery against the expanded retained
   corpus. Found missing top-level entries rejecting complete chapters, wrapped
   section labels leaking into preceding chapters and page-confirmed accent/

@@ -393,7 +393,7 @@ def main() -> int:
     if not re.fullmatch(r"blake3:[0-9a-f]{64}", provider_request_digest):
         raise ValueError("a canonical tagged provider_request_digest is required")
     normalization_profile = parameters.get("normalization_profile")
-    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}:
+    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}:
         raise ValueError("unsupported normalization_profile")
 
     cache_root_value = os.environ.get("BLOBFORGE_MISTRAL_RESPONSE_CACHE")
@@ -551,7 +551,7 @@ def main() -> int:
         })
     for path in sorted(assets.iterdir()):
         if (
-            normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}
+            normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}
             and path.name not in referenced_assets
         ):
             continue
@@ -579,15 +579,15 @@ def main() -> int:
                     {
                         "name": "blobforge-wiki-normalizer",
                         "version": (
-                            "8.0.0" if normalization_profile == "wiki-v8" else "7.0.0" if normalization_profile == "wiki-v7" else "6.0.0" if normalization_profile == "wiki-v6" else "5.0.0" if normalization_profile == "wiki-v5" else "4.0.0" if normalization_profile == "wiki-v4" else "3.0.0" if normalization_profile == "wiki-v3" else "2.0.0"
-                            if normalization_profile in {"wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}
+                            "9.0.0" if normalization_profile == "wiki-v9" else "8.0.0" if normalization_profile == "wiki-v8" else "7.0.0" if normalization_profile == "wiki-v7" else "6.0.0" if normalization_profile == "wiki-v6" else "5.0.0" if normalization_profile == "wiki-v5" else "4.0.0" if normalization_profile == "wiki-v4" else "3.0.0" if normalization_profile == "wiki-v3" else "2.0.0"
+                            if normalization_profile in {"wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}
                             else "1.0.0"
                         ),
                     }
                 ],
                 "markdown_features": ["raw-html", "semantic-html-table-v1"],
             }
-            if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}
+            if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}
             else {}
         ),
         "models": [

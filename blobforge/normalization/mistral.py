@@ -120,19 +120,19 @@ def render_mistral_response(
     source_id: str = "document",
 ) -> MistralRendered:
     """Create Markdown, page mappings, and assets without provider access."""
-    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}:
+    if normalization_profile not in {None, "wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}:
         raise ValueError("unsupported normalization_profile")
     pages = validate_response(native, source_pages)
     normalization_stats = None
-    if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}:
+    if normalization_profile in {"wiki-v1", "wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}:
         normalized_pages, normalization_stats = normalize_mistral_pages(
             pages,
-            normalize_lists=normalization_profile in {"wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"},
+            normalize_lists=normalization_profile in {"wiki-v2", "wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"},
         )
     else:
         normalized_pages = [page["markdown"] for page in pages]
 
-    if normalization_profile in {"wiki-v6", "wiki-v7", "wiki-v8"}:
+    if normalization_profile in {"wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}:
         from .table_emphasis import render_table_emphasis
         normalized_pages = [render_table_emphasis(page) for page in normalized_pages]
 
@@ -200,23 +200,28 @@ def render_mistral_response(
             mappings.append(mapping)
     source_map = {"mappings": mappings, "references": []}
     outline = report = None
-    if normalization_profile in {"wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}:
+    if normalization_profile in {"wiki-v3", "wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}:
         labels = page_labels(pages)
         for mapping in mappings:
             selector = mapping["source"]["selectors"][0]
             if selector["start"] in labels:
                 selector["label_start"] = labels[selector["start"]]
-        if normalization_profile in {"wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"}:
+        if normalization_profile in {"wiki-v4", "wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"}:
             from .book_structure import recover_book_structure
-            outline, report = recover_book_structure(markdown, pages, source_map, reconcile_conflicts=normalization_profile in {"wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8"})
+            outline, report = recover_book_structure(markdown, pages, source_map, reconcile_conflicts=normalization_profile in {"wiki-v5", "wiki-v6", "wiki-v7", "wiki-v8", "wiki-v9"})
             if normalization_profile == "wiki-v6":
                 from .topics import recover_topics
                 outline = recover_topics(outline, pages, source_map, report)
-            elif normalization_profile in {"wiki-v7", "wiki-v8"}:
+            elif normalization_profile in {"wiki-v7", "wiki-v8", "wiki-v9"}:
                 from .layout_structure import repair_major_boundaries
                 from .contents_structure import recover_contents_topics
                 outline = repair_major_boundaries(markdown, pages, source_map, outline, report)
-                if normalization_profile == "wiki-v8":
+                if normalization_profile == "wiki-v9":
+                    from .contents_structure_v3 import recover_contents_topics_v3
+                    from .frontmatter_structure import recover_document_landmarks
+                    outline = recover_document_landmarks(markdown, pages, source_map, outline, report)
+                    outline = recover_contents_topics_v3(markdown, outline, pages, source_map, report)
+                elif normalization_profile == "wiki-v8":
                     from .contents_structure_v2 import recover_contents_topics_v2
                     outline = recover_contents_topics_v2(outline, pages, source_map, report)
                 else:

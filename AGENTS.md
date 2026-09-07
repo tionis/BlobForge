@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-07:** Wrapped headings must be reconciled in both directions: native
+  contents-block continuity is insufficient without a unique aligned body
+  match, and split body headings require an aligned combined contents title.
+  Oversized front matter may split only at retained authored landmarks.
+  Alphabetical back matter requires a monotonic multi-letter sequence, not an
+  `Index` title. Recipe 1.9.0/profile wiki-v9 freezes this behavior; primary
+  Markdown, native evidence, assets, MDAF v1, and Vulcan commands are unchanged.
+
 - **2026-09-06:** Bounded contents recovery must retain the preceding topic
   around an unlocated heading on a known page; page evidence alone cannot locate
   its paragraphs. Require usable topics outside uncertainty regions and report

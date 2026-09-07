@@ -143,13 +143,14 @@ def test_reprocessing_is_deterministic_and_refuses_overwrite(tmp_path):
 @pytest.mark.parametrize('release,profile,method', [
     ('v8', 'wiki-v7', 'multi-evidence-contents-v1'),
     ('v9', 'wiki-v8', 'bounded-contents-v2'),
+    ('v10', 'wiki-v9', 'corroborated-wrapped-contents-v3'),
 ])
 def test_latest_contents_recipe_reuses_native_without_provider_access(tmp_path, release, profile, method):
-    from blobforge.recipe_runtime import mistral_wiki_v7_recipe, mistral_wiki_v8_recipe, mistral_wiki_v9_recipe
+    from blobforge.recipe_runtime import mistral_wiki_v10_recipe, mistral_wiki_v7_recipe, mistral_wiki_v8_recipe, mistral_wiki_v9_recipe
     from blobforge.recipe_lifecycle import assert_reprocessable
     args = dict(max_pages=10, max_cost_usd=1, response_cache=tmp_path, api_rights_confirmed=True)
     old = mistral_wiki_v7_recipe(**args)
-    new = {'v8': mistral_wiki_v8_recipe, 'v9': mistral_wiki_v9_recipe}[release](**args)
+    new = {'v8': mistral_wiki_v8_recipe, 'v9': mistral_wiki_v9_recipe, 'v10': mistral_wiki_v10_recipe}[release](**args)
     assert old.parameters['normalization_profile'] == 'wiki-v6'
     assert new.parameters['normalization_profile'] == profile
     assert old.recipe['lifecycle']['extraction'] == new.recipe['lifecycle']['extraction']

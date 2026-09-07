@@ -1,5 +1,9 @@
 # TODO List
 
+- [x] Reconcile visually wrapped contents/body titles using aligned native
+  geometry, split oversized front matter at corroborated landmarks, and recover
+  structurally explicit alphabetical back matter without title-specific rules.
+
 - [x] Recover confirmed contents regions around independently located gaps;
   reconcile wrapped labels and page-confirmed Unicode/conjunction aliases;
   reject lost italic styling and test synthetic, publication-neutral manuals.
