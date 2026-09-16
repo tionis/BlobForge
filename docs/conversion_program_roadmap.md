@@ -137,12 +137,21 @@ the shared evidence contract, complete provenance, and worker dispatcher.
 | Marker 1 + enrichment | Compatibility baseline | Native evidence plus common alignment |
 | Marker 2 + enrichment | New local/VLM candidate | Native output plus common normalization/alignment |
 | Docling | Structured local candidate | Preserve hierarchy, provenance, geometry, and lossless JSON |
+| Baidu Unlimited-OCR | Self-hosted GPU VLM challenger | Preserve raw grounding tags, page delimiters, raster transforms, boxes, and runtime/model identity |
 | Datalab API | Hosted Datalab/Marker family | Preserve returned evidence, identity, geometry, and usage |
 | Mistral OCR | Independent hosted candidate | Preserve page blocks, regions, labels, confidence, and usage |
 
-MinerU is the first conditional challenger. PP-StructureV3 and more expensive
-VLM systems remain second-round options only if the initial set exposes a
-specific deficit.
+Unlimited-OCR receives a bounded hard-page and representative-book canary
+because it adds local/private multi-page parsing rather than another hosted API.
+MinerU remains a conditional challenger. PP-StructureV3 and more expensive VLM
+systems remain second-round options only if the initial set exposes a specific
+deficit. See `unlimited_ocr_evaluation.md` for the separate page-local and
+bounded multi-page recipe gates.
+
+The pre-rental CPU gate is complete: pinned community Q4/Q8 recipes both parsed
+one representative dense page deterministically within 7.33 GiB RSS. This does
+not replace the planned GPU hard-page, multi-page and MDAF canaries; see
+`unlimited_ocr_cpu_canary.md`.
 
 API adapters enforce rights approval, idempotency, bounded retries, per-attempt
 and per-job spend ceilings, response sanitization, and checkpoints that prevent

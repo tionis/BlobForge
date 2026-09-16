@@ -66,6 +66,36 @@ The virtual environment is located at `.venv/` and should be activated automatic
   changes primary markup, requiring regenerated offsets, while native OCR and
   assets remain immutable. See docs/mdaf_topic_hierarchy.md.
 
+- **2026-09-09:** The bounded Unlimited-OCR RAM probe is complete. On an
+  i7-8650U, community Q4_K_M plus a Q8 vision projector processed one dense
+  300-DPI page in 144-152 seconds at 7.12 GiB peak RSS and zero process swap;
+  Q8_0 took 156-158 seconds at 7.33 GiB. Repeats were byte-identical within each
+  recipe, normalized Q4/Q8 text matched, and all reference edits were four
+  omitted decorative bullets. Q4 moved box coordinates by at most 2/999. On the
+  same retained page, normalized CER/WER was 0.183%/0.546%, close to Mistral's
+  0.091%/0.546% and ahead of the other retained outputs, but Unlimited-OCR lost
+  inline formatting and list semantics, extracted no assets, produced no MDAF,
+  and was much slower. This validates page-local CPU smoke tests only, not the
+  official BF16/vLLM path, general Q4 parity, multi-page parsing, MDAF output,
+  or corpus throughput. See `docs/unlimited_ocr_cpu_canary.md`.
+
+- **2026-09-08:** Unlimited-OCR can be probed page-locally in 32 GiB system RAM,
+  but not through its unmodified official CUDA-only path. A community Q4/Q8 GGUF
+  plus compatible Q8/F16 vision projector is the practical CPU experiment and
+  requires a DeepSeek-OCR-aware, currently non-mainline llama.cpp build.
+  Quantized CPU, patched upstream BF16 and official vLLM outputs are distinct
+  recipes. Use CPU only for adapter/quality feasibility; the measured canary
+  took roughly 2.5 minutes for one dense page. See
+  `docs/unlimited_ocr_evaluation.md`.
+
+- **2026-09-08:** Baidu Unlimited-OCR is a credible self-hosted GPU challenger,
+  not a hosted-provider substitute or an unbounded whole-book recipe. Evaluate
+  page-local and bounded multi-page modes as separate immutable recipes. Retain
+  grounding tokens, `<PAGE>` boundaries, raster transforms and exact custom
+  model/runtime revisions; fail closed on truncation or page mismatch and fall
+  back by shrinking chunks. The current Pascal GTX 1070 is not the planned BF16
+  vLLM target. See `docs/unlimited_ocr_evaluation.md`.
+
 - **2026-09-06:** Recipe 1.5.0/wiki-v6 (normalization wiki-v5) reconciles wrong
   contents pages with unique body titles. A corroborated adjacent opening page
   remains with its section; ambiguity never authorizes arbitrary first matches.

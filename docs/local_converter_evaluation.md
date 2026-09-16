@@ -1,7 +1,7 @@
 # Local Converter Requirements and Complete Evaluation Matrix
 
 Status: evaluation design  
-Updated: 2026-08-27  
+Updated: 2026-09-09
 Corpus: 43 exact-byte-distinct PDFs / 9,465 pages / 1,234.58 MiB
 
 ## Available machines
@@ -234,6 +234,7 @@ These are sufficiently credible and sufficiently different to justify all
 | PaddleOCR PP-StructureV3 | CPU correctness, GPU throughput | structured layout/OCR/table results | primary challenger |
 | PaddleOCR-VL | GPU, 12 GiB documented minimum | structured document-parser output | primary challenger |
 | olmOCR | GPU, 12 GiB+ and 30 GiB disk | page-oriented Markdown/metadata | quality challenger |
+| Baidu Unlimited-OCR | modern NVIDIA GPU; bounded canary first | raw grounding tags, page delimiters, normalized boxes, Markdown | primary self-hosted VLM challenger |
 | Mistral OCR 4.1 | hosted API | Markdown, blocks, boxes, confidence, images | primary API |
 | Datalab Convert accurate | hosted API | Markdown/JSON/HTML, blocks depending options | primary API |
 
@@ -249,12 +250,25 @@ olmOCR documents a recent NVIDIA GPU with at least 12 GiB VRAM and 30 GiB disk;
 it can also use a remote vLLM server. Its own benchmark suite is useful as one
 generic metric layer in addition to the rulebook gold set.
 
+Unlimited-OCR is a 3B BF16 open-weight model with a dedicated vLLM image and an
+official claim of single-GPU inference at 8 GiB VRAM or more. That does not make
+the Pascal GTX 1070 a supported target: the current evaluation plan already
+excludes it from vLLM, and it lacks native BF16 execution. Evaluate page-local
+and bounded multi-page behavior as separate recipes on a modern temporary GPU.
+See `unlimited_ocr_evaluation.md` for evidence retention, safety, chunk fallback,
+and promotion gates. The bounded CPU canary additionally demonstrated a
+page-local Q4/Q8 path in 7.12-7.33 GiB RSS, but its roughly 2.5-minute latency
+and one-page scope make it adapter evidence rather than a corpus worker; see
+`unlimited_ocr_cpu_canary.md`.
+
 Official references:
 
 - <https://github.com/opendatalab/MinerU/blob/master/docs/en/quick_start/index.md>
 - <https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/PP-StructureV3.en.md>
 - <https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/PaddleOCR-VL.md>
 - <https://github.com/allenai/olmocr>
+- <https://github.com/baidu/Unlimited-OCR>
+- <https://recipes.vllm.ai/baidu/Unlimited-OCR>
 
 ### Selected-page VLM challengers
 
@@ -342,9 +356,10 @@ corpus run only when the measured runtime is reasonable.
 
 ### Stage 3: optional universal GPU host
 
-Only if needed, run Marker 2 vLLM, MinerU hybrid/VLM, PaddleOCR-VL, and olmOCR.
-Gate Chandra 2, DeepSeek OCR, dots.ocr, and other Docling presets on the
-hard-page set; only promote a challenger that adds unique wins.
+Only if needed, run Marker 2 vLLM, MinerU hybrid/VLM, PaddleOCR-VL, olmOCR, and
+the page-local plus bounded multi-page Unlimited-OCR canaries. Gate Chandra 2,
+DeepSeek OCR, dots.ocr, and other Docling presets on the hard-page set; only
+promote a challenger that adds unique wins.
 
 ### Stage 4: commercial challengers
 

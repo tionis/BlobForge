@@ -135,6 +135,17 @@ view; detailed research tasks remain in the sections below.
 
 ### Phase 2: Conversion recipes
 
+- [ ] Add an isolated, revision-pinned Baidu Unlimited-OCR evaluator with
+  separate page-local and bounded multi-page recipes, retained grounding/page
+  evidence, raster transforms, strict truncation/page reconciliation, and
+  ConversionBundle/MDAF validation; follow `docs/unlimited_ocr_evaluation.md`.
+- [x] Before renting a GPU for Unlimited-OCR, run a one-page RAM-only feasibility
+  probe on the 32-GiB desktop with pinned community Q8 and Q4 GGUF recipes;
+  measure quality, wall time, peak RAM and repetition, and retain the BF16/GGUF
+  distinction. Q4 used 7.12 GiB RSS/zero process swap and 144-152 seconds; Q8
+  used 7.33 GiB and 156-158 seconds. Both were deterministic with identical
+  normalized text on the selected dense page. Do not expand the CPU probe to
+  the corpus; see `docs/unlimited_ocr_cpu_canary.md`.
 - [x] Integrate the shared enrichment stages into a pinned Marker 1.10.2
   composite recipe, install it coordinator-side, and bind only still-unassigned
   raw-only legacy imports to it without rewriting completed lineage.
@@ -421,7 +432,9 @@ view; detailed research tasks remain in the sections below.
   VRAM, latency, and quality.
 - [ ] Only if first-round results justify it, rent a 48-80 GiB NVIDIA evaluation
   host for Marker 2 vLLM, MinerU hybrid, PaddleOCR-VL, olmOCR, and gated
-  Chandra/DeepSeek/dots.ocr comparisons.
+  Chandra/DeepSeek/dots.ocr comparisons. Include a bounded Unlimited-OCR canary;
+  its official 8 GiB BF16 floor is not evidence that the Pascal GTX 1070 is a
+  compatible or representative host.
 - [ ] Add hosted evaluation adapters with hard spend/page caps and resumable
   quota-aware batches for Mistral OCR 4.1 and Datalab; consume promotional
   credits over successive quota periods while recording list cost, billed

@@ -46,6 +46,83 @@
   Validation uses uv pytest, the full Vulcan workspace gates and fresh imports;
   no provider extraction request is part of the experiments.
 
+- 2026-09-09: Compared the Unlimited-OCR canary with the exact same retained
+  Storypath page from the completed Marker 1.10.2, Mistral OCR 4.1, Datalab
+  Accurate and Docling 2.122.0 campaign. Added and ran a retained, standard-library
+  scorer that removes Markdown presentation markers, applies the canary's text
+  normalization, and writes `output/extractor-comparison.json`. Mistral /
+  Unlimited / Marker / Docling / Datalab measured 0.091% / 0.183% / 0.389% /
+  0.389% / 0.457% CER and 0.546% / 0.546% / 0.682% / 0.682% / 0.955% WER.
+  These are one-page embedded-text comparisons, not overall scores: footer
+  retention and the PDF font's `Y` representation of decorative bullets explain
+  most differences. Reconciled the result with the existing blinded eight-page
+  means and runtimes. Unlimited-OCR has promising grounded transcription and
+  correct one-page reading order, but loses inline formatting/list syntax,
+  extracts no assets, has no validated MDAF, and at 147 CPU seconds/page is
+  slower than every established path. Updated the canary report and findings;
+  the existing GPU/MDAF evaluation TODO remains the promotion gate. Used `rg`,
+  `find`, `jq`, `unzip`, `sed`, `uv run python`, and `apply_patch`; no model or
+  provider inference, source upload, artifact mutation, queue change, or
+  deployment occurred during this comparison.
+
+- 2026-09-09: Executed the bounded Unlimited-OCR CPU/RAM canary requested in
+  `TODO.md`. Reviewed and pinned community GGUF revision
+  `99bac69ae80ff4269bac7217649e452e99e2b1f6`; downloaded Q8_0, Q4_K_M and the
+  Q8_0 projector and verified all three SHA-256 identities. Cloned llama.cpp PR
+  24975 at `a42f938f40d5665fd362cac5d3fc914040233f91`, built only the CPU
+  `llama-mtmd-cli`, and rendered preserved Storypath PDF page 4 at 300 DPI. No
+  source document was uploaded and no provider request, coordinator mutation,
+  recipe registration, queue change or deployment occurred. An initial timing
+  wrapper exited before model execution because `/usr/bin/time` was absent; a
+  later preflight was manually interrupted while correcting zombie detection in
+  the RSS monitor. Neither produced a generation. Final scripts use a 30-minute
+  watchdog and `/proc` metrics.
+
+- 2026-09-09: Ran the Q8 recipe twice and Q4 recipe three times with identical
+  inference settings. Q8 completed in 156/158 seconds at 7.33 GiB peak RSS; Q4
+  completed in 144/152/145 seconds at 7.12 GiB, and the explicitly instrumented
+  third Q4 run recorded zero process swap. Runs were byte-identical within each
+  recipe. Parsed/scored retained raw grounding against untouched Poppler text,
+  explicitly removing its duplicate footer overlay and rotating model blocks
+  only for order-adjusted CER/WER. Both recipes emitted 16 regions, identical
+  normalized text, 0.183% CER and 0.546% WER; all four word differences were
+  omitted decorative bullets. Q4 changed 14/64 box coordinates versus Q8 with
+  maximum 2/999 movement. Added `docs/unlimited_ocr_cpu_canary.md`, updated the
+  candidate assessment and findings, and closed only the RAM-probe TODO. The
+  ignored evidence directory retains models, inputs, scripts, raw outputs,
+  stderr, metrics, references and JSON scores; the GPU/MDAF evaluator remains
+  pending.
+
+- 2026-09-08: Assessed RAM-only Unlimited-OCR feasibility. Reviewed the official
+  CUDA-specific Transformers path, the upstream CPU portability report, and the
+  current community GGUF/llama.cpp model card. Documented that 32 GiB RAM can
+  support a one-page CPU probe, with Q4/Q8 plus the F16 vision projector as the
+  practical route, while preserving these as recipes distinct from official
+  BF16 vLLM. Added a bounded pre-rental CPU probe TODO. No weights, custom
+  llama.cpp branch or dependencies were downloaded or executed.
+
+- 2026-09-08: Translated Unlimited-OCR's current official deployment guidance
+  into a BlobForge self-hosting bill of materials. Verified the official 8 GiB
+  BF16 floor, dedicated vLLM image and required inference settings, plus current
+  vLLM's compute-capability 7.5 minimum. Documented why the GTX 1070 cannot use
+  that path and recorded conservative 12-16 GiB canary / 24 GiB comfortable
+  GPU, 32 GiB RAM and 40 GiB free-disk planning targets. These larger figures
+  are BlobForge operating recommendations, not upstream minimums. No image or
+  model was downloaded and no host was changed.
+
+- 2026-09-08: Investigated the previously omitted Baidu Unlimited-OCR candidate.
+  Searched the repository candidate matrix and adapter boundaries; reviewed the
+  official repository, model card, paper, license, inference examples and vLLM
+  recipe. Accepted it for a bounded self-hosted GPU evaluation, not production.
+  Added `docs/unlimited_ocr_evaluation.md`, matrix entries and TODOs. The plan
+  treats page-local and bounded multi-page modes as separate frozen recipes,
+  retains raw grounding/page/raster evidence, requires exact page/truncation
+  checks and model/runtime pins, and does not assume the GTX 1070 can run the
+  documented BF16 vLLM path. No model download, provider call, source upload,
+  recipe registration, queue mutation, or deployment was performed.
+  Documentation validation with `git diff --check` passed; no runtime tests were
+  needed because this change adds assessment and planning material only.
+
 - 2026-09-06: Added immutable recipe 1.5.0/wiki-v6 and routing revision 4, made
   the compatible release the worker default, and threaded profile wiki-v5 through
   runtime, evaluator, isolated adapter and retained-artifact reprocessing.
