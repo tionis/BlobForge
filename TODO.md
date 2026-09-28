@@ -138,7 +138,7 @@ view; detailed research tasks remain in the sections below.
 - [x] Deploy the import-capable coordinator, publish a five-source canary,
   then all 1,377 enrichment derivatives, selecting them for finished
   legacy-recipe jobs; verify counts and a hydrated download.
-- [ ] Move synchronous MDAF validation in the coordinator's upload handlers
+- [x] Move synchronous MDAF validation in the coordinator's upload handlers
   (`complete`, admin import) off the event loop; large imports exceeded the
   client's 30-second timeout and can stall concurrent requests.
 - [ ] After verified publication, archive or remove the local

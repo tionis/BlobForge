@@ -222,3 +222,38 @@ def test_publisher_refuses_items_whose_base_is_not_in_production(tmp_path):
     assert summary.counts == {"error": 1}
     assert "base artifact" in summary.errors[0]["error"]
     assert coordinator.imports == []
+
+
+@pytest.mark.anyio
+async def test_import_validation_does_not_block_other_requests(tmp_path, monkeypatch):
+    import asyncio
+    import time
+
+    import blobforge.server.app as server_app
+
+    app, parent_identity = _app_with_legacy_parent(tmp_path)
+    _mdaf(tmp_path / "child.mdaf", recipe=ENRICHMENT_RECIPE, derived_from=[parent_identity])
+    real_validate = server_app.validate_mdaf
+
+    def slow_validate(path):
+        time.sleep(0.5)
+        return real_validate(path)
+
+    monkeypatch.setattr(server_app, "validate_mdaf", slow_validate)
+    finished = []
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        async def upload():
+            response = await client.put(_url(), headers=ADMIN, content=(tmp_path / "child.mdaf").read_bytes())
+            finished.append("import")
+            return response
+
+        async def health():
+            await asyncio.sleep(0.1)
+            response = await client.get("/api/v1/health")
+            finished.append("health")
+            return response
+
+        imported, healthy = await asyncio.gather(upload(), health())
+    assert imported.status_code == 200
+    assert healthy.status_code == 200
+    assert finished == ["health", "import"]

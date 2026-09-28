@@ -4315,3 +4315,12 @@
   now select enrichment, 39 Mistral wiki-v10, 1 Datalab wiki; 30 remain queued
   for Mistral source conversion. None remain on the legacy recipe. Purchases
   are unchanged (45 committed / 14 released).
+
+## 2026-09-28 (Non-Blocking Upload Validation)
+
+- **Fix:** `complete` and the admin artifact import now run whole-archive MDAF
+  validation and file hashing through `asyncio.to_thread`. The publication
+  timeouts showed that inline validation blocked the coordinator's event loop.
+- **Test:** A new regression test delays validation and asserts that a
+  concurrent health request completes first. The test fails without the fix;
+  the full suite passes.

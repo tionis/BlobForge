@@ -45,9 +45,10 @@ The virtual environment is located at `.venv/` and should be activated automatic
   exactly one retained artifact. Selection only moves finished jobs still on
   the parent recipe. All 1,377 legacy derivatives are published and
   byte-verified in production (1,307 selected), so the local enrichment tree
-  is no longer the sole copy. The coordinator validates uploads synchronously,
-  so very large imports can exceed the CLI's 30-second timeout. Retries are
-  idempotent; use a longer client timeout.
+  is no longer the sole copy. Upload validation and hashing in `complete` and
+  the admin import now run in worker threads (`asyncio.to_thread`): inline
+  validation of large MDAFs blocked the event loop and caused 30-second client
+  timeouts. Keep whole-archive work off the event loop in async handlers.
 
 - **2026-09-07:** Wrapped headings must be reconciled in both directions: native
   contents-block continuity is insufficient without a unique aligned body

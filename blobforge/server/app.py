@@ -1074,32 +1074,36 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         if result.get("recipe_digest") and str(result["recipe_digest"]) != recipe:
             pending.unlink(missing_ok=True)
             raise HTTPException(422, "worker result recipe does not match the leased job")
+        def check_mdaf() -> str:
+            validated = validate_stored_mdaf(pending)
+            if result.get("logical_identity") != validated.identity:
+                raise ValueError("reported logical identity does not match MDAF")
+            target_definition = job.get("recipe") or {}
+            if target_definition.get("schema") == "dev.tionis.blobforge.recipe/v3":
+                with zipfile.ZipFile(pending) as archive:
+                    embedded = json.loads(archive.read(RECIPE_MEMBER_PATH))
+                if recipe_digest(embedded) != recipe or canonical_json_bytes(
+                    embedded
+                ) != canonical_json_bytes(target_definition):
+                    raise ValueError("embedded lifecycle recipe does not match the lease")
+            if job.get("input_kind") == "artifact":
+                parent = database.artifact_by_id(int(job["input_artifact_id"]))
+                if not parent or parent["source_key"] != key:
+                    raise ValueError("reprocessing parent artifact is missing")
+                parent_path = settings.data_dir / parent["storage_path"]
+                parent_identity = validate_stored_mdaf(parent_path).identity
+                if parent_identity not in validated.manifest.get("derived_from", []):
+                    raise ValueError("derivative does not declare its exact parent")
+            return validated.identity
+
         if str(result.get("artifact_type") or "legacy-archive") == "mdaf/v1":
+            # Validation reads the whole archive; keep it off the event loop.
             try:
-                validated = validate_stored_mdaf(pending)
-                if result.get("logical_identity") != validated.identity:
-                    raise ValueError("reported logical identity does not match MDAF")
-                logical_identity = validated.identity
-                target_definition = job.get("recipe") or {}
-                if target_definition.get("schema") == "dev.tionis.blobforge.recipe/v3":
-                    with zipfile.ZipFile(pending) as archive:
-                        embedded = json.loads(archive.read(RECIPE_MEMBER_PATH))
-                    if recipe_digest(embedded) != recipe or canonical_json_bytes(
-                        embedded
-                    ) != canonical_json_bytes(target_definition):
-                        raise ValueError("embedded lifecycle recipe does not match the lease")
-                if job.get("input_kind") == "artifact":
-                    parent = database.artifact_by_id(int(job["input_artifact_id"]))
-                    if not parent or parent["source_key"] != key:
-                        raise ValueError("reprocessing parent artifact is missing")
-                    parent_path = settings.data_dir / parent["storage_path"]
-                    parent_identity = validate_stored_mdaf(parent_path).identity
-                    if parent_identity not in validated.manifest.get("derived_from", []):
-                        raise ValueError("derivative does not declare its exact parent")
+                logical_identity = await asyncio.to_thread(check_mdaf)
             except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
                 pending.unlink(missing_ok=True)
                 raise HTTPException(422, f"invalid MDAF output: {exc}") from exc
-        inspected = storage.inspect(pending)
+        inspected = await asyncio.to_thread(storage.inspect, pending)
         identity = logical_identity or f"blake3:{inspected.blake3}"; destination = storage.artifact_path(key, recipe, identity); destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(pending, destination)
         artifact = {"identity": identity, "storage_path": str(destination.relative_to(settings.data_dir)), "media_type": str(result.get("media_type") or "application/zip"), "artifact_type": str(result.get("artifact_type") or "legacy-archive"), "size_bytes": inspected.size, "sha256": inspected.sha256, "blake3": inspected.blake3}
@@ -1138,7 +1142,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             raise HTTPException(404, "source not found") from None
         pending = storage.pending_output_path(key, f"import-{secrets.token_hex(16)}")
         await atomic_request_body(request, pending)
-        try:
+
+        def check_import():
             validated = validate_stored_mdaf(pending)
             with zipfile.ZipFile(pending) as archive:
                 provenance = json.loads(archive.read("provenance.json"))
@@ -1162,20 +1167,23 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             ]
             if len(parents) != 1:
                 raise ValueError("MDAF must derive from exactly one retained artifact of this source")
+            return validated, parents[0]
+
+        # Validation reads the whole archive; keep it off the event loop.
+        try:
+            validated, parent = await asyncio.to_thread(check_import)
         except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
             pending.unlink(missing_ok=True)
             raise HTTPException(422, f"invalid MDAF import: {exc}") from exc
-        parent = parents[0]
-        inspected = storage.inspect(pending)
         destination = storage.artifact_path(key, recipe, validated.identity)
         destination.parent.mkdir(parents=True, exist_ok=True)
         existed = destination.exists()
         if existed:
             # Same logical identity is already stored; keep the recorded bytes.
             pending.unlink(missing_ok=True)
-            inspected = storage.inspect(destination)
         else:
             os.replace(pending, destination)
+        inspected = await asyncio.to_thread(storage.inspect, destination)
         artifact = {
             "identity": validated.identity,
             "storage_path": str(destination.relative_to(settings.data_dir)),
