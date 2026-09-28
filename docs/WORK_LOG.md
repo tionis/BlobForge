@@ -4295,3 +4295,23 @@
   executes a resumable publication after local and production lineage checks.
   Added `tests/test_artifact_import.py`; the full suite passed (494 tests,
   run with coordinator environment variables cleared).
+
+## 2026-09-28 (Enrichment Publication Rollout)
+
+- **Deploy:** BlobForge `c7ec647` (server `sha256:bf420cd5…`, hosted
+  `sha256:7ff385c5…`) is pinned by Gandalf `584a1955`. The rollout passed
+  `gandalf-check`, the quiesced `restic-profile-blobforge` backup, and a scoped
+  preview/apply that changed only the Quadlet pins. All three services run the
+  exact digests; SQLite quick_check and public health pass. wiki-v10 was
+  already running, so no artifact-input upgrade was queued.
+- **Publication:** A five-source canary imported and selected every
+  derivative; its default MDAF download was byte-identical to the local file.
+  In the full run, 25 of the largest imports exceeded the CLI's 30-second
+  socket timeout while the server validated them; two had completed
+  server-side. An idempotent retry with a 300-second timeout finished the rest.
+- **Verification:** Production holds 1,377 enrichment artifacts beside 1,377
+  retained legacy artifacts, with 1,377 `artifact.import` audit rows. Identity
+  and SHA-256 match the local derivative for all 1,377. Finished jobs: 1,307
+  now select enrichment, 39 Mistral wiki-v10, 1 Datalab wiki; 30 remain queued
+  for Mistral source conversion. None remain on the legacy recipe. Purchases
+  are unchanged (45 committed / 14 released).
