@@ -141,7 +141,7 @@ view; detailed research tasks remain in the sections below.
 - [x] Move synchronous MDAF validation in the coordinator's upload handlers
   (`complete`, admin import) off the event loop; large imports exceeded the
   client's 30-second timeout and can stall concurrent requests.
-- [ ] After verified publication, archive or remove the local
+- [x] After verified publication, archive or remove the local
   `.blobforge-migration/generated` enrichment tree.
 
 ### Phase 2: Conversion recipes

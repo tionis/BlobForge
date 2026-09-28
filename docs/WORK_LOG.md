@@ -4324,3 +4324,17 @@
 - **Test:** A new regression test delays validation and asserts that a
   concurrent health request completes first. The test fails without the fix;
   the full suite passes.
+- **Rollout:** Coordinator-only `3b09000` (server `sha256:16bae976…`) is
+  pinned by Gandalf `f44cccda`, now pushed and in sync with GitHub after a
+  merge of six upstream dependency updates. A quiesced backup ran after the
+  publication, before the apply. Ansible reset 4,091 import-created
+  directories whose group had drifted back to 10001:10001. Verified: the
+  exact digest, three active services, SQLite quick_check, health, 1,377
+  enrichment artifacts, and unchanged purchases. A live idempotent re-import
+  of the largest 69 MiB derivative returned `exists` in 19 seconds.
+- **Local cleanup:** After that backup, `.blobforge-migration/generated`
+  (8.6 GiB) and the re-downloadable Unlimited-OCR GGUF model (5.2 GiB) were
+  deleted. The workspace retains 1.4 GiB: `catalog.sqlite3`, review
+  campaigns/keys/results, evaluation MDAFs, and manifests. The manual snapper
+  snapshot #1 was deleted. Timeline snapshots #2 (27 Aug) and #101 (1 Sep)
+  still reference the removed data until monthly retention expires them.
