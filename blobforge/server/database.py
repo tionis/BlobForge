@@ -2689,6 +2689,63 @@ class Database:
             row["legacy"] = bool(row["legacy"])
         return rows
 
+    def source_digests(self, key: str) -> set[str]:
+        """Return every tagged digest known for a source, including aliases."""
+        with self.connect() as db:
+            rows = list(db.execute(
+                """SELECT digest_algorithm AS algorithm,digest FROM sources WHERE source_key=?
+                UNION SELECT algorithm,digest FROM source_aliases WHERE source_key=?""",
+                (key, key),
+            ))
+        return {f"{row['algorithm']}:{row['digest']}" for row in rows}
+
+    def import_artifact(
+        self,
+        key: str,
+        recipe: str,
+        artifact: dict[str, Any],
+        provenance: dict[str, Any],
+        *,
+        parent_recipe: str,
+        select: bool,
+    ) -> dict[str, Any]:
+        """Record an operator-imported derivative without touching leases or retries.
+
+        Selection only retargets a finished job whose current recipe is still
+        the parent's, so it never overrides a newer choice or an active job.
+        """
+        timestamp = now_ms()
+        with self.transaction() as db:
+            existing = db.execute(
+                "SELECT identity FROM artifacts WHERE source_key=? AND recipe_digest=?",
+                (key, recipe),
+            ).fetchone()
+            if existing and existing["identity"] != artifact["identity"]:
+                raise Conflict("a different artifact already exists for this recipe")
+            if not existing:
+                db.execute(
+                    """INSERT INTO artifacts(source_key,recipe_digest,identity,storage_path,
+                    media_type,artifact_type,size_bytes,sha256,blake3,provenance_json,
+                    created_at,legacy,converter_backend,converter_version)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,0,?,?)""",
+                    (
+                        key, recipe, artifact["identity"], artifact["storage_path"],
+                        artifact["media_type"], artifact["artifact_type"],
+                        artifact["size_bytes"], artifact["sha256"], artifact["blake3"],
+                        json.dumps(provenance, sort_keys=True), timestamp,
+                        provenance.get("converter_backend"),
+                        provenance.get("converter_version"),
+                    ),
+                )
+            selected = False
+            if select:
+                selected = bool(db.execute(
+                    """UPDATE jobs SET recipe_digest=?,updated_at=?
+                    WHERE source_key=? AND status='done' AND recipe_digest=?""",
+                    (recipe, timestamp, key, parent_recipe),
+                ).rowcount)
+        return {"action": "exists" if existing else "imported", "selected": selected}
+
     def request_conversion(self, key: str, recipe: str) -> dict[str, Any]:
         timestamp = now_ms()
         with self.transaction() as db:

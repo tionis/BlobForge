@@ -41,6 +41,7 @@ from . import legacy_migration
 from .converters import run_converter
 from .corpus import build_manifest, pdf_pages
 from .evaluation import compare as compare_artifacts
+from .enrichment_publish import publish_enrichments
 from .local_import import import_legacy_sources, import_stage
 from .mdaf import blake3_bytes
 from .mdaf.digest import canonical_json_bytes
@@ -784,6 +785,39 @@ def cmd_migrate_enrich_verify(args):
     for error in result.errors:
         print(f"ERROR: {error}", file=sys.stderr)
     return 1 if result.errors else 0
+
+
+def cmd_migrate_publish_enrichment(args):
+    """Plan or publish catalogued enrichment derivatives to the coordinator."""
+    if not _apply_coordinator_overrides(args):
+        return 1
+    coordinator = _coordinator_client()
+    if not coordinator:
+        print("Error: BLOBFORGE_COORDINATOR_URL and BLOBFORGE_COORDINATOR_TOKEN are required")
+        return 1
+    try:
+        summary = publish_enrichments(
+            args.workspace,
+            coordinator,
+            hashes=args.hashes,
+            limit=args.limit,
+            execute=args.execute,
+            select=not args.no_select,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(summary.as_dict(), indent=2))
+    else:
+        print(f"Recipe:  {summary.recipe_digest}")
+        print(f"Mode:    {'execute' if summary.execute else 'dry run'}")
+        print(f"Checked: {summary.checked:,}")
+        for outcome, count in sorted(summary.counts.items()):
+            print(f"  {outcome}: {count:,}")
+        for error in summary.errors:
+            print(f"ERROR {error['source_key']}: {error['error']}", file=sys.stderr)
+    return 1 if summary.errors else 0
 
 
 def cmd_migrate_report(args):
@@ -2218,6 +2252,29 @@ def main():
     )
     p_migrate_enrich_verify.add_argument("--limit", type=int)
     p_migrate_enrich_verify.set_defaults(func=cmd_migrate_enrich_verify)
+    p_migrate_publish = migrate_subparsers.add_parser(
+        "publish-enrichment",
+        help="Publish enriched derivatives to the coordinator (dry run unless --execute)",
+    )
+    p_migrate_publish.add_argument(
+        "hashes", nargs="*", metavar="HASH", help="Limit to these legacy SHA-256 values"
+    )
+    p_migrate_publish.add_argument(
+        "--workspace", default=str(legacy_migration.DEFAULT_WORKSPACE)
+    )
+    p_migrate_publish.add_argument("--limit", type=int, help="Bounded canary size")
+    p_migrate_publish.add_argument(
+        "--execute", action="store_true", help="Upload instead of only planning"
+    )
+    p_migrate_publish.add_argument(
+        "--no-select",
+        action="store_true",
+        help="Do not make the derivative the current recipe of finished legacy jobs",
+    )
+    p_migrate_publish.add_argument("--json", action="store_true")
+    p_migrate_publish.add_argument("--coordinator-url", help="Coordinator base URL")
+    p_migrate_publish.add_argument("--token", help="Admin token for the coordinator")
+    p_migrate_publish.set_defaults(func=cmd_migrate_publish_enrichment)
     p_migrate_report = migrate_subparsers.add_parser(
         "report", help="Export a checksummed migration manifest"
     )

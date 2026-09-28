@@ -38,6 +38,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-09-28:** Offline derivatives of retained artifacts are published
+  through the admin import endpoint, not the worker lease or reprocessing
+  paths. Only coordinator-installed import-only recipes are accepted. The
+  derivative must record that recipe, name the source digest, and derive from
+  exactly one retained artifact. Selection only moves finished jobs still on
+  the parent recipe. The local enrichment tree is the sole copy until
+  `migrate publish-enrichment --execute` completes and has been verified.
+
 - **2026-09-07:** Wrapped headings must be reconciled in both directions: native
   contents-block continuity is insufficient without a unique aligned body
   match, and split body headings require an aligned combined contents title.

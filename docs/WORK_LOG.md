@@ -4241,3 +4241,57 @@
   completed in 16 seconds; the isolated full restore test completed in 221
   seconds with result success. Gandalf's mandatory suite passed 758 tests plus
   4 subtests and 13 Bunny tests before each staged steady-state change.
+
+## 2026-09-28 (Migration Workspace Deletion Audit)
+
+- **Action:** Read-only audit of `.blobforge-migration` (~87 GiB) to decide
+  whether it can be deleted. No files were changed or removed.
+- **Findings:** `remote/` (32 GiB) mirrors `blobforge:pdf`, which still holds
+  3,634 objects / 31.980 GiB. `local-server-data/` (32 GiB) is the recovery unit
+  verified on Citadel; its database holds only the 1,377 legacy migration
+  artifacts. `staged-v2/` is hardlinked to other directories, and `models/` is
+  a re-downloadable Hugging Face cache. `generated/` holds 1,377 legacy MDAFs
+  plus 1,377 `pdf-enrichment/v1` derivatives (~8.6 GiB) and 37 older canary
+  derivatives. Sampled production sources have no enrichment-recipe artifact,
+  so these derivatives exist only here. `catalog.sqlite3` holds the enrichment
+  ledger. `evaluations/` holds review campaigns, private unblinding keys, and
+  result exports. Paid provider caches live separately in
+  `~/.cache/blobforge/{mistral,datalab}-responses`. All data shares extents with
+  snapper `home` snapshots, including the manual, non-cleanup snapshot #1
+  (2026-08-27), so deletion alone frees little space.
+- **Enrichment follow-up:** All 1,377 `pdf-enrichment/v1` derivatives use
+  their legacy MDAF as base (`base_mdaf_identity` equals the local legacy
+  identity, and a sampled production legacy identity matches). Every
+  derivative's `text.md` is byte-identical to its base. The enriched package
+  only adds Poppler-aligned source maps (1,193,616 versus 306,476 legacy
+  entries; 52.9% of blocks / 48.3% of bytes mapped: 580,989 region and 306,151
+  page-only), plus the retained base renditions, Poppler bbox evidence, and an
+  alignment report. The backfill took 32.8 CPU-hours for 107,984 pages. It is
+  deterministic, but regenerating it needs the source PDFs, legacy MDAFs, and
+  Poppler 25.03.0.
+- **Post-cleanup inventory:** The operator removed `remote/`,
+  `local-server-data/`, `staged-v2/`, `models/`, and the legacy MDAFs. A full
+  production query of all 1,377 enriched sources found no enrichment artifact.
+  1,337 sources have only their legacy MDAF; 40 also have newer hosted wiki
+  artifacts (39 Mistral, 4 Datalab). Of the remaining 5.3 GiB in
+  `evaluations/`, 5.2 GiB is the re-downloadable Unlimited-OCR GGUF model; the
+  review campaigns, keys, and evaluation MDAFs total about 140 MiB.
+
+## 2026-09-28 (Enrichment Publication Path)
+
+- **Decision:** The operator wants the 1,377 local `pdf-enrichment/v1`
+  derivatives in the coordinator datastore and selected by default for books
+  still on the legacy recipe.
+- **Why a new path:** The offline importer writes the data directory directly
+  and would need a production outage. Bulk reprocessing requires lifecycle-v3
+  targets and a worker, and it resets each job.
+- **Implementation:** The coordinator installs `pdf-enrichment/v1` as an
+  import-only artifact recipe. The admin endpoint `PUT
+  /api/v1/admin/jobs/{key}/artifacts` validates the MDAF, its recorded recipe,
+  its source digests, and its single retained parent. The import is idempotent
+  and can optionally select the derivative for a finished job still on the
+  parent recipe. Source conversion and upload requests for import-only recipes
+  are rejected. `blobforge migrate publish-enrichment` plans (default) or
+  executes a resumable publication after local and production lineage checks.
+  Added `tests/test_artifact_import.py`; the full suite passed (494 tests,
+  run with coordinator environment variables cleared).

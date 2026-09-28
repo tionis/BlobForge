@@ -31,6 +31,7 @@ from .storage import CapabilitySigner, LocalStorage
 from .scim import create_scim_router
 from ..routing import RoutingFeatures, route_pdf
 from ..download_names import artifact_filename, content_disposition
+from ..enrichment.legacy import enrichment_recipe, enrichment_recipe_digest
 from ..mdaf import canonical_json_bytes, validate_mdaf
 from ..recipe_lifecycle import RECIPE_MEMBER_PATH, recipe_digest
 from ..recipe_runtime import marker1_enriched_v1_recipe
@@ -121,6 +122,23 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         notes=(
             "Local born-digital PDF recipe; pinned Marker 1 extraction followed by "
             "pdf-enrichment/v1 source mapping."
+        ),
+    )
+    enrichment = enrichment_recipe(validate_runtime=False)
+    enrichment_digest = enrichment_recipe_digest(enrichment)
+    # Import-only: no worker runs this recipe, so it only arrives through the
+    # admin artifact import and can never be queued as a source conversion.
+    import_only_recipes = {enrichment_digest}
+    database.install_recipe(
+        digest=enrichment_digest,
+        backend="pdf-enrichment",
+        recipe=enrichment,
+        media_types=["application/pdf"],
+        input_kinds=["artifact"],
+        display_name="PDF enrichment v1 (import only)",
+        notes=(
+            "Poppler-aligned source maps derived offline from legacy MDAFs; "
+            "published through the admin artifact import."
         ),
     )
     assigned_legacy_jobs = database.assign_unconverted_legacy_jobs(
@@ -435,6 +453,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             raise HTTPException(400, "filename must contain 1-512 characters")
         if priority not in PRIORITIES:
             raise HTTPException(400, "unsupported priority")
+        if recipe_digest in import_only_recipes:
+            raise HTTPException(409, "recipe is import-only and cannot convert new uploads")
         temporary = storage.pending / "admin-upload" / secrets.token_urlsafe(18)
         result = await atomic_request_body(request, temporary)
         key = str(result["sha256"])
@@ -1101,6 +1121,99 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     async def artifacts(key: str, request: Request) -> dict[str, Any]:
         authorize(request); return {"artifacts": database.artifacts(key)}
 
+    @app.put("/api/v1/admin/jobs/{key}/artifacts")
+    async def import_artifact(key: str, request: Request) -> dict[str, Any]:
+        """Publish an offline-built derivative of an artifact already retained here."""
+        authorize(request, roles={"admin"})
+        key = _digest(key, "source key")
+        recipe = _recipe_identifier(request.query_params.get("recipe_digest", ""))
+        if recipe not in import_only_recipes:
+            raise HTTPException(409, "recipe does not accept artifact imports")
+        select = request.query_params.get("select", "false")
+        if select not in {"true", "false"}:
+            raise HTTPException(400, "select must be true or false")
+        try:
+            database.get_job(key)
+        except KeyError:
+            raise HTTPException(404, "source not found") from None
+        pending = storage.pending_output_path(key, f"import-{secrets.token_hex(16)}")
+        await atomic_request_body(request, pending)
+        try:
+            validated = validate_stored_mdaf(pending)
+            with zipfile.ZipFile(pending) as archive:
+                provenance = json.loads(archive.read("provenance.json"))
+            recorded = {
+                activity.get("parameters", {}).get("recipe_digest")
+                for activity in provenance.get("activities", [])
+            }
+            if recipe not in recorded:
+                raise ValueError("MDAF provenance does not record the requested recipe")
+            declared = {
+                digest
+                for source in validated.manifest.get("sources", [])
+                for digest in [source.get("digest"), *source.get("alternate_digests", [])]
+            }
+            if not declared & database.source_digests(key):
+                raise ValueError("MDAF sources do not include this source document")
+            derived_from = set(validated.manifest.get("derived_from", []))
+            parents = [
+                artifact for artifact in database.artifacts(key)
+                if artifact["identity"] in derived_from and artifact["recipe_digest"] != recipe
+            ]
+            if len(parents) != 1:
+                raise ValueError("MDAF must derive from exactly one retained artifact of this source")
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
+            pending.unlink(missing_ok=True)
+            raise HTTPException(422, f"invalid MDAF import: {exc}") from exc
+        parent = parents[0]
+        inspected = storage.inspect(pending)
+        destination = storage.artifact_path(key, recipe, validated.identity)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        existed = destination.exists()
+        if existed:
+            # Same logical identity is already stored; keep the recorded bytes.
+            pending.unlink(missing_ok=True)
+            inspected = storage.inspect(destination)
+        else:
+            os.replace(pending, destination)
+        artifact = {
+            "identity": validated.identity,
+            "storage_path": str(destination.relative_to(settings.data_dir)),
+            "media_type": "application/zip",
+            "artifact_type": "mdaf/v1",
+            "size_bytes": inspected.size,
+            "sha256": inspected.sha256,
+            "blake3": inspected.blake3,
+        }
+        producer = validated.manifest.get("producer") or {}
+        details = {
+            "artifact_type": "mdaf/v1",
+            "converter_backend": "pdf-enrichment",
+            "converter_version": producer.get("version"),
+            "execution_mode": "import",
+            "legacy": False,
+            "logical_identity": validated.identity,
+            "media_type": "application/zip",
+            "recipe_digest": recipe,
+            "parent_artifact_identity": parent["identity"],
+            "parent_recipe_digest": parent["recipe_digest"],
+            "imported_by": principal_id(request),
+        }
+        try:
+            result = database.import_artifact(
+                key, recipe, artifact, details,
+                parent_recipe=parent["recipe_digest"], select=select == "true",
+            )
+        except Conflict as exc:
+            if not existed:
+                destination.unlink(missing_ok=True)
+            raise HTTPException(409, str(exc)) from exc
+        database.audit(principal_id(request), "artifact.import", key, {
+            "recipe_digest": recipe, "identity": validated.identity,
+            "parent_identity": parent["identity"], **result,
+        })
+        return {**result, "identity": validated.identity, "parent_identity": parent["identity"]}
+
     @app.post("/api/v1/jobs/{key}/convert")
     async def request_conversion(key: str, request: Request) -> dict[str, Any]:
         authorize(request, roles={"operator"}); body = await request.json(); recipe = str(body.get("recipe_digest") or "")
@@ -1115,6 +1228,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 raise HTTPException(404, "no active recipe for that backend and media type")
         if not recipe:
             raise HTTPException(400, "recipe_digest or backend is required")
+        if recipe in import_only_recipes and not database.artifact(key, recipe):
+            raise HTTPException(409, "recipe is import-only and has no artifact for this source")
         result = database.request_conversion(key, recipe)
         database.audit(principal_id(request), "job.convert", key, {"recipe_digest": recipe})
         return result

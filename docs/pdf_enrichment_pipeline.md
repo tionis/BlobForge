@@ -261,6 +261,38 @@ uv run blobforge migrate enrich --all --jobs 2 \
   --workspace .blobforge-migration
 ```
 
+## Coordinator publication
+
+The backfill ran offline, so its derivatives reach the coordinator through an
+admin import rather than a worker lease. The coordinator installs
+`pdf-enrichment/v1` at startup as an import-only recipe (`input_kinds:
+["artifact"]`). It can never be queued as a source conversion or chosen for a
+new upload, because no worker executes it.
+
+`PUT /api/v1/admin/jobs/{source}/artifacts?recipe_digest=…&select=…` (admin
+role, streamed MDAF body) publishes a derivative only when:
+
+- the recipe is import-only;
+- the MDAF validates, and its provenance records that recipe;
+- its declared sources include one of the source's known digests;
+- `derived_from` names exactly one artifact the coordinator already retains
+  for that source.
+
+The import is idempotent per `(source, recipe)`: the same identity again
+returns `exists`, and a different one is rejected with 409. It never touches
+leases, retries or quota. With `select=true`, the job's current recipe moves
+to the derivative only if the job is `done` and still on the parent's recipe,
+so hosted-wiki choices and active work are never overridden. The parent stays
+retained and selectable with `--recipe-digest`.
+
+```bash
+# Read-only plan: validates each local file and checks its base in production.
+uv run blobforge migrate publish-enrichment --workspace .blobforge-migration
+# Bounded canary, then the resumable full publication.
+uv run blobforge migrate publish-enrichment --limit 5 --execute
+uv run blobforge migrate publish-enrichment --execute --json
+```
+
 ## Reuse and future media
 
 Marker 1 and Marker 2 share segmentation, structure, mapping filters,

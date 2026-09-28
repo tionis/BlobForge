@@ -677,6 +677,7 @@ async def test_multipurpose_worker_claims_capability_and_backend_can_be_selected
         assert {item["backend"] for item in recipes} == {
             "marker",
             "marker-pdf-enriched",
+            "pdf-enrichment",
         }
 
 

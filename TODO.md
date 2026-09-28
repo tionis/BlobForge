@@ -132,6 +132,14 @@ view; detailed research tasks remain in the sections below.
 - [x] Freeze `pdf-enrichment/v1` only after the canary acceptance gates pass.
 - [x] Run and audit the resumable 1,377-artifact enrichment backfill, retaining
   source, base-artifact, recipe, and derived-artifact identities.
+- [x] Add an admin import-only artifact path and `migrate publish-enrichment`
+  so offline enrichment derivatives can be published beside their retained
+  legacy parents.
+- [ ] Deploy the import-capable coordinator, publish a five-source canary,
+  then all 1,377 enrichment derivatives, selecting them for finished
+  legacy-recipe jobs; verify counts and a hydrated download.
+- [ ] After verified publication, archive or remove the local
+  `.blobforge-migration/generated` enrichment tree.
 
 ### Phase 2: Conversion recipes
 

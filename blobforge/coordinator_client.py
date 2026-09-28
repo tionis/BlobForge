@@ -275,6 +275,23 @@ class CoordinatorClient:
             },
         )
 
+    def import_artifact(
+        self, file_hash: str, recipe_digest: str, local_path: str, *, select: bool = False
+    ) -> Dict[str, Any]:
+        """Stream an offline-built derivative MDAF of a retained artifact."""
+        query = urlencode({"recipe_digest": recipe_digest, "select": "true" if select else "false"})
+        return self._stream_file_request(
+            "PUT",
+            f"{self.base_url}/api/v1/admin/jobs/{file_hash}/artifacts?{query}",
+            local_path,
+            {
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/json",
+                "Content-Type": "application/zip",
+            },
+            label="Artifact import",
+        )
+
     def request_conversion(
         self, file_hash: str, recipe_digest: Optional[str] = None, *, backend: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -526,7 +543,13 @@ class CoordinatorClient:
             connection.close()
 
     def _stream_file_request(
-        self, method: str, url: str, local_path: str, headers: Mapping[str, Any]
+        self,
+        method: str,
+        url: str,
+        local_path: str,
+        headers: Mapping[str, Any],
+        *,
+        label: str = "Source upload",
     ) -> Dict[str, Any]:
         if not self.base_url or not self.token:
             raise CoordinatorError(
@@ -563,7 +586,7 @@ class CoordinatorClient:
                 except (json.JSONDecodeError, AttributeError):
                     pass
                 raise CoordinatorError(
-                    f"Source upload failed ({response.status}): "
+                    f"{label} failed ({response.status}): "
                     f"{detail or response.reason}",
                     status=response.status,
                 )
@@ -571,17 +594,17 @@ class CoordinatorClient:
                 result = json.loads(payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise CoordinatorError(
-                    "Coordinator returned an invalid source-upload response"
+                    f"Coordinator returned an invalid {label.lower()} response"
                 ) from exc
             if not isinstance(result, dict):
                 raise CoordinatorError(
-                    "Coordinator returned an invalid source-upload response"
+                    f"Coordinator returned an invalid {label.lower()} response"
                 )
             return result
         except CoordinatorError:
             raise
         except (OSError, http.client.HTTPException) as exc:
-            raise CoordinatorError(f"Source upload failed: {exc}") from exc
+            raise CoordinatorError(f"{label} failed: {exc}") from exc
         finally:
             connection.close()
 
