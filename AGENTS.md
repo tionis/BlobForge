@@ -38,6 +38,12 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-10-16:** MDAF page labels must come from the source's own evidence:
+  a PDF's `/PageLabels` (`blobforge.mdaf.page_labels`), never a presumed
+  offset. Post-processing in a recipe major must rerun from retained evidence,
+  so a recipe can only add labels in a new extraction major or after the labels
+  are retained as native evidence; no recipe publishes them yet.
+
 - **2026-09-28:** Offline derivatives of retained artifacts are published
   through the admin import endpoint, not the worker lease or reprocessing
   paths. Only coordinator-installed import-only recipes are accepted. The

@@ -1,5 +1,10 @@
 # TODO List
 
+- [ ] Decide how recipes publish PDF page labels (MDAF `page_labels`): a new
+  extraction major that reads them during conversion, or retained native
+  evidence so post-processing can add them without re-reading the PDF
+  (`docs/recipe_lifecycle.md`). The reader and builder support exist.
+
 - [x] Reconcile visually wrapped contents/body titles using aligned native
   geometry, split oversized front matter at corroborated landmarks, and recover
   structurally explicit alphabetical back matter without title-specific rules.

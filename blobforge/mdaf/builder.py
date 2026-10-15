@@ -117,11 +117,15 @@ def build_mdaf(
     markdown_features: Iterable[str] = (),
     derived_from: Iterable[str] = (),
     primary_created_by: str | None = None,
+    page_labels: Mapping[str, list[Mapping[str, Any]]] | None = None,
 ) -> MdafBuildResult:
     """Build an atomic deterministic ZIP-form MDAF.
 
     Converter adapters provide finalized Markdown and native evidence; only this
     function owns control-document serialization, member digests, and packaging.
+
+    ``page_labels`` (by source ID, ``page_labels.page_label_ranges`` for a PDF's
+    own labels) is written into the source map; it needs one.
     """
     destination = Path(output_path)
     if destination.suffix != ".mdaf":
@@ -143,6 +147,8 @@ def build_mdaf(
         )
     ]
 
+    if page_labels and source_map is None:
+        raise ValueError("page labels belong in a source map")
     capabilities: list[str] = []
     if source_map is not None:
         source_map_value = dict(source_map)
@@ -150,6 +156,12 @@ def build_mdaf(
         source_map_value["document_digest"] = text_digest
         source_map_value.setdefault("mappings", [])
         source_map_value.setdefault("references", [])
+        if page_labels:
+            source_map_value["page_labels"] = {
+                source_id: [dict(item) for item in ranges]
+                for source_id, ranges in page_labels.items()
+                if ranges
+            }
         members.append(
             MdafMemberInput(
                 "source-map.json",

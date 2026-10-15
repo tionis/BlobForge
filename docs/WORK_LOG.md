@@ -1,5 +1,14 @@
 # Work Log
 
+- 2026-10-16: Synced the MDAF v1 schemas with Vulcan f826b53a (info
+  `language` and `cover`, source-map `page_labels`). Added
+  `blobforge.mdaf.page_labels.page_label_ranges`, which reads a PDF's own
+  `/PageLabels` number tree into MDAF ranges (pypdf), and an optional
+  `page_labels` argument to `build_mdaf`. 15 of the 35 retained rulebook PDFs
+  carry labels. No recipe uses either yet: labels on published artifacts need a
+  recipe decision (see TODO). Synthetic tests cover reading, absence and the
+  builder; existing output is unchanged.
+
 - 2026-09-07: Investigated the English and German Shadowrun core-book wiki
   trees against retained OCR, source maps, contents blocks and body headings.
   Found bidirectionally split titles, oversized front matter and an appended
