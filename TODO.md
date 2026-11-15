@@ -151,10 +151,26 @@ view; detailed research tasks remain in the sections below.
 
 ### Phase 2: Conversion recipes
 
-- [ ] Add an isolated, revision-pinned Baidu Unlimited-OCR evaluator with
-  separate page-local and bounded multi-page recipes, retained grounding/page
-  evidence, raster transforms, strict truncation/page reconciliation, and
-  ConversionBundle/MDAF validation; follow `docs/unlimited_ocr_evaluation.md`.
+- [x] Prepare a revision-pinned Unlimited-OCR-2 Colab GPU canary
+  (`evaluators/unlimited_ocr2/`). It covers page-local and bounded multi-page
+  recipes, retained raw grounding, raster transforms, observed page-guard
+  interventions, automatic halving and resumable Drive caching.
+- [x] Run the Colab canary on an A100: all 50 page generations completed and
+  are retained under
+  `.blobforge-migration/evaluations/unlimited-ocr2-colab-canary/`.
+- [x] Score the retained page against v1, Mistral and the other extractors
+  (v2 equals v1; Mistral leads). Compare London tables and both modes. See
+  `docs/unlimited_ocr2_colab_canary.md`.
+- [ ] Add a local packager from cached Unlimited-OCR-2 output to
+  ConversionBundle/MDAF with validation, mapping `<BLOCK>` boxes through the
+  recorded raster transform and `<LEVELn>`/`cross_text`/`append_text`/`<MERGE>`
+  into hierarchy and continuations. Include the outputs in a newly blinded
+  campaign.
+- [ ] Design an independent coverage check for Unlimited-OCR-2. Both modes
+  silently dropped whole tables, and the page guard cannot detect omissions.
+- [ ] Only if blinded review justifies it, evaluate a hybrid recipe (page-local
+  text plus multi-page hierarchy/continuations) and measure the authors'
+  SGLang serving path before any throughput or cost decision.
 - [x] Before renting a GPU for Unlimited-OCR, run a one-page RAM-only feasibility
   probe on the 32-GiB desktop with pinned community Q8 and Q4 GGUF recipes;
   measure quality, wall time, peak RAM and repetition, and retain the BF16/GGUF

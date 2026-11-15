@@ -1,0 +1,28 @@
+{
+  "dpi": 300,
+  "sources": {
+    "storypath": {
+      "file": "storypath.pdf",
+      "sha256": "d0463c98e081eaca662e35fd2eca3717a6ef4901d611fdfef0d50f8b0cb2d2e5"
+    },
+    "london-falling-tables": {
+      "file": "london-falling-tables.pdf",
+      "sha256": "d9c71699bf24376ed5a1fd26881bf02227e4202bdb0f01ae36080695b2eb6a46"
+    },
+    "storypath-page-4-retained": {
+      "kind": "image",
+      "file": "storypath-page-4-retained.png",
+      "sha256": "064cbc8dca03ae1913d7d946f735130e42cb465ae1236a1b21261f017796827f",
+      "note": "Exact 300-DPI raster scored in the v1 CPU canary"
+    }
+  },
+  "runs": [
+    {"id": "retained-page-local", "source": "storypath-page-4-retained", "mode": "page-local", "repeats": 2},
+    {"id": "storypath-page-local", "source": "storypath", "mode": "page-local", "pages": [1, 2, 3, 4, 5, 6, 7, 8]},
+    {"id": "storypath-multi-8", "source": "storypath", "mode": "multi-page", "pages": [1, 2, 3, 4, 5, 6, 7, 8], "chunk": 8},
+    {"id": "london-page-local", "source": "london-falling-tables", "mode": "page-local", "pages": [1, 2, 3, 4, 5, 6, 7, 8]},
+    {"id": "london-multi-8", "source": "london-falling-tables", "mode": "multi-page", "pages": [1, 2, 3, 4, 5, 6, 7, 8], "chunk": 8},
+    {"id": "storypath-multi-2", "source": "storypath", "mode": "multi-page", "pages": [1, 2, 3, 4, 5, 6, 7, 8], "chunk": 2},
+    {"id": "storypath-page-local", "repeat": 2, "source": "storypath", "mode": "page-local", "pages": [1, 2, 3, 4, 5, 6, 7, 8]}
+  ]
+}

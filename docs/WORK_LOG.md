@@ -4347,3 +4347,47 @@
   campaigns/keys/results, evaluation MDAFs, and manifests. The manual snapper
   snapshot #1 was deleted. Timeline snapshots #2 (27 Aug) and #101 (1 Sep)
   still reference the removed data until monthly retention expires them.
+
+## 2026-10-27 (Unlimited-OCR-2 Colab Canary Preparation)
+
+- **Assessment:** Baidu released Unlimited-OCR-2 (SR-SWA attention, still 3B
+  BF16, MIT) today. It supersedes v1 as the evaluation target. It ships only
+  Transformers and a custom SGLang wheel; the June vLLM support applies to v1.
+  The new page-count guard forces exactly one `<PAGE>` per input, so a
+  matching page count is not evidence of correct output.
+- **Review:** Pinned revision `9cf077c4b206…`. All 18 loaded snapshot files are
+  hashed. The custom code scan found no network, subprocess or pickle use on
+  the inference path. The only `eval` runs on model output in the upstream
+  visualizer, which the runner does not call.
+- **Evaluator:** Added `evaluators/unlimited_ocr2/`: a uv lock (torch
+  2.13.0+cu126, transformers 4.52.1, PyMuPDF 1.27.2.2), a resumable runner with
+  guard/n-gram observers and failure halving, a 50-page-generation canary plan
+  over cleared hosted sources, and a Colab notebook. `self-test` passes with a
+  fake model. The runner parses the retained v1 CPU output into the same 16
+  regions.
+- **Not done:** No GPU run has happened yet. Scoring and MDAF packaging remain
+  local follow-ups.
+
+## 2026-11-15 (Unlimited-OCR-2 Colab Canary Results)
+
+- **Run:** One Colab A100-40GB session completed all 50 page generations
+  (about 1.9 GPU-hours) with the pinned environment and model. The evidence
+  copy of the evaluator is byte-identical to the repository's.
+- **Parser fix:** v2 emits `<BLOCK>label<LEVELn>[box]<FORK>text`, `<MERGE>`
+  and `cross_text`/`append_text`, not v1's det tags, so the first analysis
+  found zero blocks. Added v2 parsing, a malformed-block failure, a text digest
+  that ignores box coordinates, and `reanalyze`. Every unit was reanalyzed from
+  unchanged raw output, with the original analysis backed up. The self-test
+  covers both syntaxes.
+- **Results:**
+  - Text: the retained page scores CER 0.183% / WER 0.546%, identical to v1
+    and behind Mistral's 0.091%.
+  - Repeats: they differ only in box coordinates (at most 2/999); the text is
+    identical.
+  - Tables: London Falling tables are semantic HTML comparable to Mistral wiki.
+  - Omissions: page-local silently omitted one stat-block table on page 88.
+    Multi-page (1024-px base views) misread small type and dropped a table on
+    page 1, but provides document-level heading levels and cross-page joins.
+  - Speed: 95-213 s/page at about 9.5 tokens per second; peak 6.7-7.6 GiB.
+- **Docs:** `docs/unlimited_ocr2_colab_canary.md`, evaluation-doc status, TODO
+  follow-ups (packager, coverage check, conditional hybrid/SGLang).

@@ -1,7 +1,7 @@
 # Baidu Unlimited-OCR Candidate Assessment
 
-Status: RAM-only canary complete; bounded GPU evaluation accepted; no production recipe yet  
-Assessed: 2026-09-09
+Status: v1 RAM-only canary and v2 Colab GPU canary complete; no production recipe yet  
+Assessed: 2026-09-09; Unlimited-OCR-2 addendum 2026-10-27; GPU canary 2026-11-15
 
 ## Decision
 
@@ -21,6 +21,69 @@ separately identified recipes:
 
 Only a blinded canary on the existing hard-page set and complete representative
 books can decide whether either recipe should enter production routing.
+
+## Unlimited-OCR-2 (2026-10-27)
+
+Baidu released `baidu/Unlimited-OCR-2` on 2026-10-27. It replaces v1 as the
+evaluation target. Pinned revision: `9cf077c4b206e0e2a31879df937b0b0bcba3661c`.
+
+- **Model:** still about 3B parameters, BF16 and MIT. Two safetensors shards
+  total 6.69 GB. The model still loads custom repository code, now including
+  Triton kernels for the new attention.
+- **Attention:** Sparse Reference Sliding Window Attention (SR-SWA) compresses
+  text-visual attention to a fixed set of working references, so per-step
+  decode cost stays nearly constant as the document grows. The authors claim
+  state-of-the-art results on MPDocBench and their new hundred-page
+  MarathonDocBench, but publish only a leaderboard image.
+- **Runtimes:** only the upstream Transformers path and a customized SGLang
+  0.5.20 dev wheel shipped inside the model repository. The June vLLM support
+  covers v1; v2 has no released vLLM path, so do not cite vLLM for it.
+- **Modes:** a single page uses gundam tiling by default and several pages use
+  base global views. The default prompt is `"<PAGE><image>" * n + "Multi page
+  parsing."`, and output keeps one `<PAGE>` per input page.
+- **Page-count guard:** on by default. It suppresses EOS until every `<PAGE>`
+  marker appears and forces a page break after 20,000 tokens per page.
+  Consequently, a matching page count proves nothing on its own: suppressed
+  early stops and forced breaks must be observed and treated as failures. The
+  authors' SGLang serving defaults also bound generation to 10-page windows,
+  so "unbounded" still means bounded scheduling inside BlobForge.
+- **Quantizations:** community GGUF, MLX and W4A16 conversions appeared on
+  release day. A GGUF needs llama.cpp support for SR-SWA, which is unverified,
+  and every conversion is a separate recipe.
+
+### Colab GPU route
+
+Google Colab L4 or A100 sessions satisfy the BF16 requirement that the GTX 1070
+cannot. A T4 lacks native BF16 and would be a different recipe. Colab has no
+container runtime, so `evaluators/unlimited_ocr2/` runs the Transformers path
+from its own `uv.lock`. The lock pins torch 2.13.0+cu126 and transformers
+4.52.1. The runner refuses any model file whose SHA-256 differs from the
+reviewed snapshot, caches each unit's raw generation and diagnostics atomically
+on Drive, and resumes after a disconnect. It observes the page guard and the
+n-gram processor without altering them, and it automatically halves a failed
+multi-page chunk.
+
+Colab is Google-hosted. Only sources already cleared for hosted provider
+processing may be uploaded, which limits the first plan to the Storypath and
+London Falling canaries plus the exact retained v1 raster. This route therefore
+tests quality and resource use only: it does not demonstrate the self-hosted
+privacy property. The Transformers decode loop runs token by token in Python,
+so its throughput is a lower bound and not a serving estimate. Runtime and
+environment records are the recipe's evidence. Packaging, ConversionBundle/MDAF
+validation and scoring remain local, CPU-only steps over the retained output.
+
+The canary ran on 2026-11-14/15; results are in
+`unlimited_ocr2_colab_canary.md`. In short:
+
+- **Text:** prose transcription equals v1 and is second only to Mistral.
+- **Tables:** semantic HTML tables are comparable to Mistral wiki.
+- **Modes:** multi-page mode yields document-consistent heading levels and
+  cross-page paragraph joins, but its 1024-px base view misreads dense small
+  type.
+- **Silent omissions:** both modes dropped a whole table without any check
+  firing.
+- **Speed:** the Transformers path manages about 9.5 tokens per second on an
+  A100.
 
 ## Why it belongs in the matrix
 
@@ -180,6 +243,8 @@ recipe-lifecycle compatibility rules permit it.
 
 ## References
 
+- <https://huggingface.co/baidu/Unlimited-OCR-2/tree/9cf077c4b206e0e2a31879df937b0b0bcba3661c>
+- <https://huggingface.co/datasets/baidu/MarathonDocBench>
 - <https://github.com/baidu/Unlimited-OCR>
 - <https://huggingface.co/baidu/Unlimited-OCR>
 - <https://arxiv.org/abs/2606.23050>

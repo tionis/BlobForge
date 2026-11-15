@@ -1,0 +1,28 @@
+[project]
+name = "blobforge-unlimited-ocr2-evaluator"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.13.0",
+    "torchvision==0.28.0",
+    "transformers==4.52.1",
+    "huggingface-hub==0.36.0",
+    "tokenizers==0.21.4",
+    "addict==2.4.0",
+    "einops==0.8.2",
+    "easydict==1.13",
+    "pymupdf==1.27.2.2",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

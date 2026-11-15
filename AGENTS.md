@@ -38,6 +38,31 @@ The virtual environment is located at `.venv/` and should be activated automatic
 
 ## Findings
 
+- **2026-11-15:** The Unlimited-OCR-2 A100 canary is complete; see
+  `docs/unlimited_ocr2_colab_canary.md`.
+  - **Format:** v2 emits `<BLOCK>label<LEVELn>[box]<FORK>text`, `<MERGE>` for
+    column joins and `cross_text`/`append_text` for page joins, not v1's det
+    tags. Parse both.
+  - **Repeatability:** GPU repeats move boxes by 1-2/999, so gate on text with
+    coordinates blanked, never on raw bytes.
+  - **Omissions:** both modes can silently drop a whole table, which the page
+    guard cannot detect; require an independent coverage check before any
+    recipe.
+  - **Modes:** multi-page base mode gives document-level hierarchy but misreads
+    dense small type.
+  - **Speed:** the Transformers path manages about 9.5 tokens per second on an
+    A100, so it measures quality only, never throughput.
+
+- **2026-10-27:** Unlimited-OCR-2 (`baidu/Unlimited-OCR-2`, revision
+  `9cf077c4…`) supersedes v1 as the Unlimited-OCR evaluation target. It runs
+  only on Transformers or the custom SGLang wheel inside its model repository;
+  vLLM support covers v1 only. Its default page-count guard suppresses EOS
+  until every `<PAGE>` appears and forces breaks at 20,000 tokens. A matching
+  page count is therefore not evidence: observe guard interventions and fail
+  on them. Colab L4/A100 provides the BF16 GPU route (a T4 does not), but it is
+  Google-hosted, so upload only sources cleared for hosted processing. See
+  `evaluators/unlimited_ocr2/` and `docs/unlimited_ocr_evaluation.md`.
+
 - **2026-10-16:** MDAF page labels must come from the source's own evidence:
   a PDF's `/PageLabels` (`blobforge.mdaf.page_labels`), never a presumed
   offset. Post-processing in a recipe major must rerun from retained evidence,
