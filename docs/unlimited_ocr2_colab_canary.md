@@ -1,7 +1,7 @@
 # Unlimited-OCR-2 Colab GPU Canary
 
-Status: completed; quality evidence retained, no recipe promoted  
-Executed: 2026-11-14 to 2026-11-15 (Colab A100); analyzed 2026-11-15
+Status: completed; MDAFs packaged and blinded campaigns ready; no recipe promoted  
+Executed: 2026-11-14 to 2026-11-15 (Colab A100); analyzed and packaged 2026-11-15
 
 ## Outcome
 
@@ -163,10 +163,81 @@ processed the same eight Storypath pages in 6.9 seconds.
   text from page-local gundam output and use a multi-page pass only for
   hierarchy and continuations. It would need its own recipe identity,
   reconciliation rules and blinded review.
-- The next steps are a local packager from the retained raw output to
-  ConversionBundle/MDAF, and a newly blinded campaign against Mistral wiki,
-  Datalab wiki and the local leaders. Measure an SGLang serving path before
-  making any cost or throughput decision.
+- The local packager, the blinded campaigns and a heuristic coverage check now
+  exist (see below). Human scoring of both campaigns is the next decision
+  gate. Measure an SGLang serving path before making any cost or throughput
+  decision.
+
+## Packaging
+
+`evaluators/unlimited_ocr2/adapter.py` packages cached runner output through the
+converter-bundle v1 ABI and the shared MDAF builder (`package.py`, local, no
+GPU). It verifies every unit's raw digest, recipe and page coverage, and every
+raster digest. Its normalization rules are:
+
+- `<LEVELn>` titles become ATX headings (levels clamped to 1-6). A title
+  without a level stays a paragraph.
+- `<MERGE>` and `append_text` join the block to the preceding paragraph.
+  A trailing hyphen is kept as printed.
+- HTML tables are re-serialized through the strict semantic-table allowlist.
+  A non-rectangular grid is kept verbatim in a fenced block, never padded.
+- Header, footer, page-number, empty and malformed blocks stay out of the
+  Markdown but remain in the retained native renditions.
+- Image boxes become PNG crops of the rendered page. A diagnostic labels them
+  as derived crops, not embedded PDF images.
+- Text `<` is escaped, so model text cannot inject HTML.
+- Each block maps to its page plus a point rectangle (pixel × 72/300, valid
+  for these unrotated pages whose cropbox starts at the origin). There is no
+  confidence, because the model reports none.
+
+| MDAF | Identity | Tables (kept verbatim) | Joins | Malformed | Selectors |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Storypath page-local | `blake3:28a587b1…f0c` | 0 | 2 | 0 | 103 page + 103 rectangle |
+| Storypath multi-8 | `blake3:86913498…d35` | 0 | 6 | 0 | 100 + 100 |
+| London page-local | `blake3:78ab199f…de2` | 32 (6) | 0 | 0 | 124 + 124 |
+| London multi-8 | `blake3:361ffc66…08e` | 32 (8) | 0 | 1 | 120 + 120 |
+
+All four pass BlobForge and Vulcan validation. Repackaging reproduced every
+identity byte for byte. About a fifth of the model's tables are not
+rectangular grids. Mistral wiki retains its own invalid grids the same way, so
+the difference is visible in review rather than hidden.
+
+## Blinded campaigns
+
+Mistral comparisons use wiki-v10, the current production recipe. They were
+produced by offline artifact reprocessing (`blobforge reprocess`, zero
+provider calls) from the retained wiki-v3 Storypath and wiki-v1 London
+parents. Both derivatives pass Vulcan.
+
+| Campaign | Digest | Candidates | Pages |
+| --- | --- | --- | --- |
+| `reviews/storypath-uocr2-v1` | `blake3:6ae6ab14d619999efe5d918a04ec26efb651bba4df8d9f8adb9e8e79088c0690` | Mistral wiki-v10, Datalab wiki v1, Marker 1, Unlimited-OCR-2 page-local and multi-8 | 1-8 |
+| `reviews/london-falling-tables-uocr2-v1` | `blake3:f1f852b3500993d96170fed11a752e54203d6c74233db27aa6f6427a98ece06a` | Mistral wiki-v10, Datalab wiki v1, Unlimited-OCR-2 page-local and multi-8 | 1-8 |
+
+Labels use a private random seed, and both keys are mode 0600 and unopened.
+The public files contain no engine names. Asset file formats (PNG versus JPEG)
+loosely group candidates; earlier campaigns share this weakness.
+
+## Coverage check
+
+`run_unlimited_ocr2.py coverage` combines two heuristic omission signals:
+
+1. per-page recall of the PDF's own text-layer words, on pages with at least
+   50 words, after dehyphenation; and
+2. disagreement between two runs (page-local versus multi-page) in missing
+   words and table counts.
+
+Complete Storypath pages recall 0.93-0.99. The remaining misses are
+decorative `Y` glyphs, split ligatures and running footers. The threshold of
+0.90 flags both visually confirmed omissions: page-local London page 7 at
+0.848 and multi-8 London page 1 at 0.798. It also flags multi-8 London pages
+3, 5 and 8 (0.874-0.878), whose small-type misreads genuinely degrade the
+text. Cross-mode disagreement independently flags pages 1 and 7 (table counts
+3 versus 4 and 5 versus 4) and London page 3. It flags no Storypath page.
+
+The check works only where a usable text layer exists, and the thresholds are
+calibrated in-sample on two confirmed omissions. Treat flags as review
+triggers, not acceptance criteria.
 
 ## Evidence
 
@@ -177,4 +248,5 @@ The ignored evidence tree is
 - `out/` (environment records, recipes, renders with transforms, and each
   unit's raw output, token IDs and `result.json`);
 - `summary.json`, `retained-page-comparison.json` and `score_retained_page.py`;
-- the parser-1 backup.
+- the parser-1 backup;
+- `coverage.json` and `mdaf/` (the four packaged artifacts).

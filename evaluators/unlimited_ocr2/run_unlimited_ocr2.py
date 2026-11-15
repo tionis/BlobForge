@@ -17,6 +17,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable
@@ -657,6 +659,94 @@ def summarize(out: Path) -> dict[str, Any]:
     return summary
 
 
+# ---------------------------------------------------------------- coverage
+
+WORD_RE = re.compile(r"\w[\w'.\-/+]*")
+TAG_RE = re.compile(r"<BLOCK>[a-z_]*(?:<LEVEL\d+>)?(?:\[[^\]<\n]*\])?(?:<FORK>)?|<PAGE>|<MERGE>|<[^>]+>")
+# Calibrated on the 2026-11 canary: complete Storypath pages sit at 0.93-0.99
+# recall (decorative glyphs, split ligatures and running footers remain), while
+# the two adjudicated table omissions fell to 0.77 and 0.85.
+COVERAGE_THRESHOLDS = {"text_layer_min_words": 50, "text_layer_recall": 0.90, "cross_mode_missing": 0.10}
+
+
+def page_words(text: str) -> collections.Counter:
+    import html as html_module
+
+    text = unicodedata.normalize("NFKC", html_module.unescape(TAG_RE.sub(" ", text)))
+    text = text.translate(str.maketrans({"’": "'", "‘": "'", "—": "-", "–": "-"}))
+    # Rejoin words a PDF text layer hyphenates across line breaks.
+    text = re.sub(r"(?<=\w)-[ \t]*\n\s*(?=\w)", "", text)
+    return collections.Counter(WORD_RE.findall(text.casefold()))
+
+
+def run_pages(out: Path, run_id: str, repeat: int = 1) -> dict[int, dict[str, Any]]:
+    """Per-page raw text and table count for one run's top-level units."""
+    pages: dict[int, dict[str, Any]] = {}
+    for path in sorted((out / "units" / run_id / f"r{repeat}").glob("*/result.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("fallback_of") is not None:
+            continue
+        _, texts = split_pages((path.parent / "raw.txt").read_text(encoding="utf-8"))
+        for page, text in zip(record["pages"], texts):
+            pages[page] = {"words": page_words(text), "tables": text.count("<BLOCK>table")}
+    return pages
+
+
+def coverage(out: Path, inputs: Path, pairs: list[tuple[str, str]]) -> dict[str, Any]:
+    """Flag pages whose output likely omits content.
+
+    Two independent signals, neither of them ground truth: recall of the PDF's
+    own text layer where it has one, and disagreement between two runs
+    (typically the page-local and multi-page modes) on words and table counts.
+    """
+    import fitz
+
+    plan = json.loads((out / "plan.json").read_text(encoding="utf-8"))
+    runs = {run["id"]: run for run in plan["runs"]}
+    report: dict[str, Any] = {"thresholds": COVERAGE_THRESHOLDS, "text_layer": {}, "cross_mode": {}, "flags": []}
+    layers: dict[str, dict[int, collections.Counter]] = {}
+    for run_id in sorted({item for pair in pairs for item in pair}):
+        source_id = runs[run_id]["source"]
+        source = plan["sources"][source_id]
+        if source.get("kind", "pdf") != "pdf":
+            continue
+        if source_id not in layers:
+            with fitz.open(inputs / source["file"]) as doc:
+                layers[source_id] = {index + 1: page_words(page.get_text()) for index, page in enumerate(doc)}
+        rows = []
+        for page, data in sorted(run_pages(out, run_id).items()):
+            layer = layers[source_id][page]
+            total = sum(layer.values())
+            if total < COVERAGE_THRESHOLDS["text_layer_min_words"]:
+                rows.append({"page": page, "text_layer_words": total, "recall": None})
+                continue
+            recall = sum((layer & data["words"]).values()) / total
+            rows.append({"page": page, "text_layer_words": total, "recall": round(recall, 4)})
+            if recall < COVERAGE_THRESHOLDS["text_layer_recall"]:
+                report["flags"].append({"run": run_id, "page": page, "signal": "text_layer_recall",
+                                        "value": round(recall, 4)})
+        report["text_layer"][run_id] = rows
+    for left, right in pairs:
+        a, b = run_pages(out, left), run_pages(out, right)
+        rows = []
+        for page in sorted(set(a) & set(b)):
+            row = {"page": page, "tables": [a[page]["tables"], b[page]["tables"]]}
+            for name, x, y in ((left, a, b), (right, b, a)):
+                words = sum(x[page]["words"].values())
+                missing = sum((y[page]["words"] - x[page]["words"]).values()) / max(1, sum(y[page]["words"].values()))
+                row[f"missing_in_{name}"] = round(missing, 4)
+                if missing > COVERAGE_THRESHOLDS["cross_mode_missing"] and words:
+                    report["flags"].append({"run": name, "page": page, "signal": "cross_mode_missing",
+                                            "value": round(missing, 4), "against": right if name == left else left})
+            if row["tables"][0] != row["tables"][1]:
+                report["flags"].append({"run": f"{left}|{right}", "page": page, "signal": "table_count_mismatch",
+                                        "value": row["tables"]})
+            rows.append(row)
+        report["cross_mode"][f"{left}|{right}"] = rows
+    write_json(out / "coverage.json", report)
+    return report
+
+
 # ---------------------------------------------------------------- self-test
 
 def self_test() -> None:
@@ -716,6 +806,8 @@ def self_test() -> None:
                          [{"page": 1, "width": 10, "height": 10}], [])
         assert broken["failures"] == ["malformed_blocks x1"], broken
         assert text_sha256("<BLOCK>text[1, 2, 3, 4]<FORK>a") == text_sha256("<BLOCK>text[1, 2, 3, 5]<FORK>a")
+        words = page_words("<BLOCK>text[1, 2, 3, 4]<FORK>An origi-\nnal <b>Twin</b> &amp; co")
+        assert words == collections.Counter(["an", "original", "twin", "co"]), words
         reanalyze(out)
         assert json.loads((out / "summary.json").read_text())["runs"]["local"]["repeat_text_identical"] is True
         failed = json.loads((out / "units/multi/r1/p0001-p0003/result.json").read_text())
@@ -752,12 +844,19 @@ def main() -> None:
     run.add_argument("--allow-emulated-bf16", action="store_true")
     summary = sub.add_parser("summarize")
     summary.add_argument("--out", type=Path, required=True)
+    cover = sub.add_parser("coverage", help="flag likely omissions (heuristic, not ground truth)")
+    cover.add_argument("--out", type=Path, required=True)
+    cover.add_argument("--inputs", type=Path, required=True)
+    cover.add_argument("--pair", action="append", required=True, metavar="RUN_A:RUN_B")
     again = sub.add_parser("reanalyze")
     again.add_argument("--out", type=Path, required=True)
     sub.add_parser("self-test")
     args = parser.parse_args()
     if args.command == "self-test":
         self_test()
+    elif args.command == "coverage":
+        report = coverage(args.out, args.inputs, [tuple(pair.split(":", 1)) for pair in args.pair])
+        print(json.dumps(report["flags"], indent=2))
     elif args.command == "reanalyze":
         reanalyze(args.out)
         print(json.dumps(json.loads((args.out / "summary.json").read_text()), indent=2))

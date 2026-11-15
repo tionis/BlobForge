@@ -47,6 +47,30 @@ retained `raw.txt` and `token_ids.json`, verifying the recorded raw digest.
 The summary reports raw-byte and text-only repeat identity separately, because
 GPU repeats can move boxes by a unit or two.
 
+## Packaging and coverage
+
+Packaging runs locally in the BlobForge environment with no GPU:
+
+```bash
+uv run --with pillow==13.0.0 python evaluators/unlimited_ocr2/package.py \
+  --evidence .blobforge-migration/evaluations/unlimited-ocr2-colab-canary \
+  --run london-page-local -o london.uocr2-page-local.mdaf
+```
+
+`package.py` selects the run's top-level units, descending into halves when a
+unit failed. `adapter.py` emits a converter bundle for the shared builder; its
+normalization rules are in its docstring and in
+`docs/unlimited_ocr2_colab_canary.md`.
+
+The `coverage` subcommand flags likely omissions from text-layer recall and
+cross-mode disagreement:
+
+```bash
+uv run --no-project --python 3.12 --with pymupdf==1.27.2.2 --with pillow \
+  python -I evaluators/unlimited_ocr2/run_unlimited_ocr2.py coverage \
+  --out OUT --inputs INPUTS --pair london-page-local:london-multi-8
+```
+
 ## Model code review
 
 All snapshot files are pinned by SHA-256, and the runner refuses unreviewed

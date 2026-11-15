@@ -4391,3 +4391,25 @@
   - Speed: 95-213 s/page at about 9.5 tokens per second; peak 6.7-7.6 GiB.
 - **Docs:** `docs/unlimited_ocr2_colab_canary.md`, evaluation-doc status, TODO
   follow-ups (packager, coverage check, conditional hybrid/SGLang).
+
+## 2026-11-15 (Unlimited-OCR-2 Packaging, Campaigns and Coverage Check)
+
+- **Commit:** The evaluator and canary results were committed as `81a90b2`.
+- **Packager:** Added `evaluators/unlimited_ocr2/adapter.py` and `package.py`.
+  They take cached units through converter-bundle v1 and `run_converter`,
+  producing headings from `<LEVELn>`, paragraph joins, allowlisted semantic
+  tables (non-rectangular grids kept verbatim), derived image crops, and
+  page-plus-point-rectangle mappings with no confidence. The four canary MDAFs
+  pass BlobForge and Vulcan validation; repackaging reproduced identical
+  identities.
+- **Comparison baseline:** `blobforge reprocess` upgraded the retained Mistral
+  Storypath (wiki-v3) and London (wiki-v1) parents to wiki-v10 offline, with no
+  provider calls.
+- **Campaigns:** Created `reviews/storypath-uocr2-v1` (5 candidates) and
+  `reviews/london-falling-tables-uocr2-v1` (4 candidates) with random private
+  seeds. The keys are mode 0600 and unopened, and a scan of the public files
+  found no engine names.
+- **Coverage check:** `coverage` combines PDF text-layer recall (dehyphenated,
+  threshold 0.90) with cross-mode word and table disagreement. It flags both
+  confirmed table omissions and the degraded multi-8 London pages, and no
+  Storypath page. The self-test covers the word normalization.

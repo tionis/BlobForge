@@ -52,6 +52,14 @@ The virtual environment is located at `.venv/` and should be activated automatic
     dense small type.
   - **Speed:** the Transformers path manages about 9.5 tokens per second on an
     A100, so it measures quality only, never throughput.
+  - **Packaging:** cached runs package locally with
+    `evaluators/unlimited_ocr2/package.py`, deterministically. About a fifth of
+    the model's tables are non-rectangular and are kept verbatim, never padded.
+  - **Coverage:** `run_unlimited_ocr2.py coverage` (text-layer recall below
+    0.90, or cross-mode disagreement) caught both confirmed omissions, but its
+    thresholds are in-sample.
+  - **Baselines:** compare against current Mistral by offline
+    `blobforge reprocess` to wiki-v10 rather than older local wiki copies.
 
 - **2026-10-27:** Unlimited-OCR-2 (`baidu/Unlimited-OCR-2`, revision
   `9cf077c4…`) supersedes v1 as the Unlimited-OCR evaluation target. It runs

@@ -161,13 +161,18 @@ view; detailed research tasks remain in the sections below.
 - [x] Score the retained page against v1, Mistral and the other extractors
   (v2 equals v1; Mistral leads). Compare London tables and both modes. See
   `docs/unlimited_ocr2_colab_canary.md`.
-- [ ] Add a local packager from cached Unlimited-OCR-2 output to
-  ConversionBundle/MDAF with validation, mapping `<BLOCK>` boxes through the
-  recorded raster transform and `<LEVELn>`/`cross_text`/`append_text`/`<MERGE>`
-  into hierarchy and continuations. Include the outputs in a newly blinded
-  campaign.
-- [ ] Design an independent coverage check for Unlimited-OCR-2. Both modes
-  silently dropped whole tables, and the page guard cannot detect omissions.
+- [x] Add a local packager from cached Unlimited-OCR-2 output to
+  ConversionBundle/MDAF (`evaluators/unlimited_ocr2/package.py`). All four
+  canary MDAFs pass BlobForge and Vulcan validation and repackage to identical
+  bytes.
+- [x] Generate blinded campaigns `reviews/storypath-uocr2-v1` and
+  `reviews/london-falling-tables-uocr2-v1` against Mistral wiki-v10 (offline
+  reprocessed), Datalab wiki and, for Storypath, Marker 1.
+- [x] Add a heuristic coverage check (`run_unlimited_ocr2.py coverage`: PDF
+  text-layer recall plus cross-mode disagreement). It flags both confirmed
+  omissions and no Storypath page; its thresholds are calibrated in-sample.
+- [ ] Human-score both Unlimited-OCR-2 campaigns, then unblind and record the
+  verdict in `docs/unlimited_ocr2_colab_canary.md`.
 - [ ] Only if blinded review justifies it, evaluate a hybrid recipe (page-local
   text plus multi-page hierarchy/continuations) and measure the authors'
   SGLang serving path before any throughput or cost decision.
